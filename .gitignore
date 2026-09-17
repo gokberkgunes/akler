@@ -1,0 +1,17 @@
+# Rust build output (keep Cargo.lock for this application)
+/target/
+Cargo.lock
+
+# Local corpus text and generated n-gram caches
+/corpus/raw/*.txt
+
+# Generated optimizer reports; keep saved .dat layouts
+/layouts/*.run.txt
+/layouts/*-batch-*.csv
+
+# Local patch handoffs and logs
+/*.patch
+*.log
+
+*.swp
+*.swo
