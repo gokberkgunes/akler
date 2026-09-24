@@ -1,7 +1,6 @@
 # layouter
 
 TUI layout ranker, designer, optimizer with magic support.
-
 For now uses only n-grams, no corpus traversal.
 
 ## Build and run
@@ -12,24 +11,32 @@ cargo build --release
 ./target/release/layouter
 ```
 
-## Layouts and corpora
+This program comes with a corpus. You may generate ngrams from a corpus you
+want located at `corpus/raw/` with **Corpora -> Import text corpus** if you
+need.
 
-Store layouts in `layouts/`.
 
-Import a text corpus and build its n-gram cache:
+Layout files go to `layouts/`. File types are detected from
+their contents. Check examples.
 
-```sh
-./target/release/layouter corpus add mycorpus input.txt
-./target/release/layouter corpus build corpus/raw/mycorpus.txt --order 5
-```
+Edit [layouter.conf](layouter.conf) for weights, search settings, ranker
+columns,
 
-The generated cache is `corpus/processed/corpus-mycorpus.json`. Use `--order 3` or `--order 4` for a lower-order cache. Corpus text and generated caches are excluded from Git.
+## Documentation
+
+- [DAT/JSONC layouts, magic/adaptive rules, and geometry](doc/LAYOUTS.md)
+- [Every metric, weight, unit, and overlap](doc/METRICS.md)
+- [Corpora, ranker controls, search settings, and profiling](doc/USAGE.md)
 
 ## Development
 
 ```sh
+cargo fmt
+rustfmt --edition 2021 src/*.rs
 cargo check --release
 cargo test --release -- --test-threads=1
+cargo build --release
 ```
 
-Optional diagnostics: set `LAYOUTER_PROFILE=1` for optimizer profiling or `LAYOUTER_PROFILE_LOAD=1` for loading timings.
+The explicit `rustfmt` command also covers files loaded with `include!`.
+Add `--offline` to Cargo check/test/build commands when dependencies are cached.

@@ -1,0 +1,14 @@
+b f ◇ p w  ' . u o y
+n s t d g  k r e a i
+q v c m x  l h , z j
+thumbs: space space
+
+# Each two-character token is context + emitted character.
+◇ 'r ay hr ik jo ke rl u' ye
+
+row-stagger: nokwts
+row-offsets: 0 0.25 0.75
+
+# After h, physical n emits r and physical r emits n.
+# Otherwise both keys emit their usual letters.
+swap ' lf j nu u eo y ,u

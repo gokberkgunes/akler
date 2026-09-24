@@ -1,16 +1,20 @@
 //! Numeric implementation of WindowMapper's existing bounded-context policy.
 //! Compiled once per search. Successful mapping builds no diagnostics and allocates no heap storage.
 use crate::action_keys::{self as ak, Action, Basis, Binding, Emission, Layout};
-use crate::action_profile::MappingCounts;
+
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::action_profile::MappingCounts;
+
 const MAX_KEYS: usize = 60;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Terminal {
     None,
     Byte(u8),
     RepeatOutput,
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Emit {
     None,
@@ -18,23 +22,28 @@ enum Emit {
     Call(usize),
     Terminal { hops: u8, op: Terminal },
 }
+
 #[derive(Clone, Copy)]
 enum Key {
     Empty,
     Byte(u8),
     Action(usize),
 }
+
 struct PackedRule {
     bits: u32,
     mask: u32,
     len: usize,
     emit: Emit,
 }
+
 struct SuffixIndex {
-    short: Box<[Emit; 257]>, // final byte, plus empty-prefix entry
+    short: Box<[Emit; 257]>,
+    // final byte, plus empty-prefix entry
     ranges: Box<[(usize, usize); 256]>,
     longer: Vec<PackedRule>,
 }
+
 fn packed_suffix(text: &[u8]) -> u32 {
     let mut bits = 0;
     for (i, &byte) in text.iter().rev().take(4).enumerate() {
@@ -42,6 +51,7 @@ fn packed_suffix(text: &[u8]) -> u32 {
     }
     bits
 }
+
 impl SuffixIndex {
     fn lookup<const PROFILE: bool>(&self, prefix: &[u8], ops: &mut MappingCounts) -> Emit {
         if PROFILE {
@@ -71,6 +81,7 @@ impl SuffixIndex {
         self.short[last as usize]
     }
 }
+
 enum Code {
     Inactive,
     Byte(u8),
@@ -89,10 +100,12 @@ enum Code {
         table: Box<[Emit]>,
     },
 }
+
 pub(crate) struct Program {
     keys: Vec<Key>,
     actions: Vec<Code>,
 }
+
 // Prove an unconditional chain reaches a non-recursive terminal. Branching
 // rules and RepeatAction remain dynamic. Cycles/long chains retain Call.
 fn terminal_call<'a>(
@@ -121,6 +134,7 @@ fn terminal_call<'a>(
         }
     }
 }
+
 fn emission(e: &Emission, ids: &BTreeMap<String, usize>, defs: &BTreeMap<String, Action>) -> Emit {
     match e {
         Emission::None => Emit::None,
@@ -131,6 +145,7 @@ fn emission(e: &Emission, ids: &BTreeMap<String, usize>, defs: &BTreeMap<String,
         },
     }
 }
+
 fn text_rules(
     rules: &BTreeMap<Vec<u8>, Emission>,
     fallback: Emit,
@@ -180,6 +195,7 @@ fn text_rules(
         longer,
     })
 }
+
 impl Program {
     pub(crate) fn new(layout: &Layout, order: usize) -> ak::Result<Self> {
         if layout.slots.len() > MAX_KEYS || !(1..=5).contains(&order) {
@@ -289,6 +305,7 @@ impl Program {
             .collect();
         Ok(Self { keys, actions })
     }
+
     pub(crate) fn affected_bytes(
         &self,
         state: &KeyState,
@@ -305,6 +322,7 @@ impl Program {
         }
         Some(bytes)
     }
+
     fn resolve_key<const PROFILE: bool>(
         &self,
         key: usize,
@@ -324,6 +342,7 @@ impl Program {
             Key::Action(id) => self.resolve::<PROFILE>(id, state, m, prefix, stack, depth, ops),
         }
     }
+
     fn emit<const PROFILE: bool>(
         &self,
         e: Emit,
@@ -373,6 +392,7 @@ impl Program {
             }
         }
     }
+
     fn resolve<const PROFILE: bool>(
         &self,
         id: usize,
@@ -470,6 +490,7 @@ impl Program {
         }
     }
 }
+
 // Slots have fixed geometry. IDs refer to the initial bindings, including labels
 // used by press rules. Maintain candidate masks in O(1) per swap, not per context.
 pub(crate) struct KeyState {
@@ -477,6 +498,7 @@ pub(crate) struct KeyState {
     literals: [u64; 256],
     actions: u64,
 }
+
 impl KeyState {
     pub(crate) fn new(program: &Program) -> Self {
         let mut state = Self {
@@ -490,6 +512,7 @@ impl KeyState {
         }
         state
     }
+
     fn insert(&mut self, key: usize, binding: Key) {
         match binding {
             Key::Byte(b) => self.literals[b as usize] |= 1u64 << key,
@@ -497,6 +520,7 @@ impl KeyState {
             Key::Empty => {}
         }
     }
+
     pub(crate) fn swap(&mut self, a: usize, b: usize, program: &Program) {
         assert!(a < program.keys.len() && b < program.keys.len());
         let (x, y) = (program.keys[self.ids[a]], program.keys[self.ids[b]]);
@@ -513,6 +537,7 @@ impl KeyState {
         self.insert(b, x);
     }
 }
+
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 struct Memory {
     remembered_key: Option<usize>,
@@ -522,11 +547,13 @@ struct Memory {
     last_output: Option<u8>,
     previous_output: Option<u8>,
 }
+
 #[derive(Clone, Copy)]
 struct Output {
     byte: u8,
     remember: bool,
 }
+
 pub(crate) struct Mapper<'a> {
     program: &'a Program,
     state: &'a KeyState,
@@ -537,6 +564,7 @@ pub(crate) struct Mapper<'a> {
     keys: [Option<usize>; 5],
     stack: [usize; 32],
 }
+
 impl<'a> Mapper<'a> {
     pub(crate) fn new(program: &'a Program, state: &'a KeyState) -> Self {
         Self {
@@ -550,12 +578,14 @@ impl<'a> Mapper<'a> {
             stack: [0; 32],
         }
     }
+
     pub(crate) fn map<F>(&mut self, text: &[u8], effort: &F) -> ak::Result<[Option<usize>; 5]>
     where
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
         self.map_profiled::<false, F>(text, effort, &mut MappingCounts::default())
     }
+
     pub(crate) fn map_profiled<const PROFILE: bool, F>(
         &mut self,
         text: &[u8],
@@ -792,7 +822,7 @@ pub(crate) mod tests {
             "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
         let mut fixtures = vec![
             base.to_string(),
-            include_str!("../examples/magic-shorthand.dat").to_string(),
+            crate::action_keys::test_layouts::SHORTHAND.to_string(),
         ];
         for basis in [
             "magic",
@@ -809,7 +839,18 @@ pub(crate) mod tests {
             };
             fixtures.push(format!("{base}outer-left: @m @rep @again\nouter-right: @sk ~ ~\naction m = {basis}\nmap m \"i\" = \"'\"\nmap m \"q\" = \"u\"\nmap m \"qu\" = \"e\"\n{aliases}fallback m = @sk\naction sk = skip-magic\nmap sk \"q\" = \"a\"\naction rep = repeat-output\naction again = repeat-action\n"));
         }
-        fixtures.push(format!("{}outer-left: @m @again @literal\naction m = magic\nmap m \"q\" = \"u\"\nfallback m = repeat-action\naction again = repeat-action\naction literal = text \"q\"\naction unused = text \"multiple\"\n",base.replacen("w ","q ",1)));
+        // The bound root uses output history so its dynamic repeat-action
+        // fallback remains intact under the text-magic repeat policy.
+        fixtures.push(format!("{}outer-left: @m @again @literal\naction m = output-magic\nmap m \"q\" = \"u\"\nfallback m = repeat-action\naction again = repeat-action\naction literal = text \"q\"\naction unused = text \"multiple\"\n", base.replacen("w ", "q ", 1)));
+        fixtures.push(crate::action_keys::test_layouts::COMPACT.to_string());
+        fixtures.push(format!("{base}outer-left: ~ ◇ ~\n◇ hr u'\n"));
+        fixtures.push(format!(
+            "{base}outer-left: ~ ◇ ~\n◇ hr u'\nfallback ◇ = repeat-output\n"
+        ));
+        fixtures.push(format!("{base}adaptive n hr ay\nswap th qe\n"));
+        for mode in ["standard", "anglemod", "nokwts", "meteorite"] {
+            fixtures.push(format!("{base}swap h nr y ,u\nrow-stagger: {mode}\n"));
+        }
         fixtures
     }
     #[test]
@@ -821,6 +862,9 @@ pub(crate) mod tests {
             b"qu!qu".to_vec(),
             b"q qu".to_vec(),
             b"'q".to_vec(),
+            b"hrhnr".to_vec(),
+            b"thqeq".to_vec(),
+            b"h!nr".to_vec(),
         ];
         let mut rng = 19u64;
         let alphabet = b"quaei' !\0";
@@ -888,8 +932,11 @@ pub(crate) mod tests {
                 if id + 1 == depth {
                     source.push_str(&format!("action m{id} = text \"'\"\n"));
                 } else {
+                    // Only m0 is physically bound; keep its delegate fallback
+                    // while exercising the unbound text-magic helper chain.
+                    let basis = if id == 0 { "output-magic" } else { "magic" };
                     source.push_str(&format!(
-                        "action m{id} = magic\nfallback m{id} = @m{}\n",
+                        "action m{id} = {basis}\nfallback m{id} = @m{}\n",
                         id + 1
                     ));
                 }
@@ -946,7 +993,6 @@ pub(crate) mod tests {
         layout.slots.push(layout.slots[0].clone());
         assert!(Program::new(&layout, 5).is_err());
     }
-
     #[test]
     fn profiling_counts_do_not_change_mapping() {
         for source in fixtures() {
@@ -987,7 +1033,6 @@ pub(crate) mod tests {
             assert!(enabled.recursive <= enabled.resolutions);
         }
     }
-
     // Exact generic-root comparison: keys, all live prefix memory, effort-call
     // sequence/values (including NaN bits), errors, and logical profile counters.
     fn compare_root_paths(program: &Program, state: &KeyState, contexts: &[Vec<u8>], mode: usize) {
@@ -1001,7 +1046,8 @@ pub(crate) mod tests {
             let generic_calls = RefCell::new(Vec::new());
             let cost = |a: Option<usize>, b: Option<usize>, key: usize| -> f64 {
                 match mode {
-                    0 => 0.0, // Literal wins ties; first action wins action ties.
+                    0 => 0.0,
+                    // Literal wins ties; first action wins action ties.
                     1 => -(key as f64),
                     2 => {
                         key as f64
@@ -1102,13 +1148,20 @@ pub(crate) mod tests {
                 hops,
                 op: Terminal::RepeatOutput,
             };
-            let mut table = Box::new([repeat; 257]); // fallback repeat, including empty prefix
-            table[b'i' as usize] = Emit::Byte(b'x'); // explicit byte overrides repeat
-            table[b'n' as usize] = Emit::None; // explicit none overrides repeat
-            table[b'r' as usize] = repeat; // explicit repeat is equally eligible
-            table[b'd' as usize] = Emit::Call(1); // dynamic RepeatAction
-            table[b'c' as usize] = Emit::Call(0); // cycle: must remain generic
-            table[b't' as usize] = Emit::Call(2); // nested TextOne repeat
+            let mut table = Box::new([repeat; 257]);
+            // fallback repeat, including empty prefix
+            table[b'i' as usize] = Emit::Byte(b'x');
+            // explicit byte overrides repeat
+            table[b'n' as usize] = Emit::None;
+            // explicit none overrides repeat
+            table[b'r' as usize] = repeat;
+            // explicit repeat is equally eligible
+            table[b'd' as usize] = Emit::Call(1);
+            // dynamic RepeatAction
+            table[b'c' as usize] = Emit::Call(0);
+            // cycle: must remain generic
+            table[b't' as usize] = Emit::Call(2);
+            // nested TextOne repeat
             let program = Program {
                 keys: vec![
                     Key::Byte(b'q'),
@@ -1156,7 +1209,6 @@ pub(crate) mod tests {
             }
         }
     }
-
     #[test]
     fn action_outcomes_count_final_winners_and_prefix_reuse() {
         let program = Program {
@@ -1250,7 +1302,6 @@ pub(crate) mod tests {
             );
         }
     }
-
     #[test]
     fn terminal_kind_counters_include_depth_rejected_shortcuts() {
         let program = Program {
@@ -1279,7 +1330,6 @@ pub(crate) mod tests {
         assert_eq!(ops.terminal_byte, 2);
         assert_eq!(ops.terminal_repeat, 2);
     }
-
     #[test]
     fn indexed_suffix_selection_matches_longest_suffix_reference() {
         let mut rules = BTreeMap::new();
@@ -1335,7 +1385,7 @@ pub(crate) mod tests {
     #[test]
     fn shorthand_uses_direct_suffix_table_and_terminal_repeat_instruction() {
         let layout = Layout::parse(
-            include_str!("../examples/magic-shorthand.dat"),
+            crate::action_keys::test_layouts::SHORTHAND,
             Path::new("direct.dat"),
         )
         .unwrap();
@@ -1363,13 +1413,19 @@ pub(crate) mod tests {
                 let mut source = format!("{base}outer-left: ~ @m0 ~\n");
                 for id in 0..depth {
                     if id + 1 == depth {
-                        source.push_str(&format!("action m{id} = {terminal}\n"));
+                        let kind = if id == 0 && terminal == "magic" {
+                            "output-magic"
+                        } else {
+                            terminal
+                        };
+                        source.push_str(&format!("action m{id} = {kind}\n"));
                         if terminal == "magic" {
                             source.push_str(&format!("fallback m{id} = \"'\"\n"));
                         }
                     } else {
+                        let basis = if id == 0 { "output-magic" } else { "magic" };
                         source.push_str(&format!(
-                            "action m{id} = magic\nfallback m{id} = @m{}\n",
+                            "action m{id} = {basis}\nfallback m{id} = @m{}\n",
                             id + 1
                         ));
                     }

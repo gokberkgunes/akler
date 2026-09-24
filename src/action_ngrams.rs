@@ -2,10 +2,13 @@
 //! Each weighted context contributes only its final physical event, avoiding
 //! overlap double-counting. Magic history is bounded by the selected table order.
 use crate::action_keys as ak;
-use crate::action_profile::{clock, elapsed, Profile};
+
 use crate::*;
 
+use crate::action_profile::{clock, elapsed, Profile};
+
 type Table = BTreeMap<Vec<usize>, f64>;
+
 #[derive(Clone, Debug)]
 pub struct Counts {
     pub tables: [Table; 3],
@@ -16,6 +19,7 @@ pub struct Counts {
     pub ignored_characters: f64,
     pub order: usize,
 }
+
 impl Counts {
     fn new(order: usize) -> Self {
         Self {
@@ -28,13 +32,14 @@ impl Counts {
             order,
         }
     }
-    pub fn write_report(&self, layout: &ak::Layout, path: &Path) -> ak::Result<()> {
-        let mut out=format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"greedy local effort within each cached context; literal wins ties\",\n  \"keys\": [",self.order);
+
+    fn report_json(&self, layout: &ak::Layout) -> String {
+        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"greedy local effort within each cached context; literal wins ties\",\n  \"keys\": [", self.order);
         for (i, slot) in layout.slots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
             }
-            out.push_str(&ak::quote(slot.label.as_bytes()));
+            out.push_str(&crate::json_quote(&slot.label));
         }
         out.push_str("],\n  \"ngrams\": [");
         for (i, table) in self.tables.iter().enumerate() {
@@ -61,6 +66,11 @@ impl Counts {
             "],\n  \"presses\": {},\n  \"characters\": {},\n  \"ignored_characters\": {}\n}}\n",
             self.presses, self.characters, self.ignored_characters
         ));
+        out
+    }
+
+    pub fn write_report(&self, layout: &ak::Layout, path: &Path) -> ak::Result<()> {
+        let out = self.report_json(layout);
         let mut f = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -69,6 +79,7 @@ impl Counts {
         f.write_all(out.as_bytes()).map_err(|e| e.to_string())
     }
 }
+
 fn read_ngram_table(
     p: &mut JsonParser<'_>,
     width: usize,
@@ -116,27 +127,124 @@ fn read_ngram_table(
     }
     Ok(out)
 }
+
 #[derive(Clone, Debug)]
 struct Window {
     bytes: [u8; 5],
     len: usize,
     weight: f64,
 }
+
 impl Window {
     fn text(&self) -> &[u8] {
         &self.bytes[..self.len]
     }
 }
+
+fn weighted_contexts(
+    tables: &[BTreeMap<Vec<u8>, f64>; 5],
+    order: usize,
+    stop: &AtomicBool,
+    collect: bool,
+) -> AppResult<Vec<Window>> {
+    let mut windows = Vec::new();
+    for n in 1..=order {
+        let mut extended: BTreeMap<Vec<u8>, f64> = BTreeMap::new();
+        if n < order {
+            for (gram, f) in &tables[n] {
+                if stop.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
+                *extended.entry(gram[1..].to_vec()).or_default() += f;
+            }
+        }
+
+        // Only occurrences with no stored left extension belong to the
+        // shorter context. The rest are counted in a longer context.
+        for (gram, f) in &tables[n - 1] {
+            if stop.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            let covered = extended.remove(gram).unwrap_or(0.0);
+            let tol = 1e-8 * f.abs().max(1.0);
+            if covered > *f + tol {
+                return Err("N-gram orders have inconsistent frequencies; rebuild them together (raw counts, not separately normalized percentages).".into());
+            }
+            let weight = (*f - covered).max(0.0);
+            if collect && weight > 0.0 {
+                let mut bytes = [0; 5];
+                bytes[..n].copy_from_slice(gram);
+                windows.push(Window {
+                    bytes,
+                    len: n,
+                    weight,
+                });
+            }
+        }
+        if extended.values().any(|f| *f > 1e-8) {
+            return Err(
+                "N-gram table contains a suffix missing from its lower order; rebuild the corpus."
+                    .into(),
+            );
+        }
+    }
+    Ok(windows)
+}
+
+fn limit_context_tables(
+    tables: &mut [BTreeMap<Vec<u8>, f64>; 5],
+    order: usize,
+    caps: [Option<usize>; 5],
+    stop: &AtomicBool,
+) -> AppResult<Vec<String>> {
+    let mut warnings = Vec::new();
+    for i in 2..order {
+        if stop.load(Ordering::Relaxed) {
+            return Err("cancelled".into());
+        }
+        let original = tables[i].len();
+        let original_mass = tables[i].values().sum();
+
+        // A retained context needs its suffix in the preceding table. Without
+        // this restriction, subtracting extension counts could create negative
+        // residuals or references to absent lower-order contexts.
+        let (lower, current) = tables.split_at_mut(i);
+        let table = &mut current[0];
+        table.retain(|gram, _| lower[i - 1].contains_key(&gram[1..]));
+        if let Some(cap) = caps[i] {
+            if table.len() > cap {
+                let selected =
+                    top_ngram_keys(table.iter().map(|(gram, f)| (gram.clone(), *f)), cap);
+                table.retain(|gram, _| selected.contains(gram));
+            }
+        }
+
+        if table.len() != original {
+            warnings.push(ngram_limit_warning(
+                i + 1,
+                table.len(),
+                original,
+                table.values().sum(),
+                original_mass,
+            ));
+        }
+    }
+    Ok(warnings)
+}
+
 #[derive(Clone, Debug)]
 pub struct NgramCorpus {
     pub name: String,
     pub order: usize,
+    pub warnings: Vec<String>,
     windows: Arc<[Window]>,
 }
+
 impl NgramCorpus {
     pub fn load(path: &Path) -> ak::Result<Self> {
         Self::load_progress(path, &AtomicBool::new(false), &AtomicU64::new(0))
     }
+
     pub fn load_progress(path: &Path, stop: &AtomicBool, progress: &AtomicU64) -> ak::Result<Self> {
         if path.extension().and_then(|x| x.to_str()) != Some("json") {
             return Err("Magic evaluation uses cached .json n-grams. Build/select a corpus in Corpora first.".into());
@@ -144,15 +252,44 @@ impl NgramCorpus {
         let mut timing = crate::load_profile::LoadProfile::new("action corpus load");
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
         timing.mark("Corpus read");
-        let result = Self::parse(&text, path, stop, progress).map_err(|e| e.to_string());
+        let limits = load_app_config().map_err(|e| e.to_string())?.ngrams;
+        let result = Self::parse(&text, path, stop, progress, limits).map_err(|e| e.to_string());
         timing.mark("Corpus parse/preparation (nested report)");
         result
     }
+
     pub fn from_text(text: &str, path: &Path) -> ak::Result<Self> {
-        Self::parse(text, path, &AtomicBool::new(false), &AtomicU64::new(0))
-            .map_err(|e| e.to_string())
+        Self::from_text_with_limits(text, path, NgramLimits::default())
     }
-    fn parse(text: &str, path: &Path, stop: &AtomicBool, progress: &AtomicU64) -> AppResult<Self> {
+
+    pub fn from_text_with_limits(text: &str, path: &Path, limits: NgramLimits) -> ak::Result<Self> {
+        Self::parse(
+            text,
+            path,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            limits,
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    pub(crate) fn from_text_progress_with_limits(
+        text: &str,
+        path: &Path,
+        limits: NgramLimits,
+        stop: &AtomicBool,
+        progress: &AtomicU64,
+    ) -> ak::Result<Self> {
+        Self::parse(text, path, stop, progress, limits).map_err(|e| e.to_string())
+    }
+
+    fn parse(
+        text: &str,
+        path: &Path,
+        stop: &AtomicBool,
+        progress: &AtomicU64,
+        limits: NgramLimits,
+    ) -> AppResult<Self> {
         let mut timing = crate::load_profile::LoadProfile::new("action corpus preparation");
         let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut p = JsonParser { text, p: 0 };
@@ -241,42 +378,26 @@ impl NgramCorpus {
         if tables.iter().any(|t| !t.values().sum::<f64>().is_finite()) {
             return Err("n-gram frequency sum overflow".into());
         }
-        let mut windows = Vec::new();
-        for n in 1..=order {
-            let mut extended: BTreeMap<Vec<u8>, f64> = BTreeMap::new();
-            if n < order {
-                for (gram, f) in &tables[n] {
-                    if stop.load(Ordering::Relaxed) {
-                        return Err("cancelled".into());
-                    }
-                    *extended.entry(gram[1..].to_vec()).or_default() += f;
-                }
-            }
-            // Only occurrences with no stored left extension belong to the
-            // shorter context. The rest are counted in a longer context.
-            for (gram, f) in &tables[n - 1] {
-                if stop.load(Ordering::Relaxed) {
-                    return Err("cancelled".into());
-                }
-                let covered = extended.remove(gram).unwrap_or(0.0);
-                let tol = 1e-8 * f.abs().max(1.0);
-                if covered > *f + tol {
-                    return Err("N-gram orders have inconsistent frequencies; rebuild them together (raw counts, not separately normalized percentages).".into());
-                }
-                let weight = (*f - covered).max(0.0);
-                if weight > 0.0 {
-                    let mut bytes = [0; 5];
-                    bytes[..n].copy_from_slice(gram);
-                    windows.push(Window {
-                        bytes,
-                        len: n,
-                        weight,
-                    });
-                }
-            }
-            if extended.values().any(|f| *f > 1e-8) {
-                return Err("N-gram table contains a suffix missing from its lower order; rebuild the corpus.".into());
-            }
+        let caps = [
+            None,
+            None,
+            limits.trigrams,
+            limits.tetragrams,
+            limits.pentagrams,
+        ];
+        if caps.iter().any(|cap| *cap == Some(0)) {
+            return Err("n-gram limits must be positive or all".into());
+        }
+        let limited = (2..order).any(|i| caps[i].is_some_and(|cap| tables[i].len() > cap));
+
+        // Validate the complete source even when limits will remove entries.
+        // With all/unreached limits, retain the original arithmetic and order.
+        let mut windows = weighted_contexts(&tables, order, stop, !limited)?;
+        let mut warnings = Vec::new();
+        if limited {
+            warnings = limit_context_tables(&mut tables, order, caps, stop)?;
+            windows = weighted_contexts(&tables, order, stop, true)?;
+            warnings.push("Removed contexts use retained shorter suffixes; action history and physical metrics are approximate.".into());
         }
         if windows.is_empty() {
             return Err("no usable cached n-grams".into());
@@ -292,9 +413,11 @@ impl NgramCorpus {
         Ok(Self {
             name: corpus_name(path),
             order,
+            warnings,
             windows: windows.into(),
         })
     }
+
     pub fn evaluate<F>(
         &self,
         layout: &ak::Layout,
@@ -306,14 +429,66 @@ impl NgramCorpus {
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
         let mut timing = crate::load_profile::LoadProfile::new("detailed physical mapping");
+        let program = match crate::action_fast::Program::new(layout, self.order) {
+            Ok(program) => program,
+            Err(_) => {
+                // Preserve reference validation errors and support layouts outside
+                // the numeric mapper's capacity. Parsed keyboards fit its limit.
+                let mut mapper = ak::WindowMapper::new(layout, self.order)?;
+                timing.mark("Validate and initialize reference mapper fallback");
+                return self.evaluate_mapped(layout, stop, progress, &mut timing, |text| {
+                    mapper.map(text, &effort)
+                });
+            }
+        };
+        let state = crate::action_fast::KeyState::new(&program);
+        let mut mapper = crate::action_fast::Mapper::new(&program, &state);
+        timing.mark("Validate and compile numeric mapper");
+
+        self.evaluate_mapped(layout, stop, progress, &mut timing, |text| {
+            mapper.map(text, &effort)
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evaluate_reference<F>(
+        &self,
+        layout: &ak::Layout,
+        stop: &AtomicBool,
+        progress: &AtomicU64,
+        effort: F,
+    ) -> ak::Result<Counts>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
+        let mut timing = crate::load_profile::LoadProfile::new("reference physical mapping");
         let mut mapper = ak::WindowMapper::new(layout, self.order)?;
         timing.mark("Validate and initialize reference mapper");
+
+        self.evaluate_mapped(layout, stop, progress, &mut timing, |text| {
+            mapper.map(text, &effort)
+        })
+    }
+
+    // Keep window traversal, histogram insertion, frequency accumulation and
+    // cancellation/progress checks identical for numeric and reference mapping.
+    fn evaluate_mapped<F>(
+        &self,
+        layout: &ak::Layout,
+        stop: &AtomicBool,
+        progress: &AtomicU64,
+        timing: &mut crate::load_profile::LoadProfile,
+        mut map: F,
+    ) -> ak::Result<Counts>
+    where
+        F: FnMut(&[u8]) -> ak::Result<[Option<usize>; 5]>,
+    {
         let mut counts = Counts::new(self.order);
         for (i, window) in self.windows.iter().enumerate() {
             if stop.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
-            let keys = mapper.map(window.text(), &effort)?;
+            let keys = map(window.text())?;
             let last = window.len - 1;
             if let Some(key) = keys[last] {
                 counts.characters += window.weight;
@@ -353,7 +528,9 @@ impl NgramCorpus {
 // One compact terminal history per weighted context; metric contributions are
 // linear in frequency, so rejected proposals never need to mutate this cache.
 const GAP: u8 = u8::MAX;
+
 type Tail = [u8; 3];
+
 fn terminal(keys: [Option<usize>; 5], len: usize) -> Tail {
     let mut tail = [GAP; 3];
     for j in 0..len.min(3) {
@@ -361,6 +538,7 @@ fn terminal(keys: [Option<usize>; 5], len: usize) -> Tail {
     }
     tail
 }
+
 fn contribute(
     raw: &mut Raw,
     totals: &mut [f64; 4],
@@ -388,6 +566,7 @@ fn contribute(
     add(2, [a as usize, c as usize, 0], 2);
     add(3, [a as usize, b as usize, c as usize], 3);
 }
+
 // Physical geometry never moves with bindings. Compile the disjoint event
 // fields of a terminal history into one mask; retain floating travel values in
 // Geometry. No frequency, binding, weight or candidate state lives here.
@@ -397,6 +576,7 @@ struct TailContributions {
     triple: Vec<u64>,
     n: usize,
 }
+
 impl TailContributions {
     fn new(g: &Geometry) -> Self {
         assert!(N_RAW <= 64);
@@ -445,6 +625,7 @@ impl TailContributions {
             n: g.n,
         }
     }
+
     fn apply(&self, raw: &mut Raw, totals: &mut [f64; 4], tail: Tail, f: f64, g: &Geometry) {
         let [a, b, c] = tail;
         if c == GAP {
@@ -474,12 +655,14 @@ impl TailContributions {
         add_bits(raw, bits, f);
     }
 }
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CandidateScore {
     pub sfb: f64,
     pub sfs: f64,
     pub score: f64,
 }
+
 fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore {
     // Keep breakdown's contribution and summation order, including separate
     // penalty/bonus sums. Do not reassociate floating-point arithmetic.
@@ -513,6 +696,7 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
         score: penalty - bonus,
     }
 }
+
 // Reused across candidates. Only these numeric totals and tail patches are
 // needed to accept a swap. No report, histogram or textual representation.
 pub(crate) struct Proposal {
@@ -520,11 +704,12 @@ pub(crate) struct Proposal {
     totals: [f64; 4],
     changes: Vec<(usize, Tail)>,
     affected: Vec<u32>,
-    swap: (usize, usize),
+    movement: Move,
     valid: bool,
     pub(crate) examined: usize,
     pub(crate) all_contexts: bool,
 }
+
 impl Proposal {
     pub(crate) fn new() -> Self {
         Self {
@@ -532,21 +717,27 @@ impl Proposal {
             totals: [0.0; 4],
             changes: Vec::new(),
             affected: Vec::new(),
-            swap: (0, 0),
+            movement: Move::pair(0, 0),
             valid: false,
             examined: 0,
             all_contexts: false,
         }
     }
+
     pub(crate) fn score(&self, w: &Weights) -> CandidateScore {
         assert!(self.valid);
         candidate_score(&self.raw, &self.totals, w)
     }
+    pub(crate) fn metrics(&self) -> Metrics {
+        metrics_totals(&self.raw, &self.totals)
+    }
+
     #[cfg(test)]
     pub(crate) fn summary(&self, w: &Weights) -> (Metrics, f64) {
         summary(&self.raw, self.totals, w)
     }
 }
+
 #[cfg(test)]
 fn summary(raw: &Raw, totals: [f64; 4], w: &Weights) -> (Metrics, f64) {
     let corpus = Corpus {
@@ -563,6 +754,26 @@ fn summary(raw: &Raw, totals: [f64; 4], w: &Weights) -> (Metrics, f64) {
     let score = candidate_score(raw, &totals, w).score;
     (m, score)
 }
+
+// A checkpoint keeps only numeric totals. Tails are remapped when restoring a
+// restart/local optimum, never cloned per candidate or archive entry.
+#[derive(Clone)]
+pub(crate) struct NumericState {
+    raw: Raw,
+    totals: [f64; 4],
+    commits: usize,
+}
+
+impl NumericState {
+    pub(crate) fn raw_totals(&self) -> (&Raw, [f64; 4]) {
+        (&self.raw, self.totals)
+    }
+
+    pub(crate) fn metrics(&self) -> Metrics {
+        metrics_totals(&self.raw, &self.totals)
+    }
+}
+
 pub(crate) struct Incremental {
     corpus: NgramCorpus,
     tails: Vec<Tail>,
@@ -571,11 +782,13 @@ pub(crate) struct Incremental {
     totals: [f64; 4],
     geometry: Geometry,
     positions: Vec<usize>,
+    arrangement: Vec<usize>,
     commits: usize,
     contributions: TailContributions,
     program: crate::action_fast::Program,
     keys: crate::action_fast::KeyState,
 }
+
 impl Incremental {
     pub(crate) fn new<F>(
         corpus: &NgramCorpus,
@@ -601,6 +814,7 @@ impl Incremental {
             totals: [0.0; 4],
             geometry,
             positions: (0..layout.slots.len()).collect(),
+            arrangement: (0..layout.slots.len()).collect(),
             commits: 0,
             program,
             keys,
@@ -630,7 +844,8 @@ impl Incremental {
         if cache.totals[0] <= 0.0 || cache.totals[1] <= 0.0 {
             return Err("layout has no usable letters/bigrams in this corpus".into());
         }
-        drop(mapper); // Release compiled-state borrows before returning the owner.
+        drop(mapper);
+        // Release compiled-state borrows before returning the owner.
         Ok(cache)
     }
     // Fill the reusable sorted union. Named-action moves can affect every
@@ -667,13 +882,126 @@ impl Incremental {
         ids.extend_from_slice(&right[j..]);
         false
     }
+
+    // For a three-key cycle, merge the three original binding dependencies.
+    // The established pair path above is retained without extra work.
+    fn affected_move(&self, movement: Move, ids: &mut Vec<u32>) -> bool {
+        if movement.len == 2 {
+            return self.affected(movement.slots[0], movement.slots[1], ids);
+        }
+
+        ids.clear();
+        let [a, b, c] = movement.slots;
+        let Some(ab) = self.program.affected_bytes(&self.keys, a, b) else {
+            return true;
+        };
+        let Some(ac) = self.program.affected_bytes(&self.keys, a, c) else {
+            return true;
+        };
+        let bytes = [ab[0], ab[1], ac[1]];
+        let lists: [&[u32]; 3] = std::array::from_fn(|i| {
+            bytes[i].map_or(&[][..], |byte| self.postings[byte as usize].as_slice())
+        });
+        ids.reserve(lists.iter().map(|list| list.len()).sum());
+        let mut offsets = [0; 3];
+        loop {
+            let next = (0..3)
+                .filter_map(|i| lists[i].get(offsets[i]).copied())
+                .min();
+            let Some(next) = next else {
+                break;
+            };
+            ids.push(next);
+            for i in 0..3 {
+                if lists[i].get(offsets[i]) == Some(&next) {
+                    offsets[i] += 1;
+                }
+            }
+        }
+        false
+    }
+
+    pub(crate) fn numeric_state(&self) -> NumericState {
+        NumericState {
+            raw: self.raw.clone(),
+            totals: self.totals,
+            commits: self.commits,
+        }
+    }
+
+    // Restores outside the candidate loop. Program, geometry, effort tables and
+    // posting lists stay allocated; only the permutation and mapped tails change.
+    pub(crate) fn restore<F>(
+        &mut self,
+        arrangement: &[usize],
+        saved: Option<&NumericState>,
+        stop: &AtomicBool,
+        effort: F,
+    ) -> ak::Result<()>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
+        if !valid_arrangement(arrangement, self.arrangement.len()) {
+            return Err("invalid action search permutation".into());
+        }
+        for slot in 0..arrangement.len() {
+            if self.arrangement[slot] != arrangement[slot] {
+                let other = self
+                    .arrangement
+                    .iter()
+                    .position(|&id| id == arrangement[slot])
+                    .unwrap();
+                self.keys.swap(slot, other, &self.program);
+                self.arrangement.swap(slot, other);
+            }
+        }
+
+        let mut mapper = crate::action_fast::Mapper::new(&self.program, &self.keys);
+        let mut raw = Raw::default();
+        let mut totals = [0.0; 4];
+        for (id, window) in self.corpus.windows.iter().enumerate() {
+            if stop.load(Ordering::Relaxed) {
+                return Err("cancelled".into());
+            }
+            let tail = terminal(mapper.map(window.text(), &effort)?, window.len);
+            self.tails[id] = tail;
+            if saved.is_none() {
+                contribute(
+                    &mut raw,
+                    &mut totals,
+                    tail,
+                    window.weight,
+                    &self.positions,
+                    &self.geometry,
+                );
+            }
+        }
+        drop(mapper);
+
+        if let Some(saved) = saved {
+            self.raw.clone_from(&saved.raw);
+            self.totals = saved.totals;
+            self.commits = saved.commits;
+        } else {
+            self.raw = raw;
+            self.totals = totals;
+            self.commits = 0;
+        }
+        if self.totals[0] <= 0.0 || self.totals[1] <= 0.0 {
+            return Err("layout has no usable letters/bigrams in this corpus".into());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn physical_test_state(&self) -> (&Raw, [f64; 4], &[[u8; 3]]) {
         (&self.raw, self.totals, &self.tails)
     }
+
     pub(crate) fn context_count(&self) -> usize {
         self.tails.len()
     }
+
     pub(crate) fn propose_swap<F>(
         &mut self,
         a: usize,
@@ -694,6 +1022,7 @@ impl Incremental {
             &mut Profile::default(),
         )
     }
+
     pub(crate) fn propose_swap_profiled<const PROFILE: bool, const DETAIL: bool, F>(
         &mut self,
         a: usize,
@@ -706,13 +1035,43 @@ impl Incremental {
     where
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
+        self.propose_move_profiled::<PROFILE, DETAIL, F>(
+            Move::pair(a, b),
+            stop,
+            effort,
+            proposal,
+            profile,
+        )
+    }
+
+    pub(crate) fn propose_move_profiled<const PROFILE: bool, const DETAIL: bool, F>(
+        &mut self,
+        movement: Move,
+        stop: &AtomicBool,
+        effort: F,
+        proposal: &mut Proposal,
+        profile: &mut Profile,
+    ) -> ak::Result<()>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
         proposal.valid = false;
+        let [a, b, c] = movement.slots;
+        if !matches!(movement.len, 2 | 3)
+            || a >= self.arrangement.len()
+            || b >= self.arrangement.len()
+            || a == b
+            || movement.len == 3 && (c >= self.arrangement.len() || c == a || c == b)
+        {
+            return Err("invalid action search move".into());
+        }
+
         proposal.changes.clear();
         proposal.raw.clone_from(&self.raw);
         proposal.totals = self.totals;
-        proposal.swap = (a, b);
+        proposal.movement = movement;
         let affected_start = clock::<PROFILE>();
-        proposal.all_contexts = self.affected(a, b, &mut proposal.affected);
+        proposal.all_contexts = self.affected_move(movement, &mut proposal.affected);
         if PROFILE {
             profile.affected += elapsed::<PROFILE>(affected_start);
         }
@@ -733,9 +1092,12 @@ impl Incremental {
             return Err("cancelled".into());
         }
         proposal.changes.reserve(proposal.examined);
-        // Reuse masks and permutation; only two positions change. Always undo
-        // the numeric trial even on mapping error/cancellation.
+        // Reuse masks and permutation; only the moved positions change. Always
+        // undo the numeric trial even on mapping error/cancellation.
         self.keys.swap(a, b, &self.program);
+        if movement.len == 3 {
+            self.keys.swap(b, c, &self.program);
+        }
         let contexts_start = clock::<PROFILE>();
         let result = (|| -> ak::Result<()> {
             let mut mapper = crate::action_fast::Mapper::new(&self.program, &self.keys);
@@ -789,6 +1151,9 @@ impl Incremental {
         if PROFILE {
             profile.contexts += elapsed::<PROFILE>(contexts_start);
         }
+        if movement.len == 3 {
+            self.keys.swap(b, c, &self.program);
+        }
         self.keys.swap(a, b, &self.program);
         result?;
         if proposal.totals[0] <= 0.0 || proposal.totals[1] <= 0.0 {
@@ -797,9 +1162,11 @@ impl Incremental {
         proposal.valid = true;
         Ok(())
     }
+
     pub(crate) fn commit(&mut self, proposal: &mut Proposal) {
         self.commit_profiled::<false>(proposal, &mut Profile::default());
     }
+
     pub(crate) fn commit_profiled<const PROFILE: bool>(
         &mut self,
         proposal: &mut Proposal,
@@ -809,8 +1176,13 @@ impl Incremental {
         let mut rebase_time = Duration::ZERO;
         assert!(proposal.valid);
         proposal.valid = false;
-        self.keys
-            .swap(proposal.swap.0, proposal.swap.1, &self.program);
+        let [a, b, c] = proposal.movement.slots;
+        self.keys.swap(a, b, &self.program);
+        self.arrangement.swap(a, b);
+        if proposal.movement.len == 3 {
+            self.keys.swap(b, c, &self.program);
+            self.arrangement.swap(b, c);
+        }
         for &(id, tail) in &proposal.changes {
             self.tails[id] = tail;
         }
@@ -842,9 +1214,14 @@ impl Incremental {
             profile.commit += elapsed::<PROFILE>(commit_start).saturating_sub(rebase_time);
         }
     }
+
     pub(crate) fn score(&self, w: &Weights) -> CandidateScore {
         candidate_score(&self.raw, &self.totals, w)
     }
+    pub(crate) fn metrics(&self) -> Metrics {
+        metrics_totals(&self.raw, &self.totals)
+    }
+
     #[cfg(test)]
     pub(crate) fn summary(&self, w: &Weights) -> (Metrics, f64) {
         summary(&self.raw, self.totals, w)
@@ -875,6 +1252,7 @@ mod tests {
             );
         }
     }
+
     fn contribution_geometry(wide: bool) -> Geometry {
         let mut keys = Vec::new();
         for row in 0..3 {
@@ -986,13 +1364,206 @@ mod tests {
     fn plain() -> ak::Layout {
         ak::Layout::parse(BASE, Path::new("plain.dat")).unwrap()
     }
+
     fn magic() -> ak::Layout {
         ak::Layout::parse(
-            include_str!("../examples/magic-shorthand.dat"),
+            crate::action_keys::test_layouts::SHORTHAND,
             Path::new("magic.dat"),
         )
         .unwrap()
     }
+
+    #[test]
+    fn three_key_moves_match_fresh_mapping_and_restore_numeric_checkpoints() {
+        let seed = magic();
+        let corpus = corpus(b"ii aa i' ai' qi! rrr rk aa zz abcdef", 5);
+        let weights = Weights::default();
+        let stop = AtomicBool::new(false);
+        let effort = crate::action_ui::LocalEffort::new(&seed, &weights);
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
+        let make = |layout: &ak::Layout| {
+            Incremental::new(&corpus, layout, geometry.clone(), &stop, |a, b, key| {
+                effort.get(a, b, key)
+            })
+            .unwrap()
+        };
+        let mut cache = make(&seed);
+        let original = cache.numeric_state();
+        let original_tails = cache.tails.clone();
+        let identity: Vec<_> = (0..seed.slots.len()).collect();
+        let mut proposal = Proposal::new();
+        for labels in [["a", "i", "q"], ["@", "a", "r"], ["q", "@", "i"]] {
+            let slots = labels.map(|label| key(&seed, label));
+            let movement = Move { slots, len: 3 };
+            cache
+                .propose_move_profiled::<false, false, _>(
+                    movement,
+                    &stop,
+                    |a, b, key| effort.get(a, b, key),
+                    &mut proposal,
+                    &mut Profile::default(),
+                )
+                .unwrap();
+            assert_eq!(proposal.all_contexts, labels.contains(&"@"));
+            let mut layout = seed.clone();
+            layout.swap(slots[0], slots[1]);
+            layout.swap(slots[1], slots[2]);
+            let fresh = make(&layout);
+            for (actual, expected) in proposal.metrics().v.iter().zip(fresh.metrics().v) {
+                assert!((actual - expected).abs() < 1e-8);
+            }
+            cache.commit(&mut proposal);
+            assert_eq!(cache.tails, fresh.tails);
+            cache
+                .restore(&identity, Some(&original), &stop, |a, b, key| {
+                    effort.get(a, b, key)
+                })
+                .unwrap();
+            assert_eq!(cache.tails, original_tails);
+            assert_contribution_bits(&cache.raw, &original.raw, &cache.totals, &original.totals);
+        }
+    }
+
+    #[test]
+    fn restoring_checkpoint_restores_the_periodic_rebase_boundary() {
+        let seed = magic();
+        let corpus = corpus(b"aa ai' abc", 5);
+        let stop = AtomicBool::new(false);
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
+        let mut cache = Incremental::new(&corpus, &seed, geometry, &stop, |_, _, _| 0.0).unwrap();
+        cache.commits = 127;
+        let saved = cache.numeric_state();
+        let identity: Vec<_> = (0..seed.slots.len()).collect();
+        let mut proposal = Proposal::new();
+        let mut profile = Profile::default();
+
+        for expected_rebases in 1..=2 {
+            cache
+                .propose_swap(
+                    key(&seed, "a"),
+                    key(&seed, "i"),
+                    &stop,
+                    |_, _, _| 0.0,
+                    &mut proposal,
+                )
+                .unwrap();
+            cache.commit_profiled::<true>(&mut proposal, &mut profile);
+            assert_eq!(cache.commits, 128);
+            assert_eq!(profile.rebases, expected_rebases);
+            cache
+                .restore(&identity, Some(&saved), &stop, |_, _, _| 0.0)
+                .unwrap();
+            assert_eq!(cache.commits, 127);
+        }
+    }
+
+    #[test]
+    fn invalid_cycle_invalidates_proposal_and_mapping_error_undoes_keys() {
+        let seed = magic();
+        let corpus = corpus(b"aa ai' abc", 5);
+        let stop = AtomicBool::new(false);
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
+        let mut cache = Incremental::new(&corpus, &seed, geometry, &stop, |_, _, _| 0.0).unwrap();
+        let mut proposal = Proposal::new();
+        let a = key(&seed, "a");
+        let i = key(&seed, "i");
+
+        let original = cache.numeric_state();
+        let original_tails = cache.tails.clone();
+        let original_arrangement = cache.arrangement.clone();
+        cache
+            .propose_swap(a, i, &stop, |_, _, _| 0.0, &mut proposal)
+            .unwrap();
+        assert!(proposal.valid);
+        assert!(cache
+            .propose_swap(
+                a,
+                a,
+                &stop,
+                |_, _, _| panic!("a self-swap must be rejected before mapping"),
+                &mut proposal,
+            )
+            .is_err());
+        assert!(!proposal.valid);
+        assert_eq!(cache.tails, original_tails);
+        assert_eq!(cache.arrangement, original_arrangement);
+        assert_eq!(cache.commits, original.commits);
+        assert_contribution_bits(&cache.raw, &original.raw, &cache.totals, &original.totals);
+
+        cache
+            .propose_swap(a, i, &stop, |_, _, _| 0.0, &mut proposal)
+            .unwrap();
+        let invalid = Move {
+            slots: [a, i, a],
+            len: 3,
+        };
+        assert!(cache
+            .propose_move_profiled::<false, false, _>(
+                invalid,
+                &stop,
+                |_, _, _| 0.0,
+                &mut proposal,
+                &mut Profile::default(),
+            )
+            .is_err());
+        assert!(!proposal.valid);
+
+        let movement = Move {
+            slots: [a, i, key(&seed, "@")],
+            len: 3,
+        };
+        assert!(cache
+            .propose_move_profiled::<false, false, _>(
+                movement,
+                &stop,
+                |_, _, _| f64::NAN,
+                &mut proposal,
+                &mut Profile::default(),
+            )
+            .is_err());
+        assert!(!proposal.valid);
+        cache
+            .propose_swap(a, i, &stop, |_, _, _| 0.0, &mut proposal)
+            .unwrap();
+        let mut fresh_layout = seed.clone();
+        fresh_layout.swap(a, i);
+        let fresh = Incremental::new(
+            &corpus,
+            &fresh_layout,
+            Geometry::new(crate::action_ui::physical_keys(&seed)),
+            &stop,
+            |_, _, _| 0.0,
+        )
+        .unwrap();
+        cache.commit(&mut proposal);
+        assert_eq!(cache.tails, fresh.tails);
+    }
+
+    #[test]
+    fn ngram_report_preserves_unicode_and_escaped_key_labels() {
+        let text = format!("{BASE}outer-left: ~ ◇ ~\n◇ hr\n");
+        let mut layout = ak::Layout::parse(&text, Path::new("inline.dat")).unwrap();
+        let counts = evaluate(&corpus(b"hr", 3), &layout);
+
+        layout.slots[0].label = "\"\\\n\t".into();
+        let report = counts.report_json(&layout);
+        let Json::Object(root) = parse_json(&report).unwrap() else {
+            panic!("expected report object");
+        };
+        let Some(Json::Array(labels)) = root.get("keys") else {
+            panic!("expected key labels");
+        };
+
+        assert_eq!(labels.len(), layout.slots.len());
+        for (value, slot) in labels.iter().zip(&layout.slots) {
+            let Json::String(label) = value else {
+                panic!("expected string label");
+            };
+            assert_eq!(label, &slot.label);
+        }
+        assert!(report.contains("\"◇\""));
+    }
+
     fn cache(text: &[u8], order: usize, weight: f64) -> String {
         let tables = ak::text_ngrams(text);
         let names = ["letters", "bigrams", "trigrams", "fourgrams", "fivegrams"];
@@ -1013,15 +1584,18 @@ mod tests {
         out.push('}');
         out
     }
+
     fn corpus(text: &[u8], order: usize) -> NgramCorpus {
         NgramCorpus::from_text(&cache(text, order, 1.0), Path::new("cache.json")).unwrap()
     }
+
     fn evaluate(c: &NgramCorpus, l: &ak::Layout) -> Counts {
         c.evaluate(l, &AtomicBool::new(false), &AtomicU64::new(0), |_, _, _| {
             0.0
         })
         .unwrap()
     }
+
     fn key(l: &ak::Layout, label: &str) -> usize {
         l.slots.iter().position(|s| s.label == label).unwrap()
     }
@@ -1194,7 +1768,7 @@ mod tests {
             } else {
                 std::array::from_fn(|_| next() + 1.0)
             };
-            let weights = Weights(std::array::from_fn(|_| next() * 0.01 - 0.5));
+            let weights = Weights::new(std::array::from_fn(|_| next() * 0.01 - 0.5));
             let corpus = Corpus {
                 name: String::new(),
                 grams: Vec::new(),
@@ -1218,5 +1792,422 @@ mod tests {
                 assert_eq!(fast.sfb <= cap + 1e-10, reference.v[SFB] <= cap + 1e-10);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod detailed_mapping_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    const BASE: &str =
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+
+    fn contexts(order: usize) -> NgramCorpus {
+        let mut texts = BTreeSet::new();
+        for text in [
+            b"qqqqu".as_slice(),
+            b"qu!qu",
+            b"q qu",
+            b"i'i'a",
+            b"hrhnr",
+            b"thqeq",
+            b"h!nr",
+            b"aa\0aa",
+            b"u'u'a",
+            b"qquaa",
+        ] {
+            for len in 1..=text.len().min(order) {
+                texts.insert(text[..len].to_vec());
+            }
+        }
+        let mut seed = 29u64;
+        let alphabet = b"quaei' !\0";
+        for _ in 0..120 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let len = 1 + (seed >> 32) as usize % order;
+            let mut text = Vec::new();
+            for _ in 0..len {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                text.push(alphabet[(seed >> 32) as usize % alphabet.len()]);
+            }
+            texts.insert(text);
+        }
+        let windows: Vec<_> = texts
+            .into_iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let mut bytes = [0; 5];
+                bytes[..text.len()].copy_from_slice(&text);
+                Window {
+                    bytes,
+                    len: text.len(),
+                    weight: [0.1, 1.0 / 3.0, 7.0, 1_000_000.25][index % 4],
+                }
+            })
+            .collect();
+
+        NgramCorpus {
+            name: "inline".into(),
+            order,
+            warnings: Vec::new(),
+            windows: windows.into(),
+        }
+    }
+
+    fn assert_counts_bits(actual: &Counts, expected: &Counts) {
+        assert_eq!(actual.order, expected.order);
+        for (a, b) in [
+            (&actual.tables[0], &expected.tables[0]),
+            (&actual.tables[1], &expected.tables[1]),
+            (&actual.tables[2], &expected.tables[2]),
+            (&actual.skip, &expected.skip),
+        ] {
+            assert_eq!(a.len(), b.len());
+            for ((a_key, a_count), (b_key, b_count)) in a.iter().zip(b) {
+                assert_eq!(a_key, b_key);
+                assert_eq!(
+                    a_count.to_bits(),
+                    b_count.to_bits(),
+                    "physical keys {a_key:?}"
+                );
+            }
+        }
+        for (a, b) in [
+            (actual.characters, expected.characters),
+            (actual.presses, expected.presses),
+            (actual.action_presses, expected.action_presses),
+            (actual.ignored_characters, expected.ignored_characters),
+        ] {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn detailed_numeric_counts_and_effort_order_match_reference() {
+        // Inline fixtures cover literals, repeat-output, repeat-action, every
+        // rule basis, aliases, nested calls, explicit none, and longer suffixes.
+        for source in crate::action_fast::tests::fixtures() {
+            for order in 3..=5 {
+                let corpus = contexts(order);
+                let mut layout = ak::Layout::parse(&source, Path::new("inline.dat")).unwrap();
+                for swap in [
+                    None,
+                    Some((0, 1)),
+                    Some((2, layout.slots.len() - 1)),
+                    Some((0, 20)),
+                ] {
+                    if let Some((a, b)) = swap {
+                        layout.swap(a, b);
+                    }
+                    for policy in 0..3 {
+                        let actual_calls = RefCell::new(Vec::new());
+                        let reference_calls = RefCell::new(Vec::new());
+                        let effort =
+                            |previous: Option<usize>, last: Option<usize>, key: usize| match policy
+                            {
+                                0 => 0.0,
+                                1 => {
+                                    key as f64 * 0.01
+                                        + last.map_or(0.0, |old| if old == key { 2.0 } else { 0.0 })
+                                        + previous
+                                            .map_or(0.0, |old| if old == key { 1.0 } else { 0.0 })
+                                }
+                                _ => {
+                                    if matches!(layout.slots[key].binding, ak::Binding::Named(_)) {
+                                        -1.0
+                                    } else {
+                                        0.0
+                                    }
+                                }
+                            };
+                        let actual_progress = AtomicU64::new(0);
+                        let reference_progress = AtomicU64::new(0);
+                        let stop = AtomicBool::new(false);
+                        let actual = corpus
+                            .evaluate(&layout, &stop, &actual_progress, |a, b, k| {
+                                actual_calls.borrow_mut().push((a, b, k));
+                                effort(a, b, k)
+                            })
+                            .unwrap();
+                        let expected = corpus
+                            .evaluate_reference(&layout, &stop, &reference_progress, |a, b, k| {
+                                reference_calls.borrow_mut().push((a, b, k));
+                                effort(a, b, k)
+                            })
+                            .unwrap();
+
+                        assert_counts_bits(&actual, &expected);
+                        assert_eq!(*actual_calls.borrow(), *reference_calls.borrow());
+                        assert_eq!(actual_progress.load(Ordering::Relaxed), 100);
+                        assert_eq!(reference_progress.load(Ordering::Relaxed), 100);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detailed_numeric_errors_cancellation_and_capacity_match_reference() {
+        let corpus = contexts(3);
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        for suffix in [
+            "outer-left: ~ @m ~\naction m = text \"ab\"\n",
+            "outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n",
+        ] {
+            let layout =
+                ak::Layout::parse(&format!("{BASE}{suffix}"), Path::new("inline.dat")).unwrap();
+            assert_eq!(
+                corpus
+                    .evaluate(&layout, &stop, &progress, |_, _, _| 0.0)
+                    .unwrap_err(),
+                corpus
+                    .evaluate_reference(&layout, &stop, &progress, |_, _, _| 0.0)
+                    .unwrap_err(),
+            );
+        }
+        let mut layout = ak::Layout::parse(BASE, Path::new("inline.dat")).unwrap();
+        for invalid in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                corpus
+                    .evaluate(&layout, &stop, &progress, |_, _, _| invalid)
+                    .unwrap_err(),
+                corpus
+                    .evaluate_reference(&layout, &stop, &progress, |_, _, _| invalid)
+                    .unwrap_err(),
+            );
+        }
+        let cancelled = AtomicBool::new(true);
+        assert_eq!(
+            corpus
+                .evaluate(&layout, &cancelled, &progress, |_, _, _| 0.0)
+                .unwrap_err(),
+            corpus
+                .evaluate_reference(&layout, &cancelled, &progress, |_, _, _| 0.0)
+                .unwrap_err(),
+        );
+
+        // Preserve valid programmatically built layouts beyond the numeric cap.
+        while layout.slots.len() <= 60 {
+            layout.slots.push(layout.slots[0].clone());
+        }
+        let actual = corpus
+            .evaluate(&layout, &stop, &progress, |_, _, key| -(key as f64))
+            .unwrap();
+        let expected = corpus
+            .evaluate_reference(&layout, &stop, &progress, |_, _, key| -(key as f64))
+            .unwrap();
+        assert_counts_bits(&actual, &expected);
+    }
+
+    #[test]
+    fn detailed_terminal_depth_limits_match_reference() {
+        let corpus = contexts(5);
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        for depth in [30, 31, 32, 33] {
+            let mut source = format!("{BASE}outer-left: ~ @m0 ~\n");
+            for id in 0..depth {
+                if id + 1 == depth {
+                    source.push_str(&format!("action m{id} = repeat-output\n"));
+                } else {
+                    // Preserve the bound root's delegation; text-magic helper
+                    // actions remain unbound and keep their own fallbacks.
+                    let basis = if id == 0 { "output-magic" } else { "magic" };
+                    source.push_str(&format!(
+                        "action m{id} = {basis}\nfallback m{id} = @m{}\n",
+                        id + 1
+                    ));
+                }
+            }
+            let layout = ak::Layout::parse(&source, Path::new("inline.dat")).unwrap();
+            let effort = |_: Option<usize>, _: Option<usize>, key: usize| {
+                if matches!(layout.slots[key].binding, ak::Binding::Named(_)) {
+                    -1.0
+                } else {
+                    0.0
+                }
+            };
+            let actual = corpus.evaluate(&layout, &stop, &progress, &effort).unwrap();
+            let expected = corpus
+                .evaluate_reference(&layout, &stop, &progress, &effort)
+                .unwrap();
+            assert_counts_bits(&actual, &expected);
+        }
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+
+    fn text_tables(text: &[u8]) -> [BTreeMap<Vec<u8>, f64>; 5] {
+        let counts = ak::text_ngrams(text);
+        std::array::from_fn(|i| {
+            counts[i]
+                .iter()
+                .map(|(gram, count)| (gram.clone(), *count as f64))
+                .collect()
+        })
+    }
+
+    fn cached_text(text: &[u8]) -> String {
+        let names = ["letters", "bigrams", "trigrams", "fourgrams", "fivegrams"];
+        let tables = text_tables(text);
+        let fields: Vec<_> = tables
+            .iter()
+            .zip(names)
+            .map(|(table, name)| {
+                let grams: Vec<_> = table
+                    .iter()
+                    .map(|(gram, count)| format!("{}:{count}", ak::quote(gram)))
+                    .collect();
+                format!("\"{name}\":{{{}}}", grams.join(","))
+            })
+            .collect();
+        format!("{{{}}}", fields.join(","))
+    }
+
+    fn window_bits(corpus: &NgramCorpus) -> Vec<([u8; 5], usize, u64)> {
+        corpus
+            .windows
+            .iter()
+            .map(|window| (window.bytes, window.len, window.weight.to_bits()))
+            .collect()
+    }
+
+    #[test]
+    fn unlimited_and_unreached_limits_preserve_context_bits_and_order() {
+        let text = cached_text(b"abcabcabc\nxbcxbc\nybc\n");
+        let original = NgramCorpus::from_text(&text, Path::new("inline.json")).unwrap();
+        for limits in [
+            NgramLimits::default(),
+            NgramLimits {
+                trigrams: Some(2000),
+                tetragrams: Some(2000),
+                pentagrams: Some(2000),
+            },
+        ] {
+            let actual =
+                NgramCorpus::from_text_with_limits(&text, Path::new("inline.json"), limits)
+                    .unwrap();
+            assert_eq!(window_bits(&actual), window_bits(&original));
+            assert!(actual.warnings.is_empty());
+            assert_eq!(actual.order, original.order);
+        }
+    }
+
+    #[test]
+    fn each_cap_is_a_hard_limit_and_higher_contexts_keep_their_suffix() {
+        let original = text_tables(b"abcabcabc\nxbcxbc\nybc\n");
+        let stop = AtomicBool::new(false);
+        for caps in [
+            [None, None, Some(1), None, None],
+            [None, None, None, Some(1), None],
+            [None, None, None, None, Some(1)],
+            [None, None, Some(2), Some(1), Some(1)],
+        ] {
+            let mut tables = original.clone();
+            let warnings = limit_context_tables(&mut tables, 5, caps, &stop).unwrap();
+            assert_eq!(tables[..2], original[..2]);
+            assert!(!warnings.is_empty());
+            for i in 2..5 {
+                if let Some(cap) = caps[i] {
+                    assert!(tables[i].len() <= cap);
+                }
+                for gram in tables[i].keys() {
+                    assert!(tables[i - 1].contains_key(&gram[1..]));
+                }
+            }
+            let windows = weighted_contexts(&tables, 5, &stop, true).unwrap();
+            let actual: f64 = windows.iter().map(|window| window.weight).sum();
+            let expected: f64 = original[0].values().sum();
+            assert_eq!(actual.to_bits(), expected.to_bits());
+        }
+    }
+
+    #[test]
+    fn ties_use_lexical_order_and_can_empty_higher_tables() {
+        let text = cached_text(b"abc\nxbcde\n");
+        let limits = NgramLimits {
+            trigrams: Some(1),
+            ..NgramLimits::default()
+        };
+        let corpus =
+            NgramCorpus::from_text_with_limits(&text, Path::new("inline.json"), limits).unwrap();
+        assert_eq!(corpus.order, 5);
+        assert!(corpus
+            .windows
+            .iter()
+            .filter(|window| window.len >= 3)
+            .all(|window| window.text() == b"abc"));
+        assert!(corpus
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("5-grams: 0/1")));
+        assert_eq!(
+            corpus
+                .windows
+                .iter()
+                .map(|window| window.weight)
+                .sum::<f64>(),
+            8.0
+        );
+    }
+
+    #[test]
+    fn limited_contexts_preserve_literal_pairs_and_reset_at_gaps() {
+        let text = cached_text(b"ab\tcdab\tcd\nabcdeabcde\n");
+        let limits = NgramLimits {
+            trigrams: Some(1),
+            tetragrams: Some(1),
+            pentagrams: Some(1),
+        };
+        let full = NgramCorpus::from_text(&text, Path::new("inline.json")).unwrap();
+        let limited =
+            NgramCorpus::from_text_with_limits(&text, Path::new("inline.json"), limits).unwrap();
+        let layout = ak::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+            Path::new("inline.dat"),
+        )
+        .unwrap();
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        let effort = |_: Option<usize>, _: Option<usize>, _: usize| 0.0;
+        let full_counts = full.evaluate(&layout, &stop, &progress, effort).unwrap();
+        let limited_counts = limited.evaluate(&layout, &stop, &progress, effort).unwrap();
+
+        assert_eq!(limited_counts.tables[..2], full_counts.tables[..2]);
+        assert_eq!(limited_counts.ignored_characters, 2.0);
+        assert_eq!(limited_counts.presses, full_counts.presses);
+        assert_eq!(
+            limited_counts.ignored_characters,
+            full_counts.ignored_characters
+        );
+        assert!(limited
+            .windows
+            .iter()
+            .any(|window| window.text().contains(&0)));
+    }
+
+    #[test]
+    fn limits_do_not_hide_invalid_original_frequencies_or_missing_suffixes() {
+        let limits = NgramLimits {
+            trigrams: Some(1),
+            ..NgramLimits::default()
+        };
+        let text = cached_text(b"abcabc\nxbc\n");
+        let inconsistent = text.replace("\"xbc\":1", "\"xbc\":100");
+        assert_ne!(text, inconsistent);
+        let error =
+            NgramCorpus::from_text_with_limits(&inconsistent, Path::new("inline.json"), limits)
+                .unwrap_err();
+        assert!(error.contains("inconsistent"));
+
+        let missing = text.replace("\"xbc\":1", "\"xyz\":1");
+        let error = NgramCorpus::from_text_with_limits(&missing, Path::new("inline.json"), limits)
+            .unwrap_err();
+        assert!(error.contains("suffix missing"));
     }
 }

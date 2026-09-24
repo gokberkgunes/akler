@@ -1,5 +1,6 @@
 //! Opt-in search instrumentation. Const parameters remove hot-loop hooks when off.
 use std::io::{self, Write};
+
 use std::time::{Duration, Instant};
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -33,6 +34,7 @@ pub(crate) struct MappingCounts {
     pub terminal_repeat: u64,
     pub terminal_depth_rejected: u64,
 }
+
 #[derive(Default)]
 pub(crate) struct Profile {
     pub total: Duration,
@@ -63,6 +65,7 @@ pub(crate) struct Profile {
     pub rebases: u64,
     pub ops: MappingCounts,
 }
+
 #[inline]
 pub(crate) fn clock<const ON: bool>() -> Option<Instant> {
     if ON {
@@ -71,6 +74,7 @@ pub(crate) fn clock<const ON: bool>() -> Option<Instant> {
         None
     }
 }
+
 #[inline]
 pub(crate) fn elapsed<const ON: bool>(start: Option<Instant>) -> Duration {
     if ON {
@@ -79,6 +83,7 @@ pub(crate) fn elapsed<const ON: bool>(start: Option<Instant>) -> Duration {
         Duration::ZERO
     }
 }
+
 impl Profile {
     fn accounted(&self) -> Duration {
         self.setup
@@ -89,6 +94,7 @@ impl Profile {
             + self.commit
             + self.rebase
     }
+
     pub(crate) fn report(
         &self,
         out: &mut impl Write,
@@ -182,10 +188,10 @@ impl Profile {
             "Changed context tails: {}; rebases: {}",
             self.changed, self.rebases
         )?;
-        writeln!(out,"Operations (candidate mapping only): action resolutions {}; recursive {}; suffix checks {}; effort lookups {}; effort comparisons {}",
-            self.ops.resolutions,self.ops.recursive,self.ops.suffix_checks,self.ops.effort_lookups,self.ops.effort_comparisons)?;
-        writeln!(out,"Suffix-index lookups {}; terminal-call shortcuts {} (suffix checks now count longer packed comparisons)",self.ops.suffix_index_lookups,self.ops.terminal_shortcuts)?;
-        writeln!(out,"Mapper positions: newly processed {}; prefix reused {} (reused positions perform no action attempts)",self.ops.positions_processed,self.ops.positions_reused)?;
+        writeln!(out, "Operations (candidate mapping only): action resolutions {}; recursive {}; suffix checks {}; effort lookups {}; effort comparisons {}",
+            self.ops.resolutions, self.ops.recursive, self.ops.suffix_checks, self.ops.effort_lookups, self.ops.effort_comparisons)?;
+        writeln!(out, "Suffix-index lookups {}; terminal-call shortcuts {} (suffix checks now count longer packed comparisons)", self.ops.suffix_index_lookups, self.ops.terminal_shortcuts)?;
+        writeln!(out, "Mapper positions: newly processed {}; prefix reused {} (reused positions perform no action attempts)", self.ops.positions_processed, self.ops.positions_reused)?;
         writeln!(
             out,
             "Action-key attempts: {}; no output {}; target mismatch {}; target match {}",
@@ -194,8 +200,8 @@ impl Profile {
             self.ops.action_mismatch,
             self.ops.action_matches
         )?;
-        writeln!(out,"Matching action outcomes: effort loss {} (includes ties and displaced leaders); final winner {}; non-finite effort {}",self.ops.action_effort_losses,self.ops.action_winners,self.ops.action_nonfinite_effort)?;
-        writeln!(out,"Text resolution paths: TextOne {}; longer-suffix index {} (includes nested resolutions; not extra action attempts)",self.ops.text_one,self.ops.text_longer)?;
+        writeln!(out, "Matching action outcomes: effort loss {} (includes ties and displaced leaders); final winner {}; non-finite effort {}", self.ops.action_effort_losses, self.ops.action_winners, self.ops.action_nonfinite_effort)?;
+        writeln!(out, "Text resolution paths: TextOne {}; longer-suffix index {} (includes nested resolutions; not extra action attempts)", self.ops.text_one, self.ops.text_longer)?;
         for (name, counts) in [
             (
                 "TextOne -> repeat-output terminal",
@@ -212,16 +218,20 @@ impl Profile {
                 counts[0], counts[1], counts[2]
             )?;
         }
-        writeln!(out,"TextOne cross-counts classify root table selections; nested calls do not reclassify an attempt. Matches are counted before effort selection.")?;
-        writeln!(out,"Terminal shortcuts by type: none {}; byte {}; repeat-output {}; depth rejected {} (subset of types)",self.ops.terminal_none,self.ops.terminal_byte,self.ops.terminal_repeat,self.ops.terminal_depth_rejected)?;
-        writeln!(out,"Outcome counts cover attempted physical action keys, not recursive calls. On mapping error, the unfinished position may have an unclassified leader.")?;
+        writeln!(out, "TextOne cross-counts classify root table selections; nested calls do not reclassify an attempt. Matches are counted before effort selection.")?;
+        writeln!(out, "Terminal shortcuts by type: none {}; byte {}; repeat-output {}; depth rejected {} (subset of types)", self.ops.terminal_none, self.ops.terminal_byte, self.ops.terminal_repeat, self.ops.terminal_depth_rejected)?;
+        writeln!(out, "Outcome counts cover attempted physical action keys, not recursive calls. On mapping error, the unfinished position may have an unclassified leader.")?;
         if detailed {
-            writeln!(out,"Nested context timers (NOT additive to phases): mapping {:.3} s; contribution updates {:.3} s",self.mapping.as_secs_f64(),self.contributions.as_secs_f64())?;
-            writeln!(out,"Mapping alone average: {:.1} ns/context; per-context clock overhead is included in context phase",if self.mapped>0{self.mapping.as_secs_f64()*1e9/self.mapped as f64}else{0.0})?;
+            writeln!(out, "Nested context timers (NOT additive to phases): mapping {:.3} s; contribution updates {:.3} s", self.mapping.as_secs_f64(), self.contributions.as_secs_f64())?;
+            writeln!(out, "Mapping alone average: {:.1} ns/context; per-context clock overhead is included in context phase", if self.mapped>0 {
+                self.mapping.as_secs_f64()*1e9 / self.mapped as f64
+            } else {
+                0.0
+            })?;
         } else {
-            writeln!(out,"Mapping/contribution split not timed at level 1; use LAYOUTER_PROFILE=2. Action/suffix/effort internals are counts only.")?;
+            writeln!(out, "Mapping/contribution split not timed at level 1; use LAYOUTER_PROFILE=2. Action/suffix/effort internals are counts only.")?;
         }
-        writeln!(out,"Phases sum to total before rounding. UI runs concurrently; other is worker overhead, not UI CPU time.")
+        writeln!(out, "Phases sum to total before rounding. UI runs concurrently; other is worker overhead, not UI CPU time.")
     }
 }
 
@@ -236,7 +246,8 @@ mod tests {
         profile.contexts = Duration::from_secs(5);
         profile.commit = Duration::from_secs(1);
         profile.rebase = Duration::from_secs(1);
-        profile.named_time = Duration::from_secs(6); // Overlapping subset, not added.
+        profile.named_time = Duration::from_secs(6);
+        // Overlapping subset, not added.
         assert_eq!(profile.accounted(), Duration::from_secs(8));
         let mut out = Vec::new();
         profile.report(&mut out, "completed", false).unwrap();

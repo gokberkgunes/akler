@@ -1,0 +1,203 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// magic keys
+//   ★   default repeat
+//         ★ ->
+//         a★ -> ay
+//         h★ -> hy
+//         n★ -> n'
+//         r★ -> rl
+//         u★ -> u'
+//         y★ -> y.
+//
+// adaptive swaps
+//   after u, the next i and o trade places
+//   after i, the next h and o trade places
+//   after d, the next t and , trade places
+//   after s, the next d and , trade places
+//   after t, the next d and , trade places
+//
+{
+    "layout": {
+        "fingers": [
+            "k ★ f b w j ' u o y",
+            "t m s d g x r i a h ?",
+            "q v p c , l n . ; z",
+        ],
+        "thumbs": ["space", "e"],
+    },
+    "fingermap": [
+        "0 1 2 2 3 6 6 7 8 9",
+        "0 1 2 3 3 6 6 7 8 9 9",
+        "0 1 3 3 3 6 6 7 8 9",
+    ],
+    "board": {
+        "isRowStaggered": true,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0.25, 0.75],
+    },
+    "layers": null,
+    "magic": {
+        "magicKeys": [],
+        "rules": [
+            {
+                "inputs": "a★",
+                "output": "ay",
+            },
+            {
+                "inputs": "b★",
+                "output": "bb",
+            },
+            {
+                "inputs": "c★",
+                "output": "cc",
+            },
+            {
+                "inputs": "d★",
+                "output": "dd",
+            },
+            {
+                "inputs": "e★",
+                "output": "ee",
+            },
+            {
+                "inputs": "f★",
+                "output": "ff",
+            },
+            {
+                "inputs": "g★",
+                "output": "gg",
+            },
+            {
+                "inputs": "h★",
+                "output": "hy",
+            },
+            {
+                "inputs": "i★",
+                "output": "ii",
+            },
+            {
+                "inputs": "j★",
+                "output": "jj",
+            },
+            {
+                "inputs": "k★",
+                "output": "kk",
+            },
+            {
+                "inputs": "l★",
+                "output": "ll",
+            },
+            {
+                "inputs": "m★",
+                "output": "mm",
+            },
+            {
+                "inputs": "n★",
+                "output": "n'",
+            },
+            {
+                "inputs": "o★",
+                "output": "oo",
+            },
+            {
+                "inputs": "p★",
+                "output": "pp",
+            },
+            {
+                "inputs": "q★",
+                "output": "qq",
+            },
+            {
+                "inputs": "r★",
+                "output": "rl",
+            },
+            {
+                "inputs": "s★",
+                "output": "ss",
+            },
+            {
+                "inputs": "t★",
+                "output": "tt",
+            },
+            {
+                "inputs": "u★",
+                "output": "u'",
+            },
+            {
+                "inputs": "v★",
+                "output": "vv",
+            },
+            {
+                "inputs": "w★",
+                "output": "ww",
+            },
+            {
+                "inputs": "x★",
+                "output": "xx",
+            },
+            {
+                "inputs": "y★",
+                "output": "y.",
+            },
+            {
+                "inputs": "z★",
+                "output": "zz",
+            },
+            {
+                "inputs": ".★",
+                "output": "..",
+            },
+            {
+                "inputs": "ui",
+                "output": "uo",
+            },
+            {
+                "inputs": "uo",
+                "output": "ui",
+            },
+            {
+                "inputs": "ih",
+                "output": "io",
+            },
+            {
+                "inputs": "io",
+                "output": "ih",
+            },
+            {
+                "inputs": "dt",
+                "output": "d,",
+            },
+            {
+                "inputs": "d,",
+                "output": "dt",
+            },
+            {
+                "inputs": "sd",
+                "output": "s,",
+            },
+            {
+                "inputs": "s,",
+                "output": "sd",
+            },
+            {
+                "inputs": "td",
+                "output": "t,",
+            },
+            {
+                "inputs": "t,",
+                "output": "td",
+            },
+            {
+                "inputs": "ey",
+                "output": "eu",
+            },
+            {
+                "inputs": "eu",
+                "output": "ey",
+            },
+        ],
+    },
+}
