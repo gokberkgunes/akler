@@ -1,4 +1,5 @@
-const APP_CONFIG_FILE: &str = "layouter.conf";
+const APP_CONFIG_FILE: &str = "akler.conf";
+const LEGACY_CONFIG_FILE: &str = "layouter.conf";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct NgramLimits {
@@ -183,11 +184,19 @@ fn load_legacy_config() -> AppResult<AppConfig> {
 }
 
 fn load_app_config() -> AppResult<AppConfig> {
-    match read_optional_config(Path::new(APP_CONFIG_FILE))? {
-        Some(text) => parse_app_config(&text)
-            .map_err(|error| format!("{APP_CONFIG_FILE}: {error}").into()),
+    match read_active_config()? {
+        Some((name, text)) => parse_app_config(&text)
+            .map_err(|error| format!("{name}: {error}").into()),
         None => load_legacy_config(),
     }
+}
+
+fn read_active_config() -> AppResult<Option<(&'static str, String)>> {
+    if let Some(text) = read_optional_config(Path::new(APP_CONFIG_FILE))? {
+        return Ok(Some((APP_CONFIG_FILE, text)));
+    }
+    Ok(read_optional_config(Path::new(LEGACY_CONFIG_FILE))?
+        .map(|text| (LEGACY_CONFIG_FILE, text)))
 }
 
 fn rank_config_text(hidden: &[bool; RANK_COUNT]) -> String {
@@ -212,7 +221,7 @@ fn rolls_config_text(rolls: RollSettings) -> String {
 fn app_config_text(config: &AppConfig) -> String {
     let limit = |value: Option<usize>| value.map(|v| v.to_string()).unwrap_or_else(|| "all".into());
     format!(
-        "# layouter configuration; see doc/USAGE.md.\n\
+        "# akler configuration; see doc/USAGE.md.\n\
          # Missing settings use built-in defaults. Limits other than all are approximate.\n\n\
          [weights]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
          [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\n",
@@ -293,11 +302,11 @@ fn replace_config_section(text: &str, section: &str, replacement: &str) -> AppRe
 }
 
 fn save_config_sections(sections: &[(&str, String)]) -> AppResult<()> {
-    let mut text = match read_optional_config(Path::new(APP_CONFIG_FILE))? {
-        Some(text) => text,
-        None => app_config_text(&load_legacy_config()?),
+    let (source, mut text) = match read_active_config()? {
+        Some((name, text)) => (name, text),
+        None => (APP_CONFIG_FILE, app_config_text(&load_legacy_config()?)),
     };
-    parse_app_config(&text).map_err(|error| format!("{APP_CONFIG_FILE}: {error}"))?;
+    parse_app_config(&text).map_err(|error| format!("{source}: {error}"))?;
 
     for (section, replacement) in sections {
         text = replace_config_section(&text, section, replacement)?;

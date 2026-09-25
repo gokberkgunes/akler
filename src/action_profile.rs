@@ -229,7 +229,7 @@ impl Profile {
                 0.0
             })?;
         } else {
-            writeln!(out, "Mapping/contribution split not timed at level 1; use LAYOUTER_PROFILE=2. Action/suffix/effort internals are counts only.")?;
+            writeln!(out, "Mapping/contribution split not timed at level 1; use AKLER_PROFILE=2. Action/suffix/effort internals are counts only.")?;
         }
         writeln!(out, "Phases sum to total before rounding. UI runs concurrently; other is worker overhead, not UI CPU time.")
     }

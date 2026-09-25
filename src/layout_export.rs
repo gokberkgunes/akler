@@ -65,7 +65,7 @@ fn temporary_file(path: &Path, suffix: &str) -> io::Result<(PathBuf, File)> {
     for _ in 0..1000 {
         let serial = SAVE_SERIAL.fetch_add(1, Ordering::Relaxed);
         let name = format!(
-            ".layouter-{}-{}-{serial}.{suffix}",
+            ".akler-{}-{}-{serial}.{suffix}",
             std::process::id(),
             crate::timestamp()
         );
@@ -277,7 +277,7 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                     "board",
                     "layers",
                     "magic",
-                    "layouter",
+                    "akler",
                 ],
                 (_, "layout") => &["fingers", "thumbs"],
                 (_, "board") => &[
@@ -288,7 +288,7 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                 ],
                 (_, "magic") => &["magicKeys", "rules"],
                 (_, "rule") => &["inputs", "output"],
-                (_, "layouter") => &[
+                (_, "akler") => &[
                     "version",
                     "actions",
                     "labels",
@@ -377,7 +377,7 @@ fn simple_jsonc(
                 .join(" ");
         }
     }
-    let remove_extension = if let Some(Json::Object(native)) = simple.get_mut("layouter") {
+    let remove_extension = if let Some(Json::Object(native)) = simple.get_mut("akler") {
         native.remove("actions");
         native.remove("labels");
         native.len() == 1
@@ -385,7 +385,7 @@ fn simple_jsonc(
         false
     };
     if remove_extension {
-        simple.remove("layouter");
+        simple.remove("akler");
     }
 
     let rules = rules
@@ -714,7 +714,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         ]),
     );
     if native.len() > 1 {
-        root.insert("layouter".into(), Json::Object(native));
+        root.insert("akler".into(), Json::Object(native));
     }
 
     if let Some(text) = simple_jsonc(&root, &layout, &needed) {
@@ -786,10 +786,13 @@ fn native_emission(value: &Json) -> Result<String> {
 pub(crate) fn native_action_dat(
     root: &BTreeMap<String, Json>,
 ) -> Result<(String, BTreeMap<String, String>)> {
-    let Some(native) = root.get("layouter") else {
+    if root.contains_key("akler") && root.contains_key("layouter") {
+        return Err("layout cannot contain both akler and layouter extensions".into());
+    }
+    let Some(native) = root.get("akler").or_else(|| root.get("layouter")) else {
         return Ok((String::new(), BTreeMap::new()));
     };
-    let native = expect_object(native, "layouter")?;
+    let native = expect_object(native, "akler")?;
     allowed(
         native,
         &[
@@ -799,15 +802,15 @@ pub(crate) fn native_action_dat(
             "rowOffsets",
             "columnOrigins",
         ],
-        "layouter",
+        "akler",
     )?;
     if !matches!(native.get("version"), Some(Json::Number(1.0))) {
-        return Err("layouter.version must be 1".into());
+        return Err("akler.version must be 1".into());
     }
     let mut dat = String::new();
     let mut names = std::collections::BTreeSet::new();
     if let Some(actions) = native.get("actions") {
-        for (name, value) in expect_object(actions, "layouter.actions")? {
+        for (name, value) in expect_object(actions, "akler.actions")? {
             validate_name(name)?;
             names.insert(name.clone());
             let value = expect_object(value, "native action")?;
@@ -862,7 +865,7 @@ pub(crate) fn native_action_dat(
     }
     let mut labels = BTreeMap::new();
     if let Some(value) = native.get("labels") {
-        for (name, value) in expect_object(value, "layouter.labels")? {
+        for (name, value) in expect_object(value, "akler.labels")? {
             if !names.contains(name) {
                 return Err(format!("native label refers to undefined action @{name}"));
             }
@@ -875,22 +878,22 @@ pub(crate) fn native_action_dat(
     }
     if let Some(value) = native.get("rowOffsets") {
         let Json::Array(values) = value else {
-            return Err("layouter.rowOffsets must contain three numeric values".into());
+            return Err("akler.rowOffsets must contain three numeric values".into());
         };
         if values.len() != 3 {
-            return Err("layouter.rowOffsets must contain three numeric values".into());
+            return Err("akler.rowOffsets must contain three numeric values".into());
         }
         let mut numbers = Vec::new();
         for value in values {
             let Json::Number(value) = value else {
-                return Err("layouter.rowOffsets must contain three numeric values".into());
+                return Err("akler.rowOffsets must contain three numeric values".into());
             };
             numbers.push(value.to_string());
         }
         if let Some(Json::Object(board)) = root.get("board") {
             if matches!(board.get("isRowStaggered"), Some(Json::Bool(true))) {
                 return Err(
-                    "layouter.rowOffsets is only for layouts whose board specifies column stagger"
+                    "akler.rowOffsets is only for layouts whose board specifies column stagger"
                         .into(),
                 );
             }
@@ -943,7 +946,7 @@ mod tests {
         assert!(text.contains("        \"thumbs\": [\"space\", \"\"],\n"));
         assert!(text.contains("    \"fingermap\": [\n        \"0 1 2 3 3 6 6 7 8 9\",\n"));
         assert!(text.contains("        \"rowOrColumnStagger\": [0, 0.25, 0.75],\n"));
-        assert!(!text.contains("\"layouter\""));
+        assert!(!text.contains("\"akler\""));
 
         let fields = ["layout", "fingermap", "board", "layers", "magic"];
         let positions = fields.map(|field| text.find(&format!("    \"{field}\":")).unwrap());
@@ -968,7 +971,7 @@ mod tests {
                     layout.swap(5, 25);
                 }
                 let text = jsonc_text(&layout).unwrap();
-                assert!(!text.contains("\"layouter\""), "{text}");
+                assert!(!text.contains("\"akler\""), "{text}");
                 assert!(!text.contains("\"actions\""));
                 assert!(text.contains(&format!("\"inputs\": \"h{marker}\"")));
                 assert!(text.contains("\"output\": \"hr\""));
@@ -997,7 +1000,7 @@ mod tests {
         );
         let layout = Layout::parse(&source, Path::new("inline")).unwrap();
         let text = jsonc_text(&layout).unwrap();
-        assert!(!text.contains("\"layouter\""));
+        assert!(!text.contains("\"akler\""));
         let restored = Layout::parse(&text, Path::new("round")).unwrap();
         let tables = crate::action_keys::text_ngrams(b"hr hrr aa a' zz zzz ju jn yu y, q!qq");
         let names = ["letters", "bigrams", "trigrams", "fourgrams", "fivegrams"];
@@ -1055,7 +1058,7 @@ mod tests {
             let layout =
                 Layout::parse(&format!("{rows}{definitions}"), Path::new("inline")).unwrap();
             let text = jsonc_text(&layout).unwrap();
-            assert!(text.contains("\"layouter\""), "{text}");
+            assert!(text.contains("\"akler\""), "{text}");
             let restored = Layout::parse(&text, Path::new("round")).unwrap();
             assert_eq!(restored.slots, layout.slots);
             assert_eq!(restored.actions, layout.actions);
@@ -1068,7 +1071,7 @@ mod tests {
         let mut layout = Layout::parse(&source, Path::new("inline")).unwrap();
         layout.slots[0].binding = Binding::Text(b"n".to_vec());
         let text = jsonc_text(&layout).unwrap();
-        assert!(text.contains("\"layouter\""));
+        assert!(text.contains("\"akler\""));
         let restored = Layout::parse(&text, Path::new("round")).unwrap();
         assert_eq!(restored.slots, layout.slots);
         assert_eq!(restored.actions, layout.actions);
@@ -1135,7 +1138,7 @@ mod tests {
 
     fn test_directory() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "layouter-pair-test-{}-{}",
+            "akler-pair-test-{}-{}",
             std::process::id(),
             crate::timestamp()
         ));

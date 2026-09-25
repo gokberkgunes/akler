@@ -14,7 +14,7 @@ companions with different bindings, rules, or geometry remain separate layouts.
 
 ## Configuration
 
-Edit the commented [layouter.conf](../layouter.conf) in the current directory:
+Edit the commented [akler.conf](../akler.conf) in the current directory:
 
 | Section | Contents |
 |---|---|
@@ -31,9 +31,11 @@ while preserving comments and other settings. Unknown/duplicate sections or keys
 empty values, and invalid numbers are errors. Layout rules and geometry remain
 in each layout file; normalization remains in each corpus's `.config.json`.
 
-Legacy `optimizer-weights.conf`, `optimizer-search.conf`, and
-`ranker-columns.conf` are read only when `layouter.conf` is absent. The first TUI
-configuration save then migrates the loaded legacy values to the unified file.
+An existing `layouter.conf` is read when `akler.conf` is absent. The first TUI
+configuration save copies its settings to `akler.conf`. Older
+`optimizer-weights.conf`, `optimizer-search.conf`, and `ranker-columns.conf`
+are read only when neither unified file exists. The first TUI configuration
+save then migrates those values to `akler.conf`.
 To migrate manually, copy the old weight/search entries under `[weights]`/`[search]`, and
 put the old column list after `columns =` under `[ranker]`. Once the unified file
 exists, legacy files are not merged into it. All n-gram limits default to `all`,
@@ -59,7 +61,7 @@ change roll credit and can change optimizer decisions. They do not change
 how magic keys type the corpus or how other metrics are classified.
 
 Filters check consecutive pairs AB and BC, not skip pair AC. They use
-layouter's full/half-scissor and lateral-stretch definitions. Those movement
+akler's full/half-scissor and lateral-stretch definitions. Those movement
 classifiers exclude thumb pairs; when thumbs are enabled, a main-finger pair
 within the same trigram can still veto its roll. Thumb is inward of index.
 
@@ -77,10 +79,10 @@ records include the active `[rolls]` settings.
 ## Ranker and editor
 
 ```sh
-./target/release/layouter ranker CORPUS.json
-./target/release/layouter editor LAYOUT CORPUS.json
-./target/release/layouter optimizer LAYOUT CORPUS.json
-./target/release/layouter eval LAYOUT CORPUS.json
+./target/release/akler ranker CORPUS.json
+./target/release/akler editor LAYOUT CORPUS.json
+./target/release/akler optimizer LAYOUT CORPUS.json
+./target/release/akler eval LAYOUT CORPUS.json
 ```
 
 The ranker evaluates ordinary and magic/adaptive layouts with their existing
@@ -90,7 +92,7 @@ weights; hiding a column never removes its score contribution.
 
 Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggle,
 `d` selects compact defaults, `a` selects all, and `s` saves `[ranker] columns` in
-`layouter.conf`. Escape/q cancels. Defaults are
+`akler.conf`. Escape/q cancels. Defaults are
 shared by ordinary and action layouts. Detailed D/C categories and OSF remain
 available without crowding the initial table. The column value accepts
 whitespace-separated metric names (case-insensitive); at least one is required.
@@ -147,9 +149,9 @@ progress. See [layout syntax](LAYOUTS.md) for supported rules.
 Explicit action diagnostics are also available:
 
 ```sh
-./target/release/layouter magic trace LAYOUT "some text"
-./target/release/layouter magic trace-keys LAYOUT "h @"
-./target/release/layouter magic report LAYOUT CORPUS.json report.json
+./target/release/akler magic trace LAYOUT "some text"
+./target/release/akler magic trace-keys LAYOUT "h @"
+./target/release/akler magic report LAYOUT CORPUS.json report.json
 ```
 
 Trace mode is a separate diagnostic and is not a replacement for the bounded
@@ -158,10 +160,10 @@ n-gram evaluation used by the editor, ranker, and optimizer.
 ## Corpora
 
 ```sh
-./target/release/layouter corpus add mycorpus /path/to/input
-./target/release/layouter corpus build mycorpus --order 5
-./target/release/layouter corpus info mycorpus
-./target/release/layouter corpus top mycorpus 3 20
+./target/release/akler corpus add mycorpus /path/to/input
+./target/release/akler corpus build mycorpus --order 5
+./target/release/akler corpus info mycorpus
+./target/release/akler corpus top mycorpus 3 20
 ```
 
 Without a corpus, Editor, Ranker, and Optimizer show setup instructions.
@@ -279,7 +281,7 @@ remains a bounded-context estimate even with `all`.
 
 ## Search settings
 
-Detailed weights live under `[weights]` in `layouter.conf`; definitions/defaults
+Detailed weights live under `[weights]` in `akler.conf`; definitions/defaults
 are in [METRICS.md](METRICS.md). Both ordinary and magic optimizers consume the
 following settings under `[search]` in the same file.
 
@@ -338,9 +340,9 @@ and the binding permutation are compatible.
 ## Profiling
 
 ```sh
-LAYOUTER_PROFILE_LOAD=1 ./target/release/layouter ranker CORPUS.json 2>ranker-load.txt
-LAYOUTER_PROFILE_LOAD=1 ./target/release/layouter editor LAYOUT CORPUS.json 2>load-profile.txt
-LAYOUTER_PROFILE=1 ./target/release/layouter optimizer LAYOUT CORPUS.json 2>search-profile.txt
+AKLER_PROFILE_LOAD=1 ./target/release/akler ranker CORPUS.json 2>ranker-load.txt
+AKLER_PROFILE_LOAD=1 ./target/release/akler editor LAYOUT CORPUS.json 2>load-profile.txt
+AKLER_PROFILE=1 ./target/release/akler optimizer LAYOUT CORPUS.json 2>search-profile.txt
 ```
 
 Reports redirected to a file are written as each operation finishes. Without
@@ -348,7 +350,7 @@ redirection, reports are buffered while the TUI is active and printed to stderr
 after exiting the TUI, once the terminal is restored. This prevents timing text
 from corrupting the screen. Buffered text uses memory only when reports are
 produced; redirect to a file for long profiling sessions. The loading variable
-is `LAYOUTER_PROFILE_LOAD`, not `PROFILE_LOAD`.
+is `AKLER_PROFILE_LOAD`, not `PROFILE_LOAD`.
 
 Menu-driven editor/optimizer loading selects a corpus path and layout before
 preparing the required evaluator. Switching layouts within that chooser reuses
@@ -381,7 +383,7 @@ report to measure startup, first-open latency, and repeated opens locally;
 loading on demand does not eliminate per-layout mapping.
 
 Load profiling reports coarse operation phases; nested operation reports overlap
-and must not be summed. `LAYOUTER_PROFILE=1` enables action-search phase timings
+and must not be summed. `AKLER_PROFILE=1` enables action-search phase timings
 and operation counters, with no per-context clock reads. `=2` additionally times
 each mapping/contribution update and has more overhead. Other values disable it.
 Press Space to start search; one aggregate report is collected at completion or
@@ -411,11 +413,11 @@ weights, method, restarts, passes, annealing steps, seed, caps, and locks identi
 Use profiling **disabled** and restart before each run:
 
 ```sh
-env -u LAYOUTER_PROFILE -u LAYOUTER_PROFILE_LOAD ./target/release/layouter optimizer MAGIC.dat CORPUS.json
-env -u LAYOUTER_PROFILE -u LAYOUTER_PROFILE_LOAD ./target/release/layouter optimizer ORDINARY.dat CORPUS.json
+env -u AKLER_PROFILE -u AKLER_PROFILE_LOAD ./target/release/akler optimizer MAGIC.dat CORPUS.json
+env -u AKLER_PROFILE -u AKLER_PROFILE_LOAD ./target/release/akler optimizer ORDINARY.dat CORPUS.json
 ```
 
-Start search with Space. Repeat with matching `LAYOUTER_PROFILE=1` runs to
+Start search with Space. Repeat with matching `AKLER_PROFILE=1` runs to
 compare candidate/context/action operation counts. Profiling adds overhead, so
 those timings are not the uninstrumented benchmark. A nonzero `seconds` budget
 compares results achieved within a time limit rather than fixed-work runtime;

@@ -17,8 +17,11 @@ pub(crate) struct LoadProfile {
 
 impl LoadProfile {
     pub(crate) fn new(operation: &'static str) -> Self {
-        let enabled =
-            *ENABLED.get_or_init(|| std::env::var("LAYOUTER_PROFILE_LOAD").as_deref() == Ok("1"));
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var("AKLER_PROFILE_LOAD")
+                .or_else(|_| std::env::var("LAYOUTER_PROFILE_LOAD"))
+                .as_deref() == Ok("1")
+        });
         Self::with_enabled(operation, enabled)
     }
 

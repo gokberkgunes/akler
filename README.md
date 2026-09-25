@@ -1,4 +1,4 @@
-# layouter
+# akler
 
 TUI layout ranker, designer, optimizer with magic support.
 For now uses only n-grams, no corpus traversal.
@@ -8,7 +8,7 @@ For now uses only n-grams, no corpus traversal.
 
 ```sh
 cargo build --release
-./target/release/layouter
+./target/release/akler
 ```
 
 This program comes with a corpus. You may generate ngrams from a corpus you
@@ -19,7 +19,7 @@ need.
 Layout files go to `layouts/`. File types are detected from
 their contents. Check examples.
 
-Edit [layouter.conf](layouter.conf) for weights, search settings, ranker
+Edit [akler.conf](akler.conf) for weights, search settings, ranker
 columns,
 
 ## Documentation

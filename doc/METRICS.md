@@ -77,7 +77,7 @@ by default**, and can be included with `[rolls] include_thumbs = true`.
 They exclude repeated fingers, redirects and LRL/RLR alternation. By default,
 scissors, stretches, row changes and off-home placement do not veto a roll.
 Set `include_scissors = false` and/or `include_stretches = false` to filter
-consecutive pairs AB and BC using layouter's movement definitions. Skip AC is
+consecutive pairs AB and BC using akler's movement definitions. Skip AC is
 not a veto. Both detailed and simple mode use the selected filters; neither
 adds an extra row-change filter. Other penalties are still counted normally.
 This optional scissors-plus-stretch filter is stricter in scope than Mana2's
@@ -166,7 +166,7 @@ row separation, so they include scissors and the corresponding other-row
 changes. They must not be added as extra columns to a detailed scissors total.
 
 Numeric geometry does not turn these logical row changes into distance bins.
-Simple mode uses only seven terms, configured in `[search]` in `layouter.conf`:
+Simple mode uses only seven terms, configured in `[search]` in `akler.conf`:
 
 | Setting | Meaning | Default |
 |---|---|---:|
@@ -186,7 +186,7 @@ its SCORE need not equal a simple-mode or mixed-corpus search objective. See
 
 ## Weight configuration
 
-The `[weights]` section of `layouter.conf` accepts `name = nonnegative_number`
+The `[weights]` section of `akler.conf` accepts `name = nonnegative_number`
 and `#` comments. Omitted entries retain defaults; duplicate/unknown names are
 errors. Values must be finite and at most 1,000,000. Lowercase keys are listed
 above. See [configuration and migration](USAGE.md#configuration).

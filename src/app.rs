@@ -349,7 +349,7 @@ fn empty_corpus_help() -> Vec<String> {
         "Editor, Ranker, and Optimizer need a corpus to calculate metrics.".into(),
         "Open Corpora from the main menu and choose Import text corpus.".into(),
         "Or place a text file in corpus/raw/; any filename or extension is accepted.".into(),
-        "From the command line: layouter corpus add NAME /path/to/text".into(),
+        "From the command line: akler corpus add NAME /path/to/text".into(),
     ]
 }
 
@@ -416,7 +416,7 @@ fn corpus_tui(term: &mut Terminal) -> AppResult<()> {
 // when opened; corpus caches and optimizer reports do not become chooser rows.
 fn recognizable_layout(text: &str) -> bool {
     if crate::layout_io::is_json_layout(text) {
-        let fields = ["layout", "fingermap", "layouter"];
+        let fields = ["layout", "fingermap", "akler", "layouter"];
         return match crate::layout_io::parse_jsonc(text) {
             Ok(Json::Object(object)) => fields.iter().any(|field| object.contains_key(*field)),
             Ok(_) => false,
@@ -466,7 +466,7 @@ fn internal_layout_artifact(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name.starts_with(".layouter-") || name.strip_suffix(".bak")
+    name.starts_with(".akler-") || name.starts_with(".layouter-") || name.strip_suffix(".bak")
         .and_then(|name| name.rsplit_once('.'))
         .is_some_and(|(original, stamp)| {
             !original.is_empty() && stamp.len() >= 16 && stamp.bytes().all(|byte| byte.is_ascii_digit())
@@ -621,7 +621,7 @@ fn run() -> AppResult<()> {
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
             "--help"|"-h"|"help" => {
-                println!("layouter [editor | ranker | optimizer]\nlayouter editor|optimizer [LAYOUT] [CORPUS]\nlayouter ranker [CORPUS]\nlayouter eval LAYOUT [CORPUS]\nlayouter corpus list|info NAME|add NAME INPUT [CONFIG.json]\nlayouter corpus build [NAME] [--order 3|4|5] [--jobs N]\nlayouter corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(());
             },
             "corpus" => return corpus_command(&args[1..]),
@@ -663,13 +663,13 @@ fn run() -> AppResult<()> {
                     tui_mode(&mut term, mode, args.get(1).map(Path::new), args.get(2).map(String::as_str))
                 };
             },
-            _ => return Err(format!("unknown mode {cmd}; use layouter --help").into())
+            _ => return Err(format!("unknown mode {cmd}; use akler --help").into())
         }
     }
     let mut term = Terminal::open()?;
     let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into()];
     while !term.quitting {
-        let choice = match menu(&mut term, "layouter", &items)? {
+        let choice = match menu(&mut term, "akler", &items)? {
             Some(i) => i,
             None => break
         };
@@ -804,7 +804,7 @@ mod layout_dispatch_tests {
     fn discovery_accepts_extensionless_and_misnamed_contents_and_keeps_different_companions() {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         let directory = LayoutDirectory(std::env::temp_dir().join(format!(
-            "layouter-discovery-{}-{unique}", std::process::id(),
+            "akler-discovery-{}-{unique}", std::process::id(),
         )));
         fs::create_dir(&directory.0).unwrap();
         let dat = action_keys::Layout::parse(PLAIN_JSON, Path::new("inline")).unwrap().text();
@@ -814,6 +814,7 @@ mod layout_dispatch_tests {
             ("saved.dat", dat.as_str()),
             ("saved.jsonc", PLAIN_JSON),
             ("different.dat", dat.as_str()),
+            (".akler-123-456-0.bak", dat.as_str()),
             (".layouter-123-456-0.bak", dat.as_str()),
             ("saved.dat.1800000000000000000.bak", dat.as_str()),
             ("broken.dat", "{\"layout\":"),

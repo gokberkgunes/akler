@@ -217,9 +217,9 @@ fn dat_key(label: &str, actions: &BTreeMap<String, String>) -> String {
 
 fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
     let (native_dat, native_labels) = crate::layout_export::native_action_dat(root)?;
-    let native_actions: BTreeSet<String> = match root.get("layouter") {
-        Some(extension) => match object(extension, "layouter")?.get("actions") {
-            Some(actions) => object(actions, "layouter.actions")?
+    let native_actions: BTreeSet<String> = match root.get("akler").or_else(|| root.get("layouter")) {
+        Some(extension) => match object(extension, "akler")?.get("actions") {
+            Some(actions) => object(actions, "akler.actions")?
                 .keys()
                 .cloned()
                 .collect(),
@@ -228,17 +228,17 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         None => BTreeSet::new(),
     };
     let mut origins = [0_i8; 3];
-    if let Some(extension) = root.get("layouter") {
-        if let Some(value) = object(extension, "layouter")?.get("columnOrigins") {
-            let values = array(value, "layouter.columnOrigins")?;
+    if let Some(extension) = root.get("akler").or_else(|| root.get("layouter")) {
+        if let Some(value) = object(extension, "akler")?.get("columnOrigins") {
+            let values = array(value, "akler.columnOrigins")?;
             if values.len() != 3 {
-                return Err("layouter.columnOrigins needs three values".into());
+                return Err("akler.columnOrigins needs three values".into());
             }
             for (target, value) in origins.iter_mut().zip(values) {
                 *target = match value {
                     Json::Number(value) if *value == 0.0 => 0,
                     Json::Number(value) if *value == -1.0 => -1,
-                    _ => return Err("layouter.columnOrigins supports only 0 and -1".into()),
+                    _ => return Err("akler.columnOrigins supports only 0 and -1".into()),
                 };
             }
         }
@@ -331,7 +331,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             .filter(|value| !matches!(value, Json::Null))
         {
             if !native_actions.is_empty() && !array(value, "magic.rules")?.is_empty() {
-                return Err("edit layouter.actions for a native-action layout; combining those definitions with magic.rules is not supported".into());
+                return Err("edit akler.actions for a native-action layout; combining those definitions with magic.rules is not supported".into());
             }
             for rule in array(value, "magic.rules")? {
                 let rule = object(rule, "magic rule")?;
@@ -701,13 +701,16 @@ mod tests {
                 "fingers": ["q w @m r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
                 "thumbs": ["space"]
             },
-            "layouter": {
+            "akler": {
                 "version": 1,
                 "actions": {"m": {"kind":"rules", "basis":"text", "rules":{"q":null}, "fallback":null}},
                 "labels": {"m":"◇"}
             }
         }"#;
         let layout = parse(text);
+        let legacy = parse(&text.replace("\"akler\"", "\"layouter\""));
+        assert_eq!(legacy.slots, layout.slots);
+        assert_eq!(legacy.actions, layout.actions);
         let magic = key(&layout, "◇");
         assert!(ak::trace_keys(&layout, &[key(&layout, "q"), magic]).is_err());
         let steps = ak::trace_keys(&layout, &[key(&layout, "a"), magic]).unwrap();

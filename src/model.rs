@@ -157,7 +157,7 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Redirect with an index and a ring/pinky. Subset of RED.",
     "No-thumb trigram repeats a finger, including same-key repeats; excludes WRED.",
     "Clean same-row adjacent-finger bigram. Same hand, no thumbs; lateral stretches receive no credit.",
-    "Total directional rolls: IN2 + OUT2 + IN3 + OUT3. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in layouter.conf.",
+    "Total directional rolls: IN2 + OUT2 + IN3 + OUT3. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
     "Discordant full-scissor bigram: adjacent fingers, shorter above longer, two rows apart.",
     "Concordant full-scissor bigram: adjacent fingers, longer above shorter, two rows apart. Still penalized.",
     "Discordant full-scissor skipgram; the same endpoint geometry as DFSB.",
@@ -1116,7 +1116,7 @@ fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
         let old = path.with_file_name(format!("{}.{}.bak", path.file_name().unwrap_or_default().to_string_lossy(), timestamp()));
         fs::copy(path, old)?;
     }
-    let tmp = path.with_file_name(format!(".layouter-{}-{}.tmp", std::process::id(), timestamp()));
+    let tmp = path.with_file_name(format!(".akler-{}-{}.tmp", std::process::id(), timestamp()));
     let result = (|| -> AppResult<()> {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         if let Ok(metadata) = fs::metadata(path) {

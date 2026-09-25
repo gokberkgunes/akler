@@ -2088,7 +2088,7 @@ pub(crate) fn inspect_ranked(
 }
 
 pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
-    if std::env::var_os("LAYOUTER_ACTION_PLAIN_CHILD").is_some() {
+    if std::env::var_os("AKLER_ACTION_PLAIN_CHILD").is_some() {
         return None;
     }
     let explicit = args.first().is_some_and(|s| s == "magic" || s == "actions");

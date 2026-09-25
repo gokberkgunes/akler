@@ -978,7 +978,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             Event::Char('?') => info_page(term, "Ranker", &[
                     "Left-click header sorts. Middle-click a metric hides its column; middle-click a layout name hides its row.".into(),
                     "u restores the last hidden item; H restores all for this session. Left/right scroll columns; wheel scrolls layouts.".into(),
-                    "v chooses columns; Space toggles; s saves defaults to layouter.conf. d chooses compact defaults; a selects all.".into(),
+                    "v chooses columns; Space toggles; s saves defaults to akler.conf. d chooses compact defaults; a selects all.".into(),
                     "Action layouts use their bounded n-gram evaluator. Their COVERAGE is n/a; open a row for physical presses and ignored text.".into(),
                     "Colors use min/max of every non-hidden layout; green is preferable. Different key sets still require coverage checks.".into(),
                     "SCORE uses saved detailed weights on this corpus. Candidate comparison uses its actual training objective.".into(),

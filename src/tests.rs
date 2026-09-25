@@ -956,7 +956,7 @@ struct TestDir(PathBuf);
 impl TestDir {
     fn new() -> Self {
         let p = std::env::temp_dir().join(format!(
-            "layouter-test-{}-{}",
+            "akler-test-{}-{}",
             std::process::id(),
             timestamp()
         ));
@@ -979,14 +979,28 @@ fn cache_metadata_and_higher_orders() {
     fs::write(&raw, b"abcd\n").unwrap();
     let meta = fs::metadata(&raw).unwrap();
     let cfg = CorpusConfig::default();
-    let header = format!("{{\"source\":{{\"engine\":\"layouter-rust\",\"cache_version\":{},\"raw_size\":{},\"raw_mtime_ns\":{},\"config_fingerprint\":\"{:016x}\",\"max_order\":5}},\n\"letters\":{{}}}}\n", CORPUS_VERSION, meta.len(), json_quote(&mtime_ns(&meta)), 7u64);
+    let header = format!("{{\"source\":{{\"engine\":\"akler-rust\",\"cache_version\":{},\"raw_size\":{},\"raw_mtime_ns\":{},\"config_fingerprint\":\"{:016x}\",\"max_order\":5}},\n\"letters\":{{}}}}\n", CORPUS_VERSION, meta.len(), json_quote(&mtime_ns(&meta)), 7u64);
     fs::write(&cache, header).unwrap();
+    assert!(cache_current(&raw, &cache, &cfg, 7).unwrap());
+    let legacy = fs::read_to_string(&cache).unwrap().replace("akler-rust", "layouter-rust");
+    fs::write(&cache, legacy).unwrap();
     assert!(cache_current(&raw, &cache, &cfg, 7).unwrap());
     assert!(cache_current_at_least(&raw, &cache, 7, 3).unwrap());
     assert!(cache_current_at_least(&raw, &cache, 7, 4).unwrap());
     assert!(!cache_current(&raw, &cache, &cfg, 8).unwrap());
     fs::write(&raw, b"abcdefg\n").unwrap();
     assert!(!cache_current(&raw, &cache, &cfg, 7).unwrap());
+}
+
+#[test]
+fn ordered_text_sidecars_accept_both_names() {
+    let dir = TestDir::new();
+    let seq = dir.0.join("sample.seq");
+    for header in [b"AKLER-SEQUENCES-1\n".as_slice(), b"LAYOUTER-SEQUENCES-1\n".as_slice()] {
+        fs::write(&seq, [header, b"abc\n"].concat()).unwrap();
+        let corpus = action_keys::TextCorpus::load(&seq).unwrap();
+        assert_eq!(corpus.sequences, vec![(b"abc".to_vec(), 1)]);
+    }
 }
 
 #[test]

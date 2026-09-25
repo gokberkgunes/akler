@@ -832,7 +832,7 @@ fn cache_current_at_least(raw: &Path, cache: &Path, config_hash: u64, min_order:
         Some(Json::Number(v))=>*v,
         _=>-1.0
     };
-    Ok(string("engine") == "layouter-rust" && num("cache_version") == CORPUS_VERSION as f64
+    Ok(matches!(string("engine"), "akler-rust" | "layouter-rust") && num("cache_version") == CORPUS_VERSION as f64
         && num("raw_size") == md.len() as f64 && string("raw_mtime_ns") == mtime_ns(&md)
         && string("config_fingerprint") == format!("{config_hash:016x}") && num("max_order") >= min_order as f64)
 }
@@ -880,7 +880,7 @@ fn rebuild_corpus_control(raw: &Path, cfg: &CorpusConfig, config_hash: u64, noti
     let result = (|| -> AppResult<()> {
         let f = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
         let mut w = BufWriter::with_capacity(1<<20, f);
-        writeln!(w, "{{\"source\":{{\"engine\":\"layouter-rust\",\"cache_version\":{},\"raw_size\":{},\"raw_mtime_ns\":{},\"raw_fingerprint\":\"{:016x}\",\"config_fingerprint\":\"{:016x}\",\"max_order\":{},\"characters\":{},\"unsupported_scalars\":{},\"rows\":{:?}}},", CORPUS_VERSION, before.len(), json_quote(&mtime_ns(&before)), raw_hash, config_hash, cfg.order, total, unsupported, counts.rows())?;
+        writeln!(w, "{{\"source\":{{\"engine\":\"akler-rust\",\"cache_version\":{},\"raw_size\":{},\"raw_mtime_ns\":{},\"raw_fingerprint\":\"{:016x}\",\"config_fingerprint\":\"{:016x}\",\"max_order\":{},\"characters\":{},\"unsupported_scalars\":{},\"rows\":{:?}}},", CORPUS_VERSION, before.len(), json_quote(&mtime_ns(&before)), raw_hash, config_hash, cfg.order, total, unsupported, counts.rows())?;
         for (i,(name, v, width)) in [("letters", &counts.uni, 1),("bigrams", &counts.bi, 2),("skipgrams", &counts.skip, 2),("trigrams", &counts.tri, 3)].into_iter().enumerate() {
             if i>0 {
                 w.write_all(b",\n")?;
@@ -1117,7 +1117,7 @@ mod corpus_path_tests {
 
     fn temporary_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "layouter-{name}-{}-{}",
+            "akler-{name}-{}-{}",
             std::process::id(),
             timestamp()
         ))

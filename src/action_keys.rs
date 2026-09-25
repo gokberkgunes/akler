@@ -11,7 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_STATE_LIMIT: usize = 500_000;
 
-pub const SEQUENCE_HEADER: &[u8] = b"LAYOUTER-SEQUENCES-1\n";
+pub const SEQUENCE_HEADER: &[u8] = b"AKLER-SEQUENCES-1\n";
+const LEGACY_SEQUENCE_HEADER: &[u8] = b"LAYOUTER-SEQUENCES-1\n";
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -1368,7 +1369,7 @@ impl Layout {
         let mut repeat = "repeat-output".to_string();
         if !matches!(self.actions.get(&repeat), Some(Action::RepeatOutput)) {
             for index in 0.. {
-                let name = format!("layouter-repeat-output-{index}");
+                let name = format!("akler-repeat-output-{index}");
                 if !self.actions.contains_key(&name)
                     || matches!(self.actions.get(&name), Some(Action::RepeatOutput))
                 {
@@ -2364,6 +2365,7 @@ impl TextCorpus {
             let b = fs::read(path).map_err(|e| e.to_string())?;
             let body = b
                 .strip_prefix(SEQUENCE_HEADER)
+                .or_else(|| b.strip_prefix(LEGACY_SEQUENCE_HEADER))
                 .ok_or("unrecognized ordered-text sidecar")?;
             return Self::from_normalized(&name, body);
         }

@@ -1585,7 +1585,7 @@ fn contributor_view(
             Event::Char('?') => info_page(
                 term,
                 METRIC_NAMES[m],
-                &[ METRIC_HELP[m].into(), "D/C describe finger placement, not keystroke order. Finger-length order is a model assumption.".into(), "For SRAF/ALT: x cycles clean, raw and rejected. Raw = clean + rejected, with the SAME denominator.".into(), "The veto is structural, even for a zero-weight penalty. SRAF checks its pair; ALT checks AB, BC and skip AC. Roll filters follow [rolls] in layouter.conf.".into(), "Roll thumb inclusion follows [rolls]; other preference metrics exclude thumbs. Excluded presses are never spliced out.".into(), "Only stored pairs/trigrams are known: no claim about four-key or longer sequences.".into(),]
+                &[ METRIC_HELP[m].into(), "D/C describe finger placement, not keystroke order. Finger-length order is a model assumption.".into(), "For SRAF/ALT: x cycles clean, raw and rejected. Raw = clean + rejected, with the SAME denominator.".into(), "The veto is structural, even for a zero-weight penalty. SRAF checks its pair; ALT checks AB, BC and skip AC. Roll filters follow [rolls] in akler.conf.".into(), "Roll thumb inclusion follows [rolls]; other preference metrics exclude thumbs. Excluded presses are never spliced out.".into(), "Only stored pairs/trigrams are known: no claim about four-key or longer sequences.".into(),]
             )?,
             _ => {
             }

@@ -76,9 +76,10 @@ rules. Nonempty layers or combos, tap-hold keys, nonempty `magic.magicKeys`, non
 produce errors. Import does not reproduce Mana's complete typing engine.
 Saved JSONC uses visible `layout`, `fingermap`, and `board` fields for editing.
 Layouts requiring calls, explicit `none`, other history bases, or other behavior
-the simple rule format cannot preserve retain a `layouter` extension with native
-action definitions. Geometry may also need that extension. Edit simple rules in
-`magic.rules`, or native definitions in `layouter.actions` when present; do not
+that the simple rule format cannot preserve retain an `akler` extension with native
+action definitions. Geometry may also need that extension. Existing layouts with
+the `layouter` extension remain readable. Edit simple rules in
+`magic.rules`, or native definitions in `akler.actions` when present; do not
 combine the two action representations in the same file.
 
 ## Keyboard and thumbs
