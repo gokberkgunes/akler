@@ -1,7 +1,8 @@
 # akler
 
 TUI layout ranker, designer, optimizer with magic support.
-For now uses only n-grams, no corpus traversal.
+For now uses only n-grams, no corpus traversal. Support mouse drag and drop,
+hides columns/rows with middle mouse button.
 
 ![Akler layout editor](doc/editor.png)
 
