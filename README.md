@@ -3,6 +3,8 @@
 TUI layout ranker, designer, optimizer with magic support.
 For now uses only n-grams, no corpus traversal.
 
+![Akler layout editor](doc/editor.png)
+
 ## Build and run
 
 
