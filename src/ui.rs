@@ -610,8 +610,8 @@ fn move_cursor(cursor: usize, dr: i32, dc: i32, keys: &[Key]) -> usize {
             }
             if current.main && k.row == current.row &&(k.col - current.col).signum() == dc as i8 {
                 candidates.push((i,(k.col - current.col).abs()));
-            } else if !current.main &&(k.hand - current.hand).signum() == dc as i8 {
-                candidates.push((i,(k.hand - current.hand).abs()));
+            } else if !current.main &&(k.col - current.col).signum() == dc as i8 {
+                candidates.push((i,(k.col - current.col).abs()));
             }
         }
     } else if current.main {
@@ -625,7 +625,7 @@ fn move_cursor(cursor: usize, dr: i32, dc: i32, keys: &[Key]) -> usize {
         } else if target>2 {
             for (i, k) in keys.iter().enumerate() {
                 if !k.main && k.hand == current.hand {
-                    candidates.push((i, 0));
+                    candidates.push((i, (k.col - current.col).abs()));
                 }
             }
         }
@@ -708,6 +708,10 @@ fn keyboard(
     let step = kw + 1;
     let width = step * cols - 1 + gap + stagger_cells(max_offset, min_offset, step);
     let x = c.w.saturating_sub(width) / 2;
+    let left_thumbs = model.board.keys.iter().filter(|key| !key.main && key.hand == 0).count();
+    let left_start = (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
+    let right_start = x + width / 2 + 1;
+    let mut thumb_index = [0; 2];
     for i in 0..arr.len() {
         let key = model.board.keys[i];
         let (kx, ky) = if key.main {
@@ -718,7 +722,11 @@ fn keyboard(
                 y + key.row as usize * 3 + stagger_cells(key.column_offset, min_column_offset, 3),
             )
         } else {
-            (x + width / 2 - kw - 2 + key.hand as usize *(kw + 3), y + 9 + column_height)
+            let hand = key.hand as usize;
+            let start = if hand == 0 { left_start } else { right_start };
+            let position = (start + thumb_index[hand] * (kw + 3), y + 9 + column_height);
+            thumb_index[hand] += 1;
+            position
         };
         let locked = locks.map(|v| v[i]).unwrap_or(false);
         let border = if locked {

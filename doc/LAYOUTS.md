@@ -27,8 +27,10 @@ explicit repeat rules for unlisted contexts.
 
 The supported base layout uses three `layout.fingers` strings, each containing
 10, 11, or 12 whitespace-separated keys. Row widths may differ. Optional
-`layout.thumbs` contains at most one key per hand, left then right; an empty
-string omits that hand. Omitting `thumbs` supplies left Space. Use `skip`, `~`,
+`layout.thumbs` contains up to two strings, left then right. Each string can contain
+multiple whitespace-separated keys; an empty string omits that hand. For
+example, `["", "l r"]` places both l and r on the right thumb. Omitting
+`thumbs` supplies left Space. Use `skip`, `~`,
 or `blank` for an empty physical slot and `space` for Space.
 
 ```jsonc
@@ -105,6 +107,8 @@ the parser adds it to a free thumb slot when possible. With no thumb declaration
 that is LT. In action layouts, `thumbs: space space` creates two real Space slots;
 typing selection decides which is pressed, rather than splitting counts evenly.
 The ordinary evaluator requires unique output keys, so use one Space there.
+For multiple keys on either thumb, separate the hand groups with `|`, for
+example `thumbs: none | l r` or `thumbs: a b | space c`.
 
 Comments and settings follow the three rows. Optional `outer-left: TOP HOME
 BOTTOM` / `outer-right: TOP HOME BOTTOM` add an outer pinky column when not already
@@ -235,7 +239,8 @@ fallback name = repeat-output
 ```
 
 Emissions are a quoted ASCII string, `none`, `@another_action`, `repeat-output`,
-or `repeat-action` (`repeat`/`again` are their aliases). Explicit rules can extend
+`repeat-previous-output`, or `repeat-action` (`repeat`/`again` are aliases for the
+first and last). Explicit rules can extend
 compact tables using `map`/`fallback`; do not add a second `action` declaration
 for the same compact table.
 
@@ -248,6 +253,7 @@ for the same compact table.
 | `skip-output-magic` | Output two presses back. |
 | `alternate` / `alt-repeat` | Remembered output. |
 | `repeat-output` / `repeat` | Emit remembered output again. |
+| `repeat-previous-output` | Emit the output from two physical presses back. |
 | `repeat-action` / `again` | Resolve the remembered physical key again in the current context. |
 | `inactive` | No output. |
 | `text "..."` | Fixed output; multi-character macros are trace-only. |

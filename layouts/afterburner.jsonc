@@ -1,0 +1,82 @@
+{
+  "layout": {
+    "fingers": [
+      ", u o c z k d g b j skip",
+      "i e a @skipmagic @magic m t s n h q",
+      ". ; / w ' x v f p y skip"
+    ],
+    "thumbs": [
+      "",
+      "l r"
+    ]
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9 0",
+    "0 1 2 3 3 6 6 7 8 9 9",
+    "0 1 2 3 3 6 6 7 8 9 0"
+  ],
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "splitAngle": 0,
+    "rowOrColumnStagger": [
+      0,
+      0.25,
+      0.75
+    ]
+  },
+  "layers": null,
+  "magic": {
+    "magicKeys": [],
+    "rules": []
+  },
+  "akler": {
+    "version": 1,
+    "actions": {
+      "magic": {
+        "kind": "rules",
+        "basis": "text",
+        "rules": {
+          "a": {"text": "o"},
+          "g": {"text": "s"},
+          "h": {"text": "y"},
+          "u": {"text": "e"},
+          "x": {"text": "t"},
+          "y": {"text": "h"}
+        },
+        "fallback": {"call": "repeat-output"}
+      },
+      "skipmagic": {
+        "kind": "rules",
+        "basis": "skip-press",
+        "rules": {
+          "a": {"text": "o"},
+          "b": {"text": "n"},
+          "d": {"text": "t"},
+          "f": {"text": "s"},
+          "g": {"text": "s"},
+          "h": {"text": "y"},
+          "j": {"text": "y"},
+          "k": {"text": "t"},
+          "l": {"text": "r"},
+          "m": {"text": "k"},
+          "o": {"text": "a"},
+          "p": {"text": "n"},
+          "q": {"text": "e"},
+          "r": {"text": "l"},
+          "u": {"text": "e"},
+          "v": {"text": "t"},
+          "x": {"text": "t"},
+          "y": {"text": "h"},
+          ",": {"text": "i"},
+          ".": {"text": "i"},
+          "-": {"text": "i"},
+          "/": {"text": "a"},
+          ";": {"text": "e"}
+        },
+        "fallback": {"call": "repeat-previous-output"}
+      }
+    },
+    "labels": {"magic": "#", "skipmagic": "$"}
+  }
+}

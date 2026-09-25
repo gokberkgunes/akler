@@ -217,12 +217,10 @@ fn dat_key(label: &str, actions: &BTreeMap<String, String>) -> String {
 
 fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
     let (native_dat, native_labels) = crate::layout_export::native_action_dat(root)?;
-    let native_actions: BTreeSet<String> = match root.get("akler").or_else(|| root.get("layouter")) {
+    let native_actions: BTreeSet<String> = match root.get("akler").or_else(|| root.get("layouter"))
+    {
         Some(extension) => match object(extension, "akler")?.get("actions") {
-            Some(actions) => object(actions, "akler.actions")?
-                .keys()
-                .cloned()
-                .collect(),
+            Some(actions) => object(actions, "akler.actions")?.keys().cloned().collect(),
             None => BTreeSet::new(),
         },
         None => BTreeSet::new(),
@@ -267,19 +265,19 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         rows.push(tokens);
     }
 
-    let mut thumbs = vec![" ".to_string(), String::new()];
-    let mut thumb_present = [true, false];
+    let mut thumbs = [vec![" ".to_string()], Vec::new()];
     if let Some(value) = layout.get("thumbs") {
         let values = array(value, "layout.thumbs")?;
         if values.len() > 2 {
-            return Err("layout.thumbs supports one physical key per hand".into());
+            return Err("layout.thumbs supports at most two hand strings".into());
         }
-        thumbs = vec![String::new(), String::new()];
-        thumb_present = [false, false];
+        thumbs = [Vec::new(), Vec::new()];
         for (hand, value) in values.iter().enumerate() {
-            let token = string(value, "layout.thumbs key")?;
-            thumbs[hand] = key_token(token, &native_actions)?;
-            thumb_present[hand] = !token.is_empty();
+            let group = string(value, "layout.thumbs hand")?;
+            thumbs[hand] = group
+                .split_whitespace()
+                .map(|token| key_token(token, &native_actions))
+                .collect::<ak::Result<Vec<_>>>()?;
         }
     }
 
@@ -312,7 +310,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
     let labels: BTreeSet<String> = rows
         .iter()
         .flatten()
-        .chain(thumbs.iter())
+        .chain(thumbs.iter().flatten())
         .cloned()
         .collect();
     let mut rules: BTreeMap<String, BTreeMap<Vec<u8>, Vec<u8>>> = BTreeMap::new();
@@ -405,17 +403,20 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
     }
     let thumb_tokens: Vec<_> = thumbs
         .iter()
-        .enumerate()
-        .map(|(hand, label)| {
-            if thumb_present[hand] {
-                dat_key(label, &action_names)
-            } else {
+        .map(|group| {
+            if group.is_empty() {
                 "none".into()
+            } else {
+                group
+                    .iter()
+                    .map(|label| dat_key(label, &action_names))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             }
         })
         .collect();
     dat.push_str(&format!(
-        "thumbs: {} {}\n",
+        "thumbs: {} | {}\n",
         thumb_tokens[0], thumb_tokens[1]
     ));
     if !legacy_columns {
@@ -674,6 +675,44 @@ mod tests {
             );
             assert!(!layout.extended());
         }
+    }
+
+    #[test]
+    fn multiple_thumb_keys_load_and_round_trip() {
+        let source = r#"{
+            "layout": {
+                "fingers": [", u o c z k d g b j skip", "i e a $ # m t s n h q", ". ; / w ' x v f p y skip"],
+                "thumbs": ["", "l r"]
+            }
+        }"#;
+        let layout = parse(source);
+        let thumbs: Vec<_> = layout.slots.iter().filter(|slot| !slot.main).collect();
+        assert_eq!(thumbs.len(), 2);
+        assert_eq!(
+            (thumbs[0].label.as_str(), thumbs[0].hand, thumbs[0].finger),
+            ("l", 1, 9)
+        );
+        assert_eq!(
+            (thumbs[1].label.as_str(), thumbs[1].hand, thumbs[1].finger),
+            ("r", 1, 9)
+        );
+        assert_ne!(thumbs[0].col, thumbs[1].col);
+
+        let dat = layout.text();
+        assert!(dat.contains("thumbs: none | l r\n"));
+        let from_dat = parse(&dat);
+        assert_eq!(from_dat.slots, layout.slots);
+
+        let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
+        assert!(jsonc.contains("\"thumbs\": [\"\", \"l r\"]"));
+        let from_jsonc = parse(&jsonc);
+        assert_eq!(from_jsonc.slots, layout.slots);
+
+        let both = parse(&source.replace("[\"\", \"l r\"]", "[\"l r\", \"space =\"]"));
+        let thumbs: Vec<_> = both.slots.iter().filter(|slot| !slot.main).collect();
+        assert_eq!(thumbs.len(), 4);
+        assert_eq!(thumbs.iter().map(|slot| slot.hand).collect::<Vec<_>>(), [0, 0, 1, 1]);
+        assert_eq!(parse(&both.text()).slots, both.slots);
     }
 
     #[test]

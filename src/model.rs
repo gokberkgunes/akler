@@ -903,7 +903,7 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             keys.push(main_key_at(r, col));
         }
     }
-    let mut thumbs: [Option<u8>; 2] = [None, None];
+    let mut thumbs: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
     let mut absent = [false; 2];
     let mut stagger_mode = None;
     for line in &lines[3..] {
@@ -927,6 +927,27 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             trimmed
         };
         let tokens: Vec<_> = content.split_whitespace().collect();
+        if named && tokens.contains(&"|") {
+            if tokens.iter().filter(|&&token| token == "|").count() != 1
+                || thumbs.iter().any(|group| !group.is_empty())
+            {
+                return Err("invalid or repeated thumb hand divider".into());
+            }
+            let split = tokens.iter().position(|&token| token == "|").unwrap();
+            for (hand, group) in [&tokens[..split], &tokens[split + 1..]].iter().enumerate() {
+                if group.len() == 1 && group[0] == "none" {
+                    absent[hand] = true;
+                } else {
+                    if group.contains(&"none") {
+                        return Err("none cannot be combined with a thumb key".into());
+                    }
+                    for token in *group {
+                        thumbs[hand].push(parse_token(token, &mut empty)?);
+                    }
+                }
+            }
+            continue;
+        }
         if tokens.is_empty() || tokens.len()>2 {
             return Err("thumb line needs one key, or explicit left and right keys".into());
         }
@@ -938,7 +959,7 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             } else {
                 usize::from(line.as_bytes().iter().take_while(|&&b|b == b' ').count()>10)
             };
-            if thumbs[hand].is_some() || absent[hand] {
+            if !thumbs[hand].is_empty() || absent[hand] {
                 return Err(format!("{} thumb is defined twice", if hand == 0 {
                     "left"
                 } else {
@@ -953,23 +974,28 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             if token == "none" {
                 absent[hand] = true;
             } else {
-                thumbs[hand] = Some(parse_token(token, &mut empty)?);
+                thumbs[hand].push(parse_token(token, &mut empty)?);
             }
         }
     }
-    if !symbols.contains(&b' ') && !thumbs.contains(&Some(b' ')) && !absent.contains(&true) {
-        match (thumbs[0].is_some(), thumbs[1].is_some()) {
-            (false, false) => thumbs[0] = Some(b' '),
-            (true, false) => thumbs[1] = Some(b' '),
-            (false, true) => thumbs[0] = Some(b' '),
+    if !symbols.contains(&b' ') && !thumbs.iter().flatten().any(|&ch| ch == b' ') && !absent.contains(&true) {
+        match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
+            (true, true) => thumbs[0].push(b' '),
+            (false, true) => thumbs[1].push(b' '),
+            (true, false) => thumbs[0].push(b' '),
             _ => {
             }
         }
     }
-    for (hand, ch) in thumbs.into_iter().enumerate() {
-        if let Some(ch) = ch {
+    let mut thumb_col = 0usize;
+    for (hand, group) in thumbs.into_iter().enumerate() {
+        if hand == 1 && thumb_col == 0 { thumb_col = 1; }
+        for ch in group {
             symbols.push(ch);
-            keys.push(thumb_key(hand));
+            let mut key = thumb_key(hand);
+            key.col = i8::try_from(thumb_col).map_err(|_| "too many thumb keys")?;
+            keys.push(key);
+            thumb_col += 1;
         }
     }
     if let Some(mode) = stagger_mode {
@@ -1065,6 +1091,17 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
     let mut thumbs: Vec<_> = board.keys.iter().enumerate().filter(|(_, k)|!k.main).collect();
     thumbs.sort_by_key(|(_, k)|k.hand);
     let is_space=|(i, _): &(usize, &Key)|symbols[*i] == b' ';
+    if thumbs.iter().filter(|(_, key)| key.hand == 0).count() > 1
+        || thumbs.iter().filter(|(_, key)| key.hand == 1).count() > 1
+    {
+        let group = |hand| {
+            let keys: Vec<_> = thumbs.iter().filter(|(_, key)| key.hand == hand)
+                .map(|(i, _)| token(symbols[*i])).collect();
+            if keys.is_empty() { "none".into() } else { keys.join(" ") }
+        };
+        out.push_str(&format!("thumbs: {} | {}\n", group(0), group(1)));
+        return out;
+    }
     let bare = match thumbs.as_slice() {
         [s] if s.1.hand == 1||!is_space(s) => Some(*s),
         [a, b] if is_space(a)^is_space(b) => Some(if is_space(a) {

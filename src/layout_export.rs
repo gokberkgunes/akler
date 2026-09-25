@@ -271,14 +271,7 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
         }
         Json::Object(values) => {
             let order: &[&str] = match (depth, field) {
-                (0, _) => &[
-                    "layout",
-                    "fingermap",
-                    "board",
-                    "layers",
-                    "magic",
-                    "akler",
-                ],
+                (0, _) => &["layout", "fingermap", "board", "layers", "magic", "akler"],
                 (_, "layout") => &["fingers", "thumbs"],
                 (_, "board") => &[
                     "isRowStaggered",
@@ -424,6 +417,7 @@ fn action_json(action: &Action) -> Result<Json> {
     Ok(match action {
         Action::Text(text) => object([("kind", string("text")), ("text", bytes(text)?)]),
         Action::RepeatOutput => object([("kind", string("repeat-output"))]),
+        Action::RepeatPreviousOutput => object([("kind", string("repeat-previous-output"))]),
         Action::RepeatAction => object([("kind", string("repeat-action"))]),
         Action::Inactive => object([("kind", string("inactive"))]),
         Action::Rules {
@@ -587,12 +581,11 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         }
     }
 
-    let mut thumbs = vec![string(""), string("")];
-    let mut hands = [false; 2];
+    let mut thumbs = [Vec::new(), Vec::new()];
     for slot in layout.slots.iter().filter(|slot| !slot.main) {
         let hand = usize::try_from(slot.hand).map_err(|_| "invalid thumb hand")?;
-        if hand > 1 || hands[hand] {
-            return Err("JSONC export supports at most one thumb key per hand".into());
+        if hand > 1 {
+            return Err("invalid thumb hand".into());
         }
         if slot.row_offset != 0
             || slot.column_offset != 0
@@ -601,9 +594,12 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         {
             return Err("JSONC cannot represent custom thumb geometry".into());
         }
-        hands[hand] = true;
-        thumbs[hand] = string(token(&slot.binding)?);
+        thumbs[hand].push(token(&slot.binding)?);
     }
+    let thumbs = thumbs
+        .into_iter()
+        .map(|group| string(group.join(" ")))
+        .collect();
     let column_offsets: Vec<_> = columns.values().copied().collect();
     let has_columns = column_offsets.iter().any(|offset| *offset != 0);
     let has_rows = row_offsets.iter().any(|offset| *offset != 0);
@@ -664,6 +660,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         // Unused built-ins are supplied by the DAT runtime already.
         let builtin = match name.as_str() {
             "repeat" | "repeat-output" => Some(Action::RepeatOutput),
+            "repeat-previous-output" => Some(Action::RepeatPreviousOutput),
             "repeat-action" | "again" => Some(Action::RepeatAction),
             _ => None,
         };
@@ -821,7 +818,7 @@ pub(crate) fn native_action_dat(
                     let text = expect_string(field(value, "text")?, "action.text")?;
                     dat.push_str(&format!("action @{name} = text {}\n", json_quote(text)));
                 }
-                "repeat-output" | "repeat-action" | "inactive" => {
+                "repeat-output" | "repeat-previous-output" | "repeat-action" | "inactive" => {
                     allowed(value, &["kind"], "native action")?;
                     dat.push_str(&format!("action @{name} = {kind}\n"));
                 }
@@ -1125,6 +1122,22 @@ mod tests {
         let restored = Layout::parse(&jsonc, Path::new("edited")).unwrap();
         assert_eq!(restored.slots[0].binding, Binding::Text(vec![b'w']));
         assert_eq!(restored.slots[1].binding, Binding::Named("m".into()));
+    }
+
+    #[test]
+    fn repeat_previous_output_round_trips_through_native_jsonc() {
+        let source = format!(
+            "{}action sk = skip-magic\nfallback sk = repeat-previous-output\n",
+            GRID.replace("q w", "@sk w")
+        );
+        let original = Layout::parse(&source, Path::new("source")).unwrap();
+        let jsonc = jsonc_text(&original).unwrap();
+        let restored = Layout::parse(&jsonc, Path::new("round.jsonc")).unwrap();
+        assert_eq!(restored.actions, original.actions);
+        assert_eq!(
+            restored.actions["repeat-previous-output"],
+            Action::RepeatPreviousOutput
+        );
     }
 
     #[test]

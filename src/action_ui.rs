@@ -325,6 +325,10 @@ fn action_keyboard(
     let step = kw + 1;
     let width = cols * step - 1 + gap + stagger_cells(max_offset, min_offset, step);
     let x = c.w.saturating_sub(width) / 2;
+    let left_thumbs = l.slots.iter().filter(|slot| !slot.main && slot.hand == 0).count();
+    let left_start = (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
+    let right_start = x + width / 2 + 1;
+    let mut thumb_index = [0; 2];
     for (i, s) in l.slots.iter().enumerate() {
         let (kx, ky) = if s.main {
             (
@@ -334,10 +338,11 @@ fn action_keyboard(
                 y + s.row as usize * 3 + stagger_cells(s.column_offset, min_column_offset, 3),
             )
         } else {
-            (
-                x + width / 2 - kw - 2 + (s.finger - 8) * (kw + 3),
-                y + 9 + column_height,
-            )
+            let hand = s.hand as usize;
+            let start = if hand == 0 { left_start } else { right_start };
+            let position = (start + thumb_index[hand] * (kw + 3), y + 9 + column_height);
+            thumb_index[hand] += 1;
+            position
         };
         let locked = locks.is_some_and(|v| v[i]);
         let color = if s.binding != original.slots[i].binding {

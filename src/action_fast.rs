@@ -13,6 +13,7 @@ enum Terminal {
     None,
     Byte(u8),
     RepeatOutput,
+    RepeatPreviousOutput,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +87,7 @@ enum Code {
     Inactive,
     Byte(u8),
     RepeatOutput,
+    RepeatPreviousOutput,
     RepeatAction,
     TextOne {
         table: Box<[Emit; 257]>,
@@ -123,6 +125,7 @@ fn terminal_call<'a>(
             Action::Inactive => return Some((hops, Terminal::None)),
             Action::Text(v) => return Some((hops, Terminal::Byte(v[0]))),
             Action::RepeatOutput => return Some((hops, Terminal::RepeatOutput)),
+            Action::RepeatPreviousOutput => return Some((hops, Terminal::RepeatPreviousOutput)),
             Action::Rules {
                 rules, fallback, ..
             } if rules.is_empty() => match fallback {
@@ -238,6 +241,7 @@ impl Program {
                 Action::Inactive => Code::Inactive,
                 Action::Text(v) => Code::Byte(v[0]),
                 Action::RepeatOutput => Code::RepeatOutput,
+                Action::RepeatPreviousOutput => Code::RepeatPreviousOutput,
                 Action::RepeatAction => Code::RepeatAction,
                 Action::Rules {
                     basis,
@@ -366,7 +370,9 @@ impl Program {
                     match op {
                         Terminal::None => ops.terminal_none += 1,
                         Terminal::Byte(_) => ops.terminal_byte += 1,
-                        Terminal::RepeatOutput => ops.terminal_repeat += 1,
+                        Terminal::RepeatOutput | Terminal::RepeatPreviousOutput => {
+                            ops.terminal_repeat += 1
+                        }
                     }
                 }
                 // Each elided named action still consumes its original depth.
@@ -387,6 +393,10 @@ impl Program {
                     Terminal::RepeatOutput => m.remembered_output.map(|byte| Output {
                         byte,
                         remember: false,
+                    }),
+                    Terminal::RepeatPreviousOutput => m.previous_output.map(|byte| Output {
+                        byte,
+                        remember: true,
                     }),
                 }
             }
@@ -423,6 +433,10 @@ impl Program {
             Code::RepeatOutput => m.remembered_output.map(|byte| Output {
                 byte,
                 remember: false,
+            }),
+            Code::RepeatPreviousOutput => m.previous_output.map(|byte| Output {
+                byte,
+                remember: true,
             }),
             Code::RepeatAction => m
                 .remembered_key
@@ -852,6 +866,30 @@ pub(crate) mod tests {
             fixtures.push(format!("{base}swap h nr y ,u\nrow-stagger: {mode}\n"));
         }
         fixtures
+    }
+    #[test]
+    fn previous_output_fallback_and_following_magic_use_fast_memory() {
+        let source = format!(
+            "{}outer-left: @sk @m ~\naction sk = skip-magic\nfallback sk = repeat-previous-output\naction m = magic\n",
+            fixtures()[0]
+        );
+        let layout = Layout::parse(&source, Path::new("previous-output.dat")).unwrap();
+        let program = Program::new(&layout, 5).unwrap();
+        let state = KeyState::new(&program);
+        let named = |name: &str| {
+            layout
+                .slots
+                .iter()
+                .position(|slot| matches!(&slot.binding, Binding::Named(value) if value == name))
+                .unwrap()
+        };
+        let sk = named("sk");
+        let magic = named("m");
+        let keys = Mapper::new(&program, &state)
+            .map(b"qxqq", &|_, _, next| if next == sk || next == magic { -1.0 } else { 0.0 })
+            .unwrap();
+        assert_eq!(keys[2], Some(sk));
+        assert_eq!(keys[3], Some(magic));
     }
     #[test]
     fn numeric_mapper_matches_reference_keys_across_swaps_and_contexts() {

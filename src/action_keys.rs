@@ -63,6 +63,7 @@ pub enum Action {
         fallback: Emission,
     },
     RepeatOutput,
+    RepeatPreviousOutput,
     RepeatAction,
     Inactive,
 }
@@ -184,7 +185,10 @@ fn emission(text: &str) -> Result<Emission> {
     if let Some(name) = s.strip_prefix('@') {
         return Ok(Emission::Call(name.to_ascii_lowercase()));
     }
-    if matches!(s, "repeat" | "repeat-output" | "repeat-action" | "again") {
+    if matches!(
+        s,
+        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" | "again"
+    ) {
         return Ok(Emission::Call(s.into()));
     }
     Ok(Emission::Text(ascii(literal(s)?, "action output")?))
@@ -213,6 +217,7 @@ fn action(text: &str) -> Result<Action> {
     }
     match s {
         "repeat" | "repeat-output" => Ok(Action::RepeatOutput),
+        "repeat-previous-output" => Ok(Action::RepeatPreviousOutput),
         "again" | "repeat-action" => Ok(Action::RepeatAction),
         "inactive" => Ok(Action::Inactive),
         _ => err(format!("unknown action kind {s:?}")),
@@ -887,11 +892,11 @@ fn short_table_text(name: &str, action: &Action) -> Option<String> {
     ))
 }
 
-fn set_thumb(thumbs: &mut [Option<String>; 2], hand: usize, token: &str) -> Result<()> {
+fn set_thumb(thumbs: &mut [Vec<String>; 2], hand: usize, token: &str) -> Result<()> {
     if hand > 1 {
         return err("thumb hand must be left or right");
     }
-    if thumbs[hand].is_some() {
+    if !thumbs[hand].is_empty() {
         return err(format!(
             "{} thumb is defined twice",
             if hand == 0 { "left" } else { "right" }
@@ -902,7 +907,7 @@ fn set_thumb(thumbs: &mut [Option<String>; 2], hand: usize, token: &str) -> Resu
     } else {
         token
     };
-    thumbs[hand] = Some(token.to_string());
+    thumbs[hand].push(token.to_string());
     Ok(())
 }
 
@@ -1005,6 +1010,7 @@ impl Layout {
         for (k, v) in [
             ("repeat", Action::RepeatOutput),
             ("repeat-output", Action::RepeatOutput),
+            ("repeat-previous-output", Action::RepeatPreviousOutput),
             ("repeat-action", Action::RepeatAction),
             ("again", Action::RepeatAction),
         ] {
@@ -1013,7 +1019,7 @@ impl Layout {
         let mut definitions = Vec::new();
         let mut mappings = Vec::new();
         let mut compact = Vec::new();
-        let mut thumbs: [Option<String>; 2] = [None, None];
+        let mut thumbs: [Vec<String>; 2] = [Vec::new(), Vec::new()];
         let mut action_mode = false;
         let mut short_tables = BTreeMap::new();
         let mut stagger_mode = None;
@@ -1112,6 +1118,26 @@ impl Layout {
                     .is_some_and(|v| v.eq_ignore_ascii_case("thumbs:"));
                 let content = if named { &s[7..] } else { s };
                 let ts: Vec<_> = content.split_whitespace().collect();
+                if named && ts.contains(&"|") {
+                    if ts.iter().filter(|&&t| t == "|").count() != 1 {
+                        return err(fail("thumbs needs one hand divider".into()));
+                    }
+                    let split = ts.iter().position(|&t| t == "|").unwrap();
+                    if thumbs.iter().any(|hand| !hand.is_empty()) {
+                        return err(fail("thumbs is defined twice".into()));
+                    }
+                    for (hand, group) in [&ts[..split], &ts[split + 1..]].iter().enumerate() {
+                        if group.len() == 1 && group[0] == "none" {
+                            thumbs[hand].push("none".into());
+                            continue;
+                        }
+                        if group.contains(&"none") {
+                            return err(fail("none cannot be combined with a thumb key".into()));
+                        }
+                        thumbs[hand] = group.iter().map(|token| (*token).to_string()).collect();
+                    }
+                    continue;
+                }
                 if ts.is_empty() || ts.len() > 2 {
                     return err(fail(
                         "thumb line needs one key, or explicit left and right keys".into(),
@@ -1186,16 +1212,20 @@ impl Layout {
                 .any(|t| t.eq_ignore_ascii_case("space") || t == "␠");
         let explicit_absence = thumbs.iter().flatten().any(|token| token == "none");
         if !has_space && !explicit_absence {
-            match (thumbs[0].is_some(), thumbs[1].is_some()) {
-                (false, false) => thumbs[0] = Some("space".into()),
-                (true, false) => thumbs[1] = Some("space".into()),
-                (false, true) => thumbs[0] = Some("space".into()),
+            match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
+                (true, true) => thumbs[0].push("space".into()),
+                (false, true) => thumbs[1].push("space".into()),
+                (true, false) => thumbs[0].push("space".into()),
                 _ => {}
             }
         }
         slots.sort_by_key(|s| (s.row, s.col));
-        for (hand, t) in thumbs.iter().enumerate() {
-            if let Some(t) = t {
+        let mut thumb_col = 0usize;
+        for (hand, group) in thumbs.iter().enumerate() {
+            if hand == 1 && thumb_col == 0 {
+                thumb_col = 1;
+            }
+            for t in group {
                 if t == "none" {
                     continue;
                 }
@@ -1204,7 +1234,7 @@ impl Layout {
                     binding,
                     label,
                     row: 3,
-                    col: hand as i8,
+                    col: i8::try_from(thumb_col).map_err(|_| "too many thumb keys")?,
                     row_offset: 0,
                     column_offset: 0,
                     finger: 8 + hand,
@@ -1212,6 +1242,7 @@ impl Layout {
                     hand: hand as i8,
                     main: false,
                 });
+                thumb_col += 1;
             }
         }
         if let Some(mode) = stagger_mode {
@@ -1485,35 +1516,53 @@ impl Layout {
         ));
         let thumbs: Vec<_> = self.slots.iter().filter(|s| !s.main).collect();
         let is_space = |s: &Slot| s.binding == Binding::Text(vec![b' ']);
-        let bare = match thumbs.as_slice() {
-            [s] if s.hand == 1 || !is_space(s) => Some(*s),
-            [a, b] if is_space(a) ^ is_space(b) => Some(if is_space(a) { *b } else { *a }),
-            _ => None,
-        };
-        if thumbs.is_empty() || thumbs.len() == 1 && !is_space(thumbs[0]) {
-            out.push_str("thumbs:");
-            for hand in 0..2 {
-                out.push(' ');
-                if let Some(slot) = thumbs.iter().find(|slot| slot.hand == hand) {
-                    out.push_str(&token(slot));
+        if thumbs.iter().filter(|s| s.hand == 0).count() > 1
+            || thumbs.iter().filter(|s| s.hand == 1).count() > 1
+        {
+            let group = |hand| {
+                let keys: Vec<_> = thumbs
+                    .iter()
+                    .filter(|s| s.hand == hand)
+                    .map(|s| token(s))
+                    .collect();
+                if keys.is_empty() {
+                    "none".into()
                 } else {
-                    out.push_str("none");
+                    keys.join(" ")
                 }
-            }
-            out.push('\n');
-        } else if let Some(s) = bare {
-            if s.hand == 1 {
-                out.push_str("            ");
-            }
-            out.push_str(&token(s));
-            out.push('\n');
-        } else if !thumbs.is_empty() {
-            out.push_str("thumbs:");
-            for s in thumbs {
-                out.push(' ');
+            };
+            out.push_str(&format!("thumbs: {} | {}\n", group(0), group(1)));
+        } else {
+            let bare = match thumbs.as_slice() {
+                [s] if s.hand == 1 || !is_space(s) => Some(*s),
+                [a, b] if is_space(a) ^ is_space(b) => Some(if is_space(a) { *b } else { *a }),
+                _ => None,
+            };
+            if thumbs.is_empty() || thumbs.len() == 1 && !is_space(thumbs[0]) {
+                out.push_str("thumbs:");
+                for hand in 0..2 {
+                    out.push(' ');
+                    if let Some(slot) = thumbs.iter().find(|slot| slot.hand == hand) {
+                        out.push_str(&token(slot));
+                    } else {
+                        out.push_str("none");
+                    }
+                }
+                out.push('\n');
+            } else if let Some(s) = bare {
+                if s.hand == 1 {
+                    out.push_str("            ");
+                }
                 out.push_str(&token(s));
+                out.push('\n');
+            } else if !thumbs.is_empty() {
+                out.push_str("thumbs:");
+                for s in thumbs {
+                    out.push(' ');
+                    out.push_str(&token(s));
+                }
+                out.push('\n');
             }
-            out.push('\n');
         }
         if self.slots.iter().any(|slot| {
             matches!(&slot.binding, Binding::Named(name) if slot.label != *name && slot.label != action_slot_token(name))
@@ -1553,6 +1602,7 @@ impl Layout {
         {
             let builtin = match name.as_str() {
                 "repeat" | "repeat-output" => matches!(a, Action::RepeatOutput),
+                "repeat-previous-output" => matches!(a, Action::RepeatPreviousOutput),
                 "repeat-action" | "again" => matches!(a, Action::RepeatAction),
                 _ => false,
             };
@@ -1585,6 +1635,7 @@ impl Layout {
             let kind = match a {
                 Action::Text(v) => format!("text {}", quote(v)),
                 Action::RepeatOutput => "repeat-output".into(),
+                Action::RepeatPreviousOutput => "repeat-previous-output".into(),
                 Action::RepeatAction => "repeat-action".into(),
                 Action::Inactive => "inactive".into(),
                 Action::Rules { basis, .. } => match basis {
@@ -1771,6 +1822,17 @@ fn resolve_named(
                     output: m.remembered_output.clone(),
                     remember: false,
                     reason: "repeat output".into(),
+                })
+            }
+        }
+        Action::RepeatPreviousOutput => {
+            if m.previous_output.is_empty() {
+                None
+            } else {
+                Some(Resolved {
+                    output: m.previous_output.clone(),
+                    remember: true,
+                    reason: "repeat previous output".into(),
                 })
             }
         }
@@ -2812,6 +2874,15 @@ mod tests {
     fn skip_magic_uses_second_last_physical_key() {
         let l = make("outer-left: ~ @sk ~\naction sk = skip-magic\nmap sk \"q\" = \"u\"\nmap sk \"x\" = \"a\"\n");
         assert_eq!(typed(&l, &["q", "x", "sk"]), b"qxu");
+    }
+    #[test]
+    fn repeat_previous_output_is_a_builtin_and_updates_repeat_memory() {
+        let l = make("outer-left: @sk @m @repeat-previous-output\naction sk = skip-magic\nfallback sk = repeat-previous-output\naction m = magic\n");
+        assert_eq!(typed(&l, &["q", "x", "repeat-previous-output"]), b"qxq");
+        assert_eq!(typed(&l, &["q", "x", "sk", "m"]), b"qxqq");
+        let round = Layout::parse(&l.text(), Path::new("round.dat")).unwrap();
+        assert_eq!(round.actions, l.actions);
+        assert_eq!(typed(&round, &["q", "x", "sk", "m"]), b"qxqq");
     }
     #[test]
     fn physical_history_includes_repeater() {
