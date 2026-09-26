@@ -93,10 +93,10 @@ weights; hiding a column never removes its score contribution.
 Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggle,
 `d` selects compact defaults, `a` selects all, and `s` saves `[ranker] columns` in
 `akler.conf`. Escape/q cancels. Defaults are
-shared by ordinary and action layouts. Detailed D/C categories and OSF remain
-available without crowding the initial table. The column value accepts
+shared by ordinary and action layouts. Detailed D/C categories remain available
+without crowding the initial table. The column value accepts
 whitespace-separated metric names (case-insensitive); at least one is required.
-Compact defaults are SCORE, SFB, SFS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB,
+Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB,
 LSS, RED, INROLL, OUTROLL, ALT, and COVERAGE. IN2/OUT2/IN3/OUT3 and combined
 ROLL are available in the column picker; existing saved column selections are
 preserved. `H` in the main ranker restores all columns/rows

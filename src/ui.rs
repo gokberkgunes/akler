@@ -805,7 +805,7 @@ fn config_number(value: f64) -> String {
     }
 }
 
-static OPT_GROUP_SAME: [usize; 2] = [SFB, SFS];
+static OPT_GROUP_SAME: [usize; 4] = [SFB, SKB, SFS, SKS];
 
 static OPT_GROUP_FULL: [usize; 4] = [DFSB, CFSB, DFSS, CFSS];
 
@@ -817,7 +817,7 @@ static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 
 static OPT_GROUP_ROW: [usize; 4] = [DSB, CSB, DSS, CSS];
 
-static OPT_GROUP_RHYTHM: [usize; 4] = [REDIR, WRED, WISH, OSF];
+static OPT_GROUP_RHYTHM: [usize; 3] = [REDIR, WRED, WISH];
 
 static OPT_GROUP_PREF: [usize; 3] = [SRAF, ROLL, ALT];
 

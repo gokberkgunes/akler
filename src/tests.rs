@@ -94,6 +94,30 @@ fn ordinary_skip_only_imports_need_no_middle_reconstruction() {
 }
 
 #[test]
+fn same_key_bigrams_and_skipgrams_are_separate_metrics() {
+    let layout =
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+    let model = Model::new(board_from_text(layout, Path::new("inline.dat")).unwrap());
+    let source = Source::from_text(
+        r#"{"letters":{"a":4,"p":2},"bigrams":{"aa":2,"ap":1},"skipgrams":{"aa":3,"ap":1}}"#,
+        Path::new("inline.json"),
+    )
+    .unwrap();
+    let corpus = model.corpus(&source).unwrap();
+    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    let values = metrics(&raw, &corpus);
+
+    assert_eq!(raw.0[SKB], 2.0);
+    assert_eq!(raw.0[SKS], 3.0);
+    assert_eq!(raw.0[SFB], 0.0);
+    assert_eq!(raw.0[SFS], 0.0);
+    assert_eq!(values.v[SKB], pct(2.0, 3.0));
+    assert_eq!(values.v[SKS], pct(3.0, 4.0));
+    assert_eq!(Weights::default().0[SKB], 0.0);
+    assert_eq!(Weights::default().0[SKS], 0.0);
+}
+
+#[test]
 fn ordinary_trigram_limits_do_not_drop_endpoint_skips() {
     let text = r#"{"letters":{"a":2,"b":2,"!":1},"bigrams":{"ab":1},
         "trigrams":{"a!b":1,"aba":2}}"#;
@@ -641,7 +665,35 @@ fn same_key_repeats_and_thumb_denominators() {
     checked_rescore(&mut s, &p).unwrap();
     let thumb = pair_flags(thumb_key(0), thumb_key(1), false);
     assert_eq!(thumb.bi & bit(SFB), 0);
-    assert_eq!(pair_flags(key(0, 0), key(0, 0), true).bi & bit(SFB), 0);
+    let same = pair_flags(key(0, 0), key(0, 0), true);
+    assert_ne!(same.bi & bit(SKB), 0);
+    assert_ne!(same.sk & bit(SKS), 0);
+    assert_eq!(same.bi & bit(SFB), 0);
+    assert_eq!(same.sk & bit(SFS), 0);
+
+    let different = pair_flags(key(0, 0), key(1, 0), false);
+    assert_ne!(different.bi & bit(SFB), 0);
+    assert_ne!(different.sk & bit(SFS), 0);
+    assert_eq!(different.bi & bit(SKB), 0);
+    assert_eq!(different.sk & bit(SKS), 0);
+
+    // The same-key skip in a_p_a remains a structural ALT veto.
+    let a = key(1, 0);
+    let p_key = key(0, 9);
+    let flags = tri_flags(a, p_key, a);
+    assert_ne!(flags.bits & bit(RAW_ALT), 0);
+    assert_eq!(flags.bits & bit(ALT), 0);
+    assert_ne!(
+        triple_blockers(
+            a,
+            p_key,
+            a,
+            pair_flags(a, p_key, false),
+            pair_flags(p_key, a, false),
+            pair_flags(a, a, true),
+        ) & bit(SKS),
+        0
+    );
 }
 
 #[test]
@@ -1291,7 +1343,7 @@ fn directional_rolls_match_mana_finger_rules_without_thumbs() {
                     matches!(expected, Some(OUT2 | OUT3))
                 );
                 if expected.is_some() {
-                    assert_eq!(flags.bits & (bit(REDIR) | bit(OSF)), 0);
+                    assert_eq!(flags.bits & bit(REDIR), 0);
                 }
             }
         }
@@ -1467,7 +1519,7 @@ fn thumb_rolls_have_their_own_denominator_and_inward_finger_rank() {
         let flags = tri_flags_with_settings(a, b, c, with_thumbs);
         assert!(!flags.main); // Other rhythm metrics still exclude this triple.
         assert_ne!(flags.bits & bit(kind), 0);
-        assert_eq!(flags.bits & (bit(ALT) | bit(REDIR) | bit(OSF)), 0);
+        assert_eq!(flags.bits & (bit(ALT) | bit(REDIR)), 0);
     }
     assert_eq!(
         roll_kind_with_settings(left, pinky, left, with_thumbs),

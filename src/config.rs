@@ -350,7 +350,7 @@ mod config_tests {
         let mut legacy = AppConfig::default();
         legacy.weights = weights_from_text("fsb = 9\nsfs = 2\n").unwrap();
         legacy.search = search_from_text("method = sweep\nseconds = 17\ncorpus.books = 2\n").unwrap();
-        legacy.rank_columns = parse_rank_columns("SCORE SFB OSF").unwrap();
+        legacy.rank_columns = parse_rank_columns("SCORE SFB SKB SKS").unwrap();
 
         let parsed = parse_app_config(&app_config_text(&legacy)).unwrap();
         assert_eq!(parsed.weights.0, legacy.weights.0);

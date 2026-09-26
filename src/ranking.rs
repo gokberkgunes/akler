@@ -9,7 +9,7 @@ const RANK_Y: usize = 3;
 const RANK_DATA: usize = 6;
 
 const RANK_ORDER: [usize; RANK_COUNT] = [
-    RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB, LSS, REDIR, WRED, WISH, OSF, SRAF, ROLL,
+    RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB, LSS, REDIR, WRED, WISH, SRAF, ROLL,
     INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
     DFSB, CFSB, DFSS, CFSS, ALT, DSB, CSB, DSS, CSS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
 ];
@@ -439,7 +439,7 @@ impl RankColumns {
 }
 
 const RANK_DEFAULT_COLUMNS: &[usize] = &[
-    RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS,
+    RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS,
     LSB, LSS, REDIR, INROLL, OUTROLL, ALT, RANK_COVERAGE,
 ];
 
@@ -1092,9 +1092,12 @@ mod ranker_tests {
     #[test]
     fn ranker_defaults_and_saved_column_round_trip() {
         let hidden = default_rank_columns();
+        for metric in [SFB, SKB, SFS, SKS] {
+            assert!(!hidden[metric]);
+        }
         assert!(!hidden[FSB]);
         assert!(!hidden[FSS]);
-        for metric in [DFSB, CFSB, DFSS, CFSS, DSB, CSB, DSS, CSS, OSF] {
+        for metric in [DFSB, CFSB, DFSS, CFSS, DSB, CSB, DSS, CSS] {
             assert!(hidden[metric]);
         }
         assert_eq!(parse_rank_columns(&rank_columns_text(&hidden)).unwrap(), hidden);

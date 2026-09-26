@@ -25,7 +25,9 @@ pinky < ring < index < middle; this is a modeling choice.
 | Metric | Meaning | Weight key | Default |
 |---|---|---|---:|
 | SFB | Different keys on the same finger; excludes same-key repeats. | `sfb` | 12 |
-| SFS | Same-finger rule on skipgram endpoints (see evaluator distinction above). | `sfs` | 1.5 |
+| SKB | Same physical key twice in a row. | `skb` | 0 |
+| SFS | Different keys on the same finger at the skipgram endpoints. | `sfs` | 1.5 |
+| SKS | Same physical key at both skipgram endpoints. | `sks` | 0 |
 | FSB / FSS | Full scissors: adjacent fingers on the same hand, two rows apart. Totals of their D/C children. | Display totals only | — |
 | DFSB / DFSS | Discordant full scissors. | `dfsb` / `dfss` | 4 / 1.5 |
 | CFSB / CFSS | Concordant full scissors. | `cfsb` / `cfss` | 2 / 0.75 |
@@ -36,6 +38,7 @@ pinky < ring < index < middle; this is a modeling choice.
 
 Scissors/stretch/row-change categories exclude thumbs. SFB/SFS use physical
 finger identity, so different physical keys assigned to the same thumb can count.
+SKB/SKS use physical key identity and include thumb keys.
 
 Scissors, one/two-row changes, and same-row preferences use logical keyboard
 rows. Numeric horizontal row offsets and vertical column offsets do not change
@@ -50,16 +53,15 @@ Different metrics also use different denominators.
 ## Triple metrics and preferences
 
 Rhythm metrics exclude thumbs by default; `[rolls] include_thumbs` can include
-them specifically in roll metrics. A *clean* SRAF/ALT pattern has no SFB/SFS, scissors,
-lateral stretch, other two-row change, redirect, or repeated-finger penalty
-across AB, BC, and skip AC.
+them specifically in roll metrics. A *clean* SRAF/ALT pattern has no SFB/SFS,
+SKB/SKS, scissors, lateral stretch, other two-row change, or redirect across
+AB, BC, and skip AC.
 
 | Metric | Meaning | Weight key | Default |
 |---|---|---|---:|
 | RED | Three presses on one hand; finger direction reverses, with both steps nonzero. | `red` | 0.75 |
 | WRED | RED with no index finger. Subset of RED, carrying an additional penalty. | `wred` | 2.5 |
 | WISH | RED with an index finger and at least one ring/pinky. Subset of RED. | `wish` | 1.25 |
-| OSF | A non-thumb triple repeats any finger in AB, BC, or AC, except WRED triples. Includes same-key repeats. | `osf` | 0.5 |
 | SRAF | Clean same-row adjacent-finger pair on one hand. | `sraf_reward` | 0.25 |
 | ROLL | IN2 + OUT2 + IN3 + OUT3; combined roll credit. | `roll_reward` | 0.25 |
 | INROLL / OUTROLL | IN2 + IN3 / OUT2 + OUT3. | Display only | — |
@@ -101,13 +103,6 @@ SRAF remains a pair metric. SRAF/ALT details can show `clean`, `raw` (shape
 before blockers), or `rejected` (raw minus clean); their scoring remains clean
 credit. Roll details show the directional physical trigrams directly.
 
-OSF is a broad repeated-finger measure, not an independent class of events.
-It overlaps SFB/SFS where different keys repeat a finger, can overlap RED/WISH,
-and additionally includes same-key repeats that SFB/SFS exclude. It is useful
-as an optional diagnostic or extra penalty, rather than a required headline
-column. Hiding it leaves scoring unchanged; setting `osf = 0` deliberately
-changes the objective. It still blocks clean rewards under the current model.
-
 ## Travel, usage, and score
 
 | Field | Meaning | Weight key | Default |
@@ -117,7 +112,7 @@ changes the objective. It still blocks clean rewards under the current model.
 | LTRAVEL | Horizontal component of that home distance, including numeric row offsets and preset stagger. | `ltravel` | 0 |
 | SFTRAVEL | Euclidean distance between consecutive main-finger presses using the same finger. | `sftravel` | 0.10 |
 | Usage | Presses assigned to each finger. | None | — |
-| Off | Main-finger presses outside the eight home positions. | `off_pinky`, `off_ring`, `off_middle`, `off_index` | 0.60, 0.20, 0.05, 0 |
+| Off | Main-finger presses outside the eight home positions. | `off_pinky`, `off_ring`, `off_middle`, `off_index` | 0.60, 0.20, 0.05, 0.1 |
 
 Travel uses **key units per 100 events** (`u/100`), not percent. TRAVEL/VTRAVEL/
 LTRAVEL measure distance from home, not a reconstructed hand trajectory. Thumb
@@ -130,10 +125,10 @@ fingers, not usage intensity.
 
 Normalization uses supported physical events:
 
-- Pair penalties and SFTRAVEL: all mapped bigrams, including thumbs.
-- Skip penalties: all mapped skipgrams, including thumbs.
+- Bigram penalties (including SKB) and SFTRAVEL: all mapped bigrams, including thumbs.
+- Skip penalties (including SKS): all mapped skipgrams, including thumbs.
 - SRAF: mapped non-thumb bigrams; blocked pairs stay in the denominator.
-- RED/WRED/WISH/OSF and ALT: mapped non-thumb trigrams; nonmatching and blocked
+- RED/WRED/WISH and ALT: mapped non-thumb trigrams; nonmatching and blocked
   triples stay in the denominator.
 - All roll types/totals: mapped non-thumb trigrams by default, or all mapped
   trigrams with `include_thumbs = true`. Rolls rejected by movement filters
@@ -171,7 +166,7 @@ Simple mode uses only seven terms, configured in `[search]` in `akler.conf`:
 | Setting | Meaning | Default |
 |---|---|---:|
 | `simple_sfb` | SFB penalty. | 12 |
-| `simple_sfs` | SFS penalty. | 1.5 |
+| `simple_sfs` | SFS penalty. | 4 |
 | `simple_lateral` | Combined bigram/skipgram lateral-stretch penalty. | 2 |
 | `simple_row1` | Combined one-row-change penalty. | 0.75 |
 | `simple_row2` | Combined two-row-change penalty. | 2 |
@@ -179,7 +174,7 @@ Simple mode uses only seven terms, configured in `[search]` in `akler.conf`:
 | `simple_roll_reward` | Combined ROLL credit, using the same `[rolls]` filters as detailed mode. | 0.25 |
 
 Combined pair/skip terms divide their summed counts by bigram + skipgram mass.
-Simple mode does not add detailed scissors, OSF, travel, or off-home weights.
+Simple mode does not add detailed scissors, SKB/SKS, travel, or off-home weights.
 Both optimizers support simple mode. The ranker always uses detailed weights;
 its SCORE need not equal a simple-mode or mixed-corpus search objective. See
 [settings](USAGE.md#search-settings).

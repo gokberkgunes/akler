@@ -16,7 +16,7 @@ const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 // This is a modeling assumption, not a universal anatomical measurement.
 const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
-const N_METRICS: usize = 33;
+const N_METRICS: usize = 34;
 
 const N_WEIGHTS: usize = N_METRICS + 4;
 
@@ -24,68 +24,70 @@ const SFB: usize = 0;
 
 const SFS: usize = 1;
 
-const FSB: usize = 2;
+const SKB: usize = 2;
 
-const HSB: usize = 3;
+const SKS: usize = 3;
 
-const FSS: usize = 4;
+const FSB: usize = 4;
 
-const HSS: usize = 5;
+const HSB: usize = 5;
 
-const LSB: usize = 6;
+const FSS: usize = 6;
 
-const LSS: usize = 7;
+const HSS: usize = 7;
 
-const DSB: usize = 8;
+const LSB: usize = 8;
 
-const DSS: usize = 9;
+const LSS: usize = 9;
 
-const REDIR: usize = 10;
+const DSB: usize = 10;
 
-const WRED: usize = 11;
+const DSS: usize = 11;
 
-const WISH: usize = 12;
+const REDIR: usize = 12;
 
-const OSF: usize = 13;
+const WRED: usize = 13;
 
-const SRAF: usize = 14;
+const WISH: usize = 14;
 
-const ROLL: usize = 15;
+const SRAF: usize = 15;
 
-const DFSB: usize = 16;
+const ROLL: usize = 16;
 
-const CFSB: usize = 17;
+const DFSB: usize = 17;
 
-const DFSS: usize = 18;
+const CFSB: usize = 18;
 
-const CFSS: usize = 19;
+const DFSS: usize = 19;
 
-const ALT: usize = 20;
+const CFSS: usize = 20;
 
-const CSB: usize = 21;
+const ALT: usize = 21;
 
-const CSS: usize = 22;
+const CSB: usize = 22;
 
-const TRAVEL: usize = 23;
+const CSS: usize = 23;
 
-const VTRAVEL: usize = 24;
+const TRAVEL: usize = 24;
 
-const LTRAVEL: usize = 25;
+const VTRAVEL: usize = 25;
 
-const SFTRAVEL: usize = 26;
+const LTRAVEL: usize = 26;
+
+const SFTRAVEL: usize = 27;
 
 // Roll breakdowns are display-only; ROLL carries their combined reward.
-const IN2: usize = 27;
+const IN2: usize = 28;
 
-const OUT2: usize = 28;
+const OUT2: usize = 29;
 
-const IN3: usize = 29;
+const IN3: usize = 30;
 
-const OUT3: usize = 30;
+const OUT3: usize = 31;
 
-const INROLL: usize = 31;
+const INROLL: usize = 32;
 
-const OUTROLL: usize = 32;
+const OUTROLL: usize = 33;
 
 const USAGE: usize = N_METRICS;
 
@@ -122,8 +124,8 @@ const SIMPLE_KEYS: [&str; 7] = ["sfb", "sfs", "lateral", "row1", "row2", "sraf_r
 const DEFAULT_SIMPLE: [f64; 7] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25];
 
 const METRIC_NAMES: [&str; N_METRICS] = [
-    "SFB", "SFS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
-    "DSB", "DSS", "RED", "WRED", "WISH", "OSF", "SRAF", "ROLL",
+    "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
+    "DSB", "DSS", "RED", "WRED", "WISH", "SRAF", "ROLL",
     "DFSB", "CFSB", "DFSS", "CFSS", "ALT", "CSB", "CSS",
     "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL",
     "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL",
@@ -131,8 +133,8 @@ const METRIC_NAMES: [&str; N_METRICS] = [
 
 // FSB/FSS and roll breakdowns are display-only. Weight D/C scissors and total ROLL.
 const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
-    "sfb", "sfs", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dsb", "dss",
-    "red", "wred", "wish", "osf", "sraf_reward", "roll_reward",
+    "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dsb", "dss",
+    "red", "wred", "wish", "sraf_reward", "roll_reward",
     "dfsb", "cfsb", "dfss", "cfss", "alt_reward", "csb", "css",
     "travel", "vtravel", "ltravel", "sftravel",
     "in2", "out2", "in3", "out3", "inroll", "outroll",
@@ -143,7 +145,9 @@ const FINGER_NAMES: [&str; 10] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP"
 
 const METRIC_HELP: [&str; N_METRICS] = [
     "Different keys on the same physical finger. Same-key repeats excluded.",
-    "Same-finger skipgram; endpoints are separated by one corpus character.",
+    "Different keys on the same finger with one intervening press.",
+    "Same physical key twice in a row.",
+    "Same physical key at both skipgram endpoints.",
     "Full scissors: adjacent different fingers, two rows apart. FSB = DFSB + CFSB. Display total, not an extra penalty.",
     "Adjacent fingers; shorter finger above longer finger; one row apart. Unchanged discordant half-scissor rule.",
     "Full-scissor skipgrams: FSS = DFSS + CFSS. Display total, not an extra penalty.",
@@ -155,7 +159,6 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Same-hand, no-thumb trigram whose finger direction reverses.",
     "Redirect with no index finger. Subset of RED, with an extra penalty.",
     "Redirect with an index and a ring/pinky. Subset of RED.",
-    "No-thumb trigram repeats a finger, including same-key repeats; excludes WRED.",
     "Clean same-row adjacent-finger bigram. Same hand, no thumbs; lateral stretches receive no credit.",
     "Total directional rolls: IN2 + OUT2 + IN3 + OUT3. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
     "Discordant full-scissor bigram: adjacent fingers, shorter above longer, two rows apart.",
@@ -194,13 +197,13 @@ fn bit(m: usize) -> u64 {
 }
 
 fn is_skip(m: usize) -> bool {
-    matches!(m, SFS|FSS|HSS|LSS|DSS|DFSS|CFSS|CSS)
+    matches!(m, SFS|SKS|FSS|HSS|LSS|DSS|DFSS|CFSS|CSS)
 }
 
 fn is_rhythm(m: usize) -> bool {
     matches!(
         m,
-        REDIR | WRED | WISH | OSF | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL
+        REDIR | WRED | WISH | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL
     )
 }
 
@@ -494,18 +497,21 @@ struct PairFlags {
 
 // Local movement events veto SRAF and ALT credit, but not basic rolls.
 // Off-home usage is an aggregate load penalty, not a local movement veto.
-const BAD_BI: u64 = (1<<SFB)|(1<<FSB)|(1<<DFSB)|(1<<CFSB)|(1<<HSB)|(1<<LSB)|(1<<DSB)|(1<<CSB);
+const BAD_BI: u64 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DFSB)|(1<<CFSB)|(1<<HSB)|(1<<LSB)|(1<<DSB)|(1<<CSB);
 
-const BAD_SK: u64 = (1<<SFS)|(1<<FSS)|(1<<DFSS)|(1<<CFSS)|(1<<HSS)|(1<<LSS)|(1<<DSS)|(1<<CSS);
+const BAD_SK: u64 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DFSS)|(1<<CFSS)|(1<<HSS)|(1<<LSS)|(1<<DSS)|(1<<CSS);
 
-const BAD_TRI: u64 = (1<<REDIR)|(1<<WRED)|(1<<WISH)|(1<<OSF);
+const BAD_TRI: u64 = (1<<REDIR)|(1<<WRED)|(1<<WISH);
 
 fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     let mut f = PairFlags {
         main: a.main && b.main,
         ..PairFlags::default()
     };
-    if !same_key && a.finger == b.finger {
+    if same_key {
+        f.bi|=bit(SKB);
+        f.sk|=bit(SKS);
+    } else if a.finger == b.finger {
         f.bi|=bit(SFB);
         f.sk|=bit(SFS);
     }
@@ -581,7 +587,6 @@ fn trigram_penalties(a: Key, b: Key, c: Key) -> u64 {
     let red = is_redirect(a, b, c);
     let weak = red && !(a.index() || b.index() || c.index());
     let wish = red && !weak &&(a.weak() || b.weak() || c.weak());
-    let repeated = a.finger == b.finger || b.finger == c.finger || a.finger == c.finger;
     let mut bits = 0;
     if red {
         bits|=bit(REDIR);
@@ -591,9 +596,6 @@ fn trigram_penalties(a: Key, b: Key, c: Key) -> u64 {
     }
     if wish {
         bits|=bit(WISH);
-    }
-    if repeated && !weak {
-        bits|=bit(OSF);
     }
     bits
 }
@@ -1740,8 +1742,8 @@ impl Weights {
 impl Default for Weights {
     fn default() -> Self {
         Self::new([
-                12.0, 1.5, 0.0, 1.0, 0.0, 0.4, 3.0, 0.75, 1.0, 0.25,
-                0.75, 2.5, 1.25, 0.5, 0.25, 0.25,
+                12.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.4, 3.0, 0.75, 1.0, 0.25,
+                0.75, 2.5, 1.25, 0.25, 0.25,
                 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15,
                 0.02, 0.0, 0.0, 0.10,
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -1906,7 +1908,7 @@ fn contribution_mass(m: usize, raw: &Raw, view: CreditView) -> f64 {
 fn blocker_names(bits: u64) -> String {
     let mut names = Vec::new();
     // Show the D/C children instead of repeating the aggregate FSB/FSS label.
-    for m in [SFB, SFS, DFSB, CFSB, DFSS, CFSS, HSB, HSS, LSB, LSS, DSB, DSS, CSB, CSS, REDIR, WRED, WISH, OSF] {
+    for m in [SFB, SFS, SKB, SKS, DFSB, CFSB, DFSS, CFSS, HSB, HSS, LSB, LSS, DSB, DSS, CSB, CSS, REDIR, WRED, WISH] {
         if bits&bit(m) != 0 {
             names.push(METRIC_NAMES[m]);
         }

@@ -63,9 +63,6 @@ impl LocalEffort {
                         }
                     }
                 }
-                if i == j {
-                    bi[i * n + j] += 2.0;
-                }
             }
         }
         Self { uni, bi, sk, n }
@@ -2298,9 +2295,10 @@ mod ngram_integration_tests {
     fn ranked_action_details_keep_root_physical_key_names() {
         let layout = history_layout();
         let corpus = history_corpus(b"aan");
-        // Zero metric weights isolate the intended action win over the
-        // hardcoded same-key repeat cost without relying on saved defaults.
-        let weights = Weights::new([0.0; N_WEIGHTS]);
+        // Make the action win over the literal same-key repeat without relying
+        // on saved defaults or unrelated metric weights.
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SKB] = 2.0;
         let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
         let rows = action_contributor_rows(SFB, &layout, &evaluation, &evaluation);
         assert!(rows.iter().any(|(keys, before, after)| {
@@ -2484,7 +2482,8 @@ mod ngram_integration_tests {
     fn simple_action_details_use_physical_labels_and_exact_simple_components() {
         let layout = history_layout();
         let corpus = history_corpus(b"aanwaapnwhn");
-        let weights = Weights::new([0.0; N_WEIGHTS]);
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SKB] = 2.0;
         let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
         for metric in 0..7 {
             let rows = action_simple_rows(metric, &layout, &evaluation, &evaluation);
@@ -2535,7 +2534,8 @@ mod ngram_integration_tests {
         let stop = AtomicBool::new(false);
         // Exercise an actual action winner; default stretch penalties can make
         // the literal repeat cheaper than a -> @ in this geometry.
-        let w = Weights::new([0.0; N_WEIGHTS]);
+        let mut w = Weights::new([0.0; N_WEIGHTS]);
+        w.0[SKB] = 2.0;
         let effort = LocalEffort::new(&l, &w);
         let a = history_key(&l, "a");
         let action = history_key(&l, "@");
@@ -2707,13 +2707,30 @@ mod ngram_integration_tests {
     }
 
     #[test]
+    fn zero_skb_weight_adds_no_same_key_effort() {
+        let l = history_layout();
+        let a = history_key(&l, "a");
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        let effort = LocalEffort::new(&l, &weights);
+        assert_eq!(effort.get(None, Some(a), a), effort.get(None, None, a));
+
+        weights.0[SKB] = 2.0;
+        let weighted = LocalEffort::new(&l, &weights);
+        assert_eq!(
+            weighted.get(None, Some(a), a),
+            weighted.get(None, None, a) + 2.0,
+        );
+    }
+
+    #[test]
     fn action_n_and_action_p_are_physical_sfb_in_both_evaluators() {
         let l = history_layout();
         let m = history_key(&l, "@");
         let a = history_key(&l, "a");
         // Metric classification is independent of weights. Make the repeat
         // action win so this test measures physical history, not default policy.
-        let w = Weights::new([0.0; N_WEIGHTS]);
+        let mut w = Weights::new([0.0; N_WEIGHTS]);
+        w.0[SKB] = 2.0;
         let effort = LocalEffort::new(&l, &w);
         assert!(effort.get(None, Some(a), m) < effort.get(None, Some(a), a));
 
