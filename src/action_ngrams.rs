@@ -34,7 +34,7 @@ impl Counts {
     }
 
     fn report_json(&self, layout: &ak::Layout) -> String {
-        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"greedy local effort within each cached context; literal wins ties\",\n  \"keys\": [", self.order);
+        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"safe magic before literal, then greedy local effort within each cached context\",\n  \"keys\": [", self.order);
         for (i, slot) in layout.slots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -1599,6 +1599,13 @@ mod tests {
     fn key(l: &ak::Layout, label: &str) -> usize {
         l.slots.iter().position(|s| s.label == label).unwrap()
     }
+
+    fn action_key(l: &ak::Layout, name: &str) -> usize {
+        l.slots
+            .iter()
+            .position(|slot| matches!(&slot.binding, ak::Binding::Named(bound) if bound == name))
+            .unwrap()
+    }
     #[test]
     fn plain_counts_equal_direct_counts_for_every_order() {
         let l = plain();
@@ -1681,6 +1688,104 @@ mod tests {
         assert_eq!(counts.action_presses, 1.0);
         assert_eq!(
             counts.tables[1].get(&vec![key(&l, "a"), magic_key]),
+            Some(&1.0)
+        );
+    }
+    #[test]
+    fn safe_magic_priority_respects_the_previous_finger() {
+        let l = magic();
+        let c = corpus(b"aa", 3);
+        let magic_key = key(&l, "@");
+        let counts = c
+            .evaluate(
+                &l,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |_, _, next| if next == magic_key { 100.0 } else { 0.0 },
+            )
+            .unwrap();
+        assert_eq!(counts.action_presses, 1.0);
+        assert_eq!(
+            counts.tables[1].get(&vec![key(&l, "a"), magic_key]),
+            Some(&1.0)
+        );
+
+        let same_finger = ak::Layout::parse(
+            "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction m = magic\nfallback m = repeat-output\n",
+            Path::new("same-finger-magic.dat"),
+        )
+        .unwrap();
+        let same_finger_action = action_key(&same_finger, "m");
+        let counts = c
+            .evaluate(
+                &same_finger,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |_, _, next| {
+                    if next == same_finger_action {
+                        -100.0
+                    } else {
+                        0.0
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(counts.action_presses, 0.0);
+        assert_eq!(
+            counts.tables[1].get(&vec![key(&same_finger, "a"), key(&same_finger, "a")]),
+            Some(&1.0)
+        );
+    }
+    #[test]
+    fn safe_skip_magic_priority_respects_the_two_back_finger() {
+        let safe = ak::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , @sk /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
+            Path::new("safe-skip-magic.dat"),
+        )
+        .unwrap();
+        let c = corpus(b"aba", 3);
+        let safe_action = action_key(&safe, "sk");
+        let counts = c
+            .evaluate(
+                &safe,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |_, _, next| if next == safe_action { 100.0 } else { 0.0 },
+            )
+            .unwrap();
+        assert_eq!(counts.action_presses, 1.0);
+        assert_eq!(
+            counts.tables[2].get(&vec![key(&safe, "a"), key(&safe, "b"), safe_action,]),
+            Some(&1.0)
+        );
+
+        let same_finger = ak::Layout::parse(
+            "@sk w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
+            Path::new("same-finger-skip-magic.dat"),
+        )
+        .unwrap();
+        let same_finger_action = action_key(&same_finger, "sk");
+        let counts = c
+            .evaluate(
+                &same_finger,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |_, _, next| {
+                    if next == same_finger_action {
+                        -100.0
+                    } else {
+                        0.0
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(counts.action_presses, 0.0);
+        assert_eq!(
+            counts.tables[2].get(&vec![
+                key(&same_finger, "a"),
+                key(&same_finger, "b"),
+                key(&same_finger, "a"),
+            ]),
             Some(&1.0)
         );
     }

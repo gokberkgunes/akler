@@ -169,17 +169,12 @@ fn bool_field(map: &BTreeMap<String, Json>, field: &str, default: bool) -> ak::R
     }
 }
 
-fn key_token(token: &str, native_actions: &BTreeSet<String>) -> ak::Result<String> {
+fn key_token(token: &str) -> ak::Result<String> {
     if let Some(value) = token.strip_prefix("char:") {
         if value.len() == 1 && value.as_bytes()[0].is_ascii_graphic() {
             return Ok(token.into());
         }
         return Err("char: requires one printable non-space ASCII character".into());
-    }
-    if let Some(name) = token.strip_prefix('@') {
-        if native_actions.contains(name) {
-            return Ok(token.into());
-        }
     }
     if token == "space" || token == "␠" {
         return Ok(" ".into());
@@ -215,30 +210,211 @@ fn dat_key(label: &str, actions: &BTreeMap<String, String>) -> String {
     }
 }
 
-fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
-    let (native_dat, native_labels) = crate::layout_export::native_action_dat(root)?;
-    let native_actions: BTreeSet<String> = match root.get("akler").or_else(|| root.get("layouter"))
-    {
-        Some(extension) => match object(extension, "akler")?.get("actions") {
-            Some(actions) => object(actions, "akler.actions")?.keys().cloned().collect(),
-            None => BTreeSet::new(),
-        },
-        None => BTreeSet::new(),
+#[derive(Clone)]
+enum RuleOutput {
+    Text(Vec<u8>),
+    CallKey(String),
+}
+
+struct ImportedRules {
+    basis: &'static str,
+    rules: BTreeMap<Vec<u8>, RuleOutput>,
+    fallback: String,
+}
+
+fn physical_key(value: &Json, field: &str, labels: &BTreeSet<String>) -> ak::Result<String> {
+    let key = key_token(string(value, field)?)?;
+    if key.is_empty() || !labels.contains(&key) {
+        return Err(format!("{field} refers to missing physical key {key:?}"));
+    }
+    Ok(key)
+}
+
+fn fallback_text(value: Option<&Json>, default: &str, field: &str) -> ak::Result<String> {
+    let fallback = match value {
+        None | Some(Json::Null) => return Ok(default.into()),
+        Some(value) => string(value, field)?,
     };
-    let mut origins = [0_i8; 3];
-    if let Some(extension) = root.get("akler").or_else(|| root.get("layouter")) {
-        if let Some(value) = object(extension, "akler")?.get("columnOrigins") {
-            let values = array(value, "akler.columnOrigins")?;
-            if values.len() != 3 {
-                return Err("akler.columnOrigins needs three values".into());
+    match fallback {
+        "none" => Ok("none".into()),
+        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" => {
+            Ok(fallback.into())
+        }
+        "inactive" => Ok("@inactive".into()),
+        text if text.len() == 1 && text.as_bytes()[0].is_ascii_graphic() => {
+            Ok(ak::quote(text.as_bytes()))
+        }
+        _ => Err(format!(
+            "{field}: expected none, a repeat action, inactive, or one printable ASCII character"
+        )),
+    }
+}
+
+fn import_wildcard_magic(
+    magic: &BTreeMap<String, Json>,
+    labels: &BTreeSet<String>,
+    action_names: &mut BTreeMap<String, String>,
+    action_defs: &mut BTreeMap<String, ImportedRules>,
+) -> ak::Result<()> {
+    let keys = string(required(magic, "keys")?, "magic.keys")?;
+    let wildcard = string(required(magic, "wildcards")?, "magic.wildcards")?;
+    if wildcard.len() != 1 || !wildcard.as_bytes()[0].is_ascii_graphic() {
+        return Err("magic.wildcards must be one printable ASCII character".into());
+    }
+    let mut key_labels = BTreeSet::new();
+    for key in keys.chars() {
+        let label = key.to_string();
+        if !labels.contains(&label) {
+            return Err(format!(
+                "magic.keys refers to missing physical key {label:?}"
+            ));
+        }
+        if !key_labels.insert(label) {
+            return Err(format!("magic.keys contains duplicate key {key:?}"));
+        }
+    }
+    if key_labels.is_empty() {
+        return Err("magic.keys must name at least one physical key".into());
+    }
+    if wildcard == "_" || key_labels.contains(wildcard) {
+        return Err("magic.wildcards cannot be '_' or a magic key".into());
+    }
+    let rule_values = magic
+        .get("rules")
+        .filter(|value| !matches!(value, Json::Null));
+    let rules = if let Some(value) = rule_values {
+        array(value, "magic.rules")?
+    } else {
+        return Err("magic.rules must contain a wildcard rule for each magic key".into());
+    };
+    let mut definitions: BTreeMap<String, ImportedRules> = BTreeMap::new();
+    let mut wildcard_positions = BTreeMap::new();
+    let mut explicit = Vec::new();
+    for (position, value) in rules.iter().enumerate() {
+        let rule = object(value, "magic rule")?;
+        let input = string(required(rule, "inputs")?, "magic rule inputs")?.to_ascii_lowercase();
+        let label = key_labels
+            .iter()
+            .find(|label| input.ends_with(label.as_str()))
+            .ok_or_else(|| format!("magic rule {input:?} must end with a key from magic.keys"))?
+            .clone();
+        let prefix = input.strip_suffix(&label).unwrap();
+        let text_wildcard = prefix == wildcard;
+        let skip_wildcard = prefix == format!("{wildcard}_");
+        if text_wildcard || skip_wildcard {
+            if rule.contains_key("call") {
+                return Err(format!("magic wildcard rule {input:?} needs output"));
             }
-            for (target, value) in origins.iter_mut().zip(values) {
-                *target = match value {
-                    Json::Number(value) if *value == 0.0 => 0,
-                    Json::Number(value) if *value == -1.0 => -1,
-                    _ => return Err("akler.columnOrigins supports only 0 and -1".into()),
+            let output = string(required(rule, "output")?, "magic wildcard output")?;
+            let expected = if text_wildcard {
+                format!("{wildcard}{wildcard}")
+            } else {
+                format!("{wildcard}_{wildcard}")
+            };
+            if output != expected {
+                return Err(format!(
+                    "magic wildcard rule {input:?} must output {expected:?}"
+                ));
+            }
+            definitions.insert(
+                label.clone(),
+                ImportedRules {
+                    basis: if text_wildcard { "magic" } else { "skip-magic" },
+                    rules: BTreeMap::new(),
+                    fallback: if text_wildcard {
+                        "repeat-output".into()
+                    } else {
+                        "repeat-previous-output".into()
+                    },
+                },
+            );
+            wildcard_positions.insert(label, position);
+        } else {
+            explicit.push((position, label, input, rule));
+        }
+    }
+    for label in &key_labels {
+        if !definitions.contains_key(label) {
+            return Err(format!("magic key {label:?} needs a wildcard rule"));
+        }
+    }
+    for (position, label, input, rule) in explicit {
+        if position < wildcard_positions[&label] {
+            continue;
+        }
+        let definition = definitions.get_mut(&label).unwrap();
+        let prefix = input.strip_suffix(&label).unwrap();
+        let context = if definition.basis == "skip-magic" {
+            let context = prefix.strip_suffix('_').ok_or_else(|| {
+                format!("magic skip rule {input:?} must use '_' for its skipped key")
+            })?;
+            if context.len() != 1
+                || !context.as_bytes()[0].is_ascii_graphic()
+                || !labels.contains(context)
+            {
+                return Err(format!(
+                    "magic skip rule {input:?} needs one physical key before '_'"
+                ));
+            }
+            context
+        } else {
+            if prefix.is_empty() || !prefix.bytes().all(|byte| (32..=126).contains(&byte)) {
+                return Err(format!(
+                    "magic rule {input:?} needs printable text before its key"
+                ));
+            }
+            prefix
+        };
+        let output = match (rule.get("output"), rule.get("call")) {
+            (Some(value), None) => {
+                let output = string(value, "magic rule output")?.to_ascii_lowercase();
+                let expected = if definition.basis == "skip-magic" {
+                    format!("{context}_")
+                } else {
+                    context.to_string()
                 };
+                let emitted = output.strip_prefix(&expected).ok_or_else(|| {
+                    format!("magic rule {input:?}: output must preserve {expected:?}")
+                })?;
+                if emitted.len() != 1 || !emitted.as_bytes()[0].is_ascii_graphic() {
+                    return Err(format!(
+                        "magic rule {input:?} must append one printable ASCII character"
+                    ));
+                }
+                RuleOutput::Text(emitted.as_bytes().to_vec())
             }
+            (None, Some(value)) if definition.basis == "skip-magic" => {
+                RuleOutput::CallKey(physical_key(value, "magic rule call", labels)?)
+            }
+            _ => {
+                return Err(format!(
+                    "magic rule {input:?} needs exactly one valid output or call"
+                ))
+            }
+        };
+        definition.rules.insert(context.as_bytes().to_vec(), output);
+    }
+    for (label, definition) in definitions {
+        let name = if label == "@" {
+            "magic".to_string()
+        } else if label == "$" {
+            "skip".to_string()
+        } else {
+            label.clone()
+        };
+        action_names.insert(label, name.clone());
+        action_defs.insert(name, definition);
+    }
+    Ok(())
+}
+
+fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
+    for field in root.keys() {
+        if !matches!(
+            field.as_str(),
+            "layout" | "fingermap" | "board" | "layers" | "magic" | "skip" | "combos"
+        ) {
+            return Err(format!("unsupported JSON layout field {field:?}"));
         }
     }
     empty_feature(root, "layers")?;
@@ -254,7 +430,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
     for (row, value) in fingers.iter().enumerate() {
         let tokens = string(value, "layout.fingers row")?
             .split_whitespace()
-            .map(|token| key_token(token, &native_actions))
+            .map(key_token)
             .collect::<ak::Result<Vec<_>>>()?;
         if !(10..=12).contains(&tokens.len()) {
             return Err(format!(
@@ -276,7 +452,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             let group = string(value, "layout.thumbs hand")?;
             thumbs[hand] = group
                 .split_whitespace()
-                .map(|token| key_token(token, &native_actions))
+                .map(key_token)
                 .collect::<ak::Result<Vec<_>>>()?;
         }
     }
@@ -313,10 +489,9 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         .chain(thumbs.iter().flatten())
         .cloned()
         .collect();
-    let mut rules: BTreeMap<String, BTreeMap<Vec<u8>, Vec<u8>>> = BTreeMap::new();
-    for label in labels.iter().filter(|label| dedicated_magic_label(label)) {
-        rules.entry(label.clone()).or_default();
-    }
+    let mut action_names = BTreeMap::new();
+    let mut action_defs: BTreeMap<String, ImportedRules> = BTreeMap::new();
+
     if let Some(magic) = root
         .get("magic")
         .filter(|value| !matches!(value, Json::Null))
@@ -324,71 +499,192 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         let magic = object(magic, "magic")?;
         empty_feature(magic, "magicKeys")?;
         empty_feature(magic, "combos")?;
-        if let Some(value) = magic
-            .get("rules")
-            .filter(|value| !matches!(value, Json::Null))
-        {
-            if !native_actions.is_empty() && !array(value, "magic.rules")?.is_empty() {
-                return Err("edit akler.actions for a native-action layout; combining those definitions with magic.rules is not supported".into());
+        if magic.contains_key("keys") || magic.contains_key("wildcards") {
+            if magic.contains_key("key") || magic.contains_key("fallback") {
+                return Err(
+                    "magic.keys and magic.wildcards cannot be combined with key or fallback".into(),
+                );
             }
-            for rule in array(value, "magic.rules")? {
-                let rule = object(rule, "magic rule")?;
-                let input =
-                    string(required(rule, "inputs")?, "magic rule inputs")?.to_ascii_lowercase();
-                let output =
-                    string(required(rule, "output")?, "magic rule output")?.to_ascii_lowercase();
-                let (last, ch) = input
-                    .char_indices()
-                    .last()
-                    .ok_or("magic rule inputs cannot be empty")?;
-                let label = ch.to_string();
-                if !labels.contains(&label) {
-                    return Err(format!(
-                        "magic rule refers to missing physical key {label:?}"
-                    ));
+            import_wildcard_magic(magic, &labels, &mut action_names, &mut action_defs)?;
+        } else {
+            let explicit_key = magic
+                .get("key")
+                .map(|value| physical_key(value, "magic.key", &labels))
+                .transpose()?;
+            let mut grouped: BTreeMap<String, BTreeMap<Vec<u8>, RuleOutput>> = BTreeMap::new();
+            if let Some(key) = &explicit_key {
+                grouped.entry(key.clone()).or_default();
+            } else {
+                for label in labels.iter().filter(|label| dedicated_magic_label(label)) {
+                    grouped.entry(label.clone()).or_default();
                 }
-                let context = &input[..last];
-                if context.is_empty() || !context.bytes().all(|byte| (32..=126).contains(&byte)) {
-                    return Err("magic rule must have a nonempty printable ASCII text context before its final physical key".into());
-                }
-                let Some(emitted) = output.strip_prefix(context) else {
-                    return Err(format!(
+            }
+            if let Some(value) = magic
+                .get("rules")
+                .filter(|value| !matches!(value, Json::Null))
+            {
+                for rule in array(value, "magic.rules")? {
+                    let rule = object(rule, "magic rule")?;
+                    let input = string(required(rule, "inputs")?, "magic rule inputs")?
+                        .to_ascii_lowercase();
+                    let output = string(required(rule, "output")?, "magic rule output")?
+                        .to_ascii_lowercase();
+                    let (last, ch) = input
+                        .char_indices()
+                        .last()
+                        .ok_or("magic rule inputs cannot be empty")?;
+                    let label = ch.to_string();
+                    if explicit_key.as_ref().is_some_and(|key| key != &label) {
+                        return Err(format!(
+                            "magic rule {input:?} must end with magic.key {:?}",
+                            explicit_key.as_ref().unwrap()
+                        ));
+                    }
+                    if !labels.contains(&label) {
+                        return Err(format!(
+                            "magic rule refers to missing physical key {label:?}"
+                        ));
+                    }
+                    let context = &input[..last];
+                    if context.is_empty() || !context.bytes().all(|byte| (32..=126).contains(&byte))
+                    {
+                        return Err("magic rule must have a nonempty printable ASCII text context before its final physical key".into());
+                    }
+                    let Some(emitted) = output.strip_prefix(context) else {
+                        return Err(format!(
                         "magic rule {input:?}: output must preserve its text context {context:?}"
                     ));
-                };
-                if emitted.len() != 1
-                    || !emitted.as_bytes()[0].is_ascii()
-                    || !(32..=126).contains(&emitted.as_bytes()[0])
-                {
-                    return Err(format!("magic rule {input:?}: output must append exactly one printable ASCII character"));
+                    };
+                    if emitted.len() != 1
+                        || !emitted.as_bytes()[0].is_ascii()
+                        || !(32..=126).contains(&emitted.as_bytes()[0])
+                    {
+                        return Err(format!("magic rule {input:?}: output must append exactly one printable ASCII character"));
+                    }
+                    // Mana's loader replaces earlier rules with the same input.
+                    grouped.entry(label).or_default().insert(
+                        context.as_bytes().to_vec(),
+                        RuleOutput::Text(emitted.as_bytes().to_vec()),
+                    );
                 }
-                // Mana's loader replaces earlier rules with the same input.
-                rules
-                    .entry(label)
-                    .or_default()
-                    .insert(context.as_bytes().to_vec(), emitted.as_bytes().to_vec());
+            }
+            for (index, (label, rules)) in grouped.into_iter().enumerate() {
+                let name = if explicit_key.is_some() {
+                    "magic".to_string()
+                } else if matches!(label.as_str(), " " | "=" | "\"") {
+                    format!("json-magic-{index}")
+                } else {
+                    label.clone()
+                };
+                if let Some(previous) = action_names.insert(label.clone(), name.clone()) {
+                    return Err(format!(
+                    "physical key {label:?} refers to both action {previous:?} and action {name:?}"
+                ));
+                }
+                let default = if dedicated_magic_label(&label) {
+                    "repeat-output".to_string()
+                } else {
+                    ak::quote(label.as_bytes())
+                };
+                let fallback = fallback_text(magic.get("fallback"), &default, "magic.fallback")?;
+                action_defs.insert(
+                    name,
+                    ImportedRules {
+                        basis: "magic",
+                        rules,
+                        fallback,
+                    },
+                );
             }
         }
     }
-    let mut action_names = BTreeMap::new();
-    for (index, label) in rules.keys().enumerate() {
-        let name = if matches!(label.as_str(), " " | "=" | "\"") {
-            format!("json-key-{index}")
-        } else {
-            label.clone()
-        };
-        action_names.insert(label.clone(), name);
+
+    if let Some(skip) = root
+        .get("skip")
+        .filter(|value| !matches!(value, Json::Null))
+    {
+        let skip = object(skip, "skip")?;
+        let key = physical_key(required(skip, "key")?, "skip.key", &labels)?;
+        if let Some(previous) = action_names.insert(key.clone(), "skip".into()) {
+            return Err(format!(
+                "physical key {key:?} refers to both action {previous:?} and action \"skip\""
+            ));
+        }
+        let mut rules = BTreeMap::new();
+        if let Some(value) = skip
+            .get("rules")
+            .filter(|value| !matches!(value, Json::Null))
+        {
+            for value in array(value, "skip.rules")? {
+                let rule = object(value, "skip rule")?;
+                let input =
+                    string(required(rule, "inputs")?, "skip rule inputs")?.to_ascii_lowercase();
+                let Some(prefix) = input.strip_suffix(&key) else {
+                    return Err(format!(
+                        "skip rule {input:?} must end with skip.key {key:?}"
+                    ));
+                };
+                let Some(context) = prefix.strip_suffix('_') else {
+                    return Err(format!(
+                        "skip rule {input:?} must use '_' for its one skipped key"
+                    ));
+                };
+                if context.len() != 1 || !context.as_bytes()[0].is_ascii_graphic() {
+                    return Err(format!(
+                        "skip rule {input:?} needs one printable physical key before '_'"
+                    ));
+                }
+                if !labels.contains(context) {
+                    return Err(format!(
+                        "skip rule refers to missing physical key {context:?}"
+                    ));
+                }
+                let output = match (rule.get("output"), rule.get("call")) {
+                    (Some(output), None) => {
+                        let output = string(output, "skip rule output")?.to_ascii_lowercase();
+                        let expected = format!("{context}_");
+                        let Some(emitted) = output.strip_prefix(&expected) else {
+                            return Err(format!(
+                                "skip rule {input:?}: output must preserve {expected:?}"
+                            ));
+                        };
+                        if emitted.len() != 1
+                            || !emitted.as_bytes()[0].is_ascii()
+                            || !(32..=126).contains(&emitted.as_bytes()[0])
+                        {
+                            return Err(format!(
+                                "skip rule {input:?}: output must append exactly one printable ASCII character"
+                            ));
+                        }
+                        RuleOutput::Text(emitted.as_bytes().to_vec())
+                    }
+                    (None, Some(call)) => {
+                        let call = physical_key(call, "skip rule call", &labels)?;
+                        RuleOutput::CallKey(call)
+                    }
+                    _ => return Err("skip rule needs exactly one of output or call".into()),
+                };
+                rules.insert(context.as_bytes().to_vec(), output);
+            }
+        }
+        let fallback = fallback_text(
+            skip.get("fallback"),
+            "repeat-previous-output",
+            "skip.fallback",
+        )?;
+        action_defs.insert(
+            "skip".into(),
+            ImportedRules {
+                basis: "skip-magic",
+                rules,
+                fallback,
+            },
+        );
     }
+
     let mut dat = String::new();
-    let legacy_columns = origins.iter().any(|origin| *origin != 0);
-    for (index, row) in rows.iter().enumerate() {
-        let split = if legacy_columns {
-            (5 - origins[index]) as usize
-        } else if row.len() == 12 {
-            6
-        } else {
-            5
-        };
+    for row in &rows {
+        let split = if row.len() == 12 { 6 } else { 5 };
         let left = row[..split]
             .iter()
             .map(|label| dat_key(label, &action_names))
@@ -419,9 +715,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         "thumbs: {} | {}\n",
         thumb_tokens[0], thumb_tokens[1]
     ));
-    if !legacy_columns {
-        dat.push_str("col-layout: absolute\n");
-    }
+    dat.push_str("col-layout: absolute\n");
     if !fingermap.is_empty() {
         dat.push_str(&format!("fingermap: {}\n", fingermap.join(" / ")));
     }
@@ -438,17 +732,10 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         let row_staggered = bool_field(board, "isRowStaggered", false)?;
         if let Some(value) = board.get("rowOrColumnStagger") {
             let values = array(value, "board.rowOrColumnStagger")?;
-            let first_column = i16::from(*origins.iter().min().unwrap());
-            let last_column = rows
-                .iter()
-                .zip(origins)
-                .map(|(row, origin)| row.len() as i16 + i16::from(origin))
-                .max()
-                .unwrap();
             let expected = if row_staggered {
                 3
             } else {
-                (last_column - first_column) as usize
+                rows.iter().map(Vec::len).max().unwrap()
             };
             if values.len() != expected {
                 return Err(format!(
@@ -471,37 +758,39 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         }
     }
 
-    for (label, entries) in rules {
-        let name = &action_names[&label];
-        dat.push_str(&format!("action {name} = magic\n"));
-        let fallback = if dedicated_magic_label(&label) {
-            "repeat-output".to_string()
-        } else {
-            ak::quote(label.as_bytes())
-        };
-        dat.push_str(&format!("fallback {name} = {fallback}\n"));
-        for (context, output) in entries {
-            dat.push_str(&format!(
-                "map {name} {} = {}\n",
-                ak::quote(&context),
-                ak::quote(&output)
-            ));
+    for (name, definition) in &action_defs {
+        dat.push_str(&format!("action {name} = {}\n", definition.basis));
+        dat.push_str(&format!("fallback {name} = {}\n", definition.fallback));
+        for (context, output) in &definition.rules {
+            let context = if definition.basis == "skip-magic" {
+                let label = std::str::from_utf8(context).unwrap();
+                action_names
+                    .get(label)
+                    .map_or_else(|| context.clone(), |name| name.as_bytes().to_vec())
+            } else {
+                context.clone()
+            };
+            let output = match output {
+                RuleOutput::Text(output) => ak::quote(output),
+                RuleOutput::CallKey(label) => {
+                    let name = action_names.get(label).ok_or_else(|| {
+                        format!("called physical key {label:?} is not a magic or skip key")
+                    })?;
+                    format!("@{name}")
+                }
+            };
+            dat.push_str(&format!("map {name} {} = {output}\n", ak::quote(&context),));
         }
     }
-
-    dat.push_str(&native_dat);
 
     let mut parsed = Layout::parse_dat_preserving_fallbacks(&dat, path)?;
     for slot in &mut parsed.slots {
         if let ak::Binding::Named(name) = &slot.binding {
             if let Some((label, _)) = action_names.iter().find(|(_, value)| *value == name) {
                 slot.label = label.clone();
-            } else if let Some(label) = native_labels.get(name) {
-                slot.label = label.clone();
             }
         }
     }
-    parsed.normalize_magic_fallbacks();
     Ok(parsed)
 }
 
@@ -711,8 +1000,112 @@ mod tests {
         let both = parse(&source.replace("[\"\", \"l r\"]", "[\"l r\", \"space =\"]"));
         let thumbs: Vec<_> = both.slots.iter().filter(|slot| !slot.main).collect();
         assert_eq!(thumbs.len(), 4);
-        assert_eq!(thumbs.iter().map(|slot| slot.hand).collect::<Vec<_>>(), [0, 0, 1, 1]);
+        assert_eq!(
+            thumbs.iter().map(|slot| slot.hand).collect::<Vec<_>>(),
+            [0, 0, 1, 1]
+        );
         assert_eq!(parse(&both.text()).slots, both.slots);
+    }
+
+    #[test]
+    fn afterburner_combines_magic_and_skip_rules() {
+        let layout = parse(include_str!("../layouts/afterburner.jsonc"));
+        let physical_row = |row| {
+            let mut slots: Vec<_> = layout
+                .slots
+                .iter()
+                .filter(|slot| slot.main && slot.row == row)
+                .collect();
+            slots.sort_by_key(|slot| slot.col);
+            slots
+                .into_iter()
+                .map(|slot| slot.label.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            physical_row(0),
+            ["j", "b", "g", "d", "k", "z", "c", "o", "u", ","]
+        );
+        assert_eq!(
+            physical_row(1),
+            ["q", "h", "n", "s", "t", "m", "@", "$", "a", "e", "i", "-"]
+        );
+        assert_eq!(
+            physical_row(2),
+            ["y", "p", "f", "v", "x", "'", "w", "/", ";", "."]
+        );
+        let thumbs: Vec<_> = layout
+            .slots
+            .iter()
+            .filter(|slot| !slot.main)
+            .map(|slot| (slot.label.as_str(), slot.hand))
+            .collect();
+        assert_eq!(thumbs, [("r", 0), ("l", 0), ("␠", 1)]);
+
+        let magic = key(&layout, "@");
+        let skip = key(&layout, "$");
+        assert_eq!(layout.slots[magic].binding, Binding::Named("magic".into()));
+        assert_eq!(layout.slots[skip].binding, Binding::Named("skip".into()));
+
+        let Action::Rules {
+            basis: ak::Basis::Text,
+            rules,
+            fallback: Emission::Call(fallback),
+        } = &layout.actions["magic"]
+        else {
+            panic!("text magic action expected");
+        };
+        assert_eq!(rules[b"a".as_slice()], Emission::Text(b"o".to_vec()));
+        assert_eq!(fallback, "repeat-output");
+
+        let Action::Rules {
+            basis: ak::Basis::SkipPress,
+            rules,
+            ..
+        } = &layout.actions["skip"]
+        else {
+            panic!("skip magic action expected");
+        };
+        assert_eq!(rules[b"magic".as_slice()], Emission::Call("magic".into()));
+
+        let typed = |labels: &[&str]| {
+            ak::trace_keys(
+                &layout,
+                &labels
+                    .iter()
+                    .map(|label| key(&layout, label))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+            .into_iter()
+            .flat_map(|step| step.output)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(typed(&["a", "l", "@"]), b"all");
+        assert_eq!(typed(&["a", "@"]), b"ao");
+        assert_eq!(typed(&["a", "@", "@"]), b"aoo");
+        assert_eq!(typed(&["c", "@"]), b"cc");
+        assert_eq!(typed(&["a", "c", "$"]), b"aco");
+        assert_eq!(typed(&["r", "u", "$", "@"]), b"rull");
+        assert_eq!(typed(&["i", "s", "@", "u", "$"]), b"issue");
+        assert_eq!(typed(&["c", "u", "$"]), b"cuc");
+    }
+
+    #[test]
+    fn later_wildcard_replaces_an_earlier_exact_rule() {
+        let text = include_str!("../layouts/afterburner.jsonc").replace(
+            "{\"inputs\": \"*@\", \"output\": \"**\"},\n      {\"inputs\": \"a@\", \"output\": \"ao\"}",
+            "{\"inputs\": \"a@\", \"output\": \"ao\"},\n      {\"inputs\": \"*@\", \"output\": \"**\"}",
+        );
+        let layout = parse(&text);
+        let steps = ak::trace_keys(&layout, &[key(&layout, "a"), key(&layout, "@")]).unwrap();
+        assert_eq!(
+            steps
+                .into_iter()
+                .flat_map(|step| step.output)
+                .collect::<Vec<_>>(),
+            b"aa"
+        );
     }
 
     #[test]
@@ -734,33 +1127,6 @@ mod tests {
     }
 
     #[test]
-    fn native_visible_rows_stay_authoritative_and_none_is_an_explicit_rule() {
-        let text = r#"{
-            "layout": {
-                "fingers": ["q w @m r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
-                "thumbs": ["space"]
-            },
-            "akler": {
-                "version": 1,
-                "actions": {"m": {"kind":"rules", "basis":"text", "rules":{"q":null}, "fallback":null}},
-                "labels": {"m":"◇"}
-            }
-        }"#;
-        let layout = parse(text);
-        let legacy = parse(&text.replace("\"akler\"", "\"layouter\""));
-        assert_eq!(legacy.slots, layout.slots);
-        assert_eq!(legacy.actions, layout.actions);
-        let magic = key(&layout, "◇");
-        assert!(ak::trace_keys(&layout, &[key(&layout, "q"), magic]).is_err());
-        let steps = ak::trace_keys(&layout, &[key(&layout, "a"), magic]).unwrap();
-        assert_eq!(steps[1].output, b"a");
-
-        let moved = parse(&text.replace("q w @m r t", "q @m w r t"));
-        assert_eq!(moved.slots[key(&moved, "◇")].col, 1);
-        assert_eq!(layout.slots[magic].col, 2);
-    }
-
-    #[test]
     fn unsupported_features_and_non_prefix_rules_fail_clearly() {
         let base = example("@", "", row_board());
         for text in [
@@ -777,5 +1143,19 @@ mod tests {
         ] {
             assert!(Layout::parse(&text, Path::new("test")).is_err());
         }
+    }
+
+    #[test]
+    fn unknown_top_level_fields_fail_clearly() {
+        let text = example("@", "", row_board()).replacen(
+            "\"layers\": null,",
+            "\"layers\": null, \"unknown\": {},",
+            1,
+        );
+        let error = Layout::parse(&text, Path::new("unknown.jsonc")).unwrap_err();
+        assert!(
+            error.contains("unsupported JSON layout field \"unknown\""),
+            "{error}"
+        );
     }
 }

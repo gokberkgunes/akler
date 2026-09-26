@@ -1910,8 +1910,10 @@ struct Node {
 }
 
 /// Fast, bounded-context mapping for cached n-gram statistics. Each output
-/// character uses one physical key; choose the smallest immediate effort,
-/// preferring a literal key on ties. This is not whole-text pathfinding.
+/// character uses one physical key. Prefer a magic/repeat action over a literal
+/// unless it would reuse the relevant finger: the previous press for ordinary
+/// actions, or the press two back for skip actions. Otherwise choose the
+/// smallest immediate effort. This is not whole-text pathfinding.
 pub(crate) struct WindowMapper<'a> {
     layout: &'a Layout,
     literals: [Vec<usize>; 256],
@@ -1924,6 +1926,25 @@ pub(crate) struct WindowMapper<'a> {
 }
 
 impl<'a> WindowMapper<'a> {
+    fn action_priority(&self, key: usize, memory: &Memory) -> Option<bool> {
+        let Binding::Named(name) = &self.layout.slots[key].binding else {
+            return None;
+        };
+        let Some(action) = self.layout.actions.get(name) else {
+            return None;
+        };
+        let prior = match action {
+            Action::Rules {
+                basis: Basis::SkipPress | Basis::SkipOutput,
+                ..
+            }
+            | Action::RepeatPreviousOutput => memory.previous,
+            Action::Rules { .. } | Action::RepeatOutput | Action::RepeatAction => memory.last,
+            Action::Text(_) | Action::Inactive => return None,
+        };
+        Some(prior.is_none_or(|old| self.layout.slots[old].finger != self.layout.slots[key].finger))
+    }
+
     pub(crate) fn new(layout: &'a Layout, order: usize) -> Result<Self> {
         Self::validate(layout, order)?;
         Ok(Self::from_validated_permutation(layout))
@@ -2042,8 +2063,12 @@ impl<'a> WindowMapper<'a> {
                 if !cost.is_finite() {
                     return err("non-finite typing effort");
                 }
-                if best.as_ref().is_some_and(|(_, _, old)| cost >= *old) {
-                    continue;
+                if let Some((old_key, _, old_cost)) = &best {
+                    let literal = matches!(self.layout.slots[*old_key].binding, Binding::Text(_));
+                    let priority = literal.then(|| self.action_priority(key, mem)).flatten();
+                    if priority == Some(false) || (priority != Some(true) && cost >= *old_cost) {
+                        continue;
+                    }
                 }
                 best = Some((key, r, cost));
             }

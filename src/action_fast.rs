@@ -106,6 +106,7 @@ enum Code {
 pub(crate) struct Program {
     keys: Vec<Key>,
     actions: Vec<Code>,
+    fingers: Vec<usize>,
 }
 
 // Prove an unconditional chain reaches a non-recursive terminal. Branching
@@ -307,7 +308,12 @@ impl Program {
                 Binding::Named(n) => Key::Action(ids[n]),
             })
             .collect();
-        Ok(Self { keys, actions })
+        let fingers = layout.slots.iter().map(|slot| slot.finger).collect();
+        Ok(Self {
+            keys,
+            actions,
+            fingers,
+        })
     }
 
     pub(crate) fn affected_bytes(
@@ -580,6 +586,31 @@ pub(crate) struct Mapper<'a> {
 }
 
 impl<'a> Mapper<'a> {
+    fn action_priority(&self, key: usize, memory: Memory) -> Option<bool> {
+        let Key::Action(id) = self.program.keys[self.state.ids[key]] else {
+            return None;
+        };
+        let prior = match &self.program.actions[id] {
+            Code::PressRules {
+                basis: Basis::SkipPress,
+                ..
+            }
+            | Code::OutputRules {
+                basis: Basis::SkipOutput,
+                ..
+            }
+            | Code::RepeatPreviousOutput => memory.previous,
+            Code::TextOne { .. }
+            | Code::TextRules(_)
+            | Code::PressRules { .. }
+            | Code::OutputRules { .. }
+            | Code::RepeatOutput
+            | Code::RepeatAction => memory.last,
+            Code::Byte(_) | Code::Inactive => return None,
+        };
+        Some(prior.is_none_or(|old| self.program.fingers[old] != self.program.fingers[key]))
+    }
+
     pub(crate) fn new(program: &'a Program, state: &'a KeyState) -> Self {
         Self {
             program,
@@ -783,7 +814,13 @@ impl<'a> Mapper<'a> {
                     if PROFILE && best.is_some() {
                         ops.effort_comparisons += 1;
                     }
-                    if best.as_ref().is_some_and(|(_, _, old)| cost >= *old) {
+                    let loses = best.as_ref().is_some_and(|(old_key, _, old_cost)| {
+                        let literal =
+                            matches!(self.program.keys[self.state.ids[*old_key]], Key::Byte(_));
+                        let priority = literal.then(|| self.action_priority(key, m)).flatten();
+                        priority == Some(false) || (priority != Some(true) && cost >= *old_cost)
+                    });
+                    if loses {
                         if action {
                             ops.action_effort_losses += 1;
                         }
@@ -870,7 +907,7 @@ pub(crate) mod tests {
     #[test]
     fn previous_output_fallback_and_following_magic_use_fast_memory() {
         let source = format!(
-            "{}outer-left: @sk @m ~\naction sk = skip-magic\nfallback sk = repeat-previous-output\naction m = magic\n",
+            "{}outer-left: ~ @m ~\nouter-right: ~ @sk ~\naction sk = skip-magic\nfallback sk = repeat-previous-output\naction m = magic\n",
             fixtures()[0]
         );
         let layout = Layout::parse(&source, Path::new("previous-output.dat")).unwrap();
@@ -886,7 +923,13 @@ pub(crate) mod tests {
         let sk = named("sk");
         let magic = named("m");
         let keys = Mapper::new(&program, &state)
-            .map(b"qxqq", &|_, _, next| if next == sk || next == magic { -1.0 } else { 0.0 })
+            .map(b"qxqq", &|_, _, next| {
+                if next == sk || next == magic {
+                    -1.0
+                } else {
+                    0.0
+                }
+            })
             .unwrap();
         assert_eq!(keys[2], Some(sk));
         assert_eq!(keys[3], Some(magic));
@@ -1220,6 +1263,7 @@ pub(crate) mod tests {
                         table: Box::new([repeat; 257]),
                     },
                 ],
+                fingers: (0..10).collect(),
             };
             let state = KeyState::new(&program);
             let contexts: Vec<Vec<u8>> = [
@@ -1263,6 +1307,7 @@ pub(crate) mod tests {
                 Code::Byte(b'q'),
                 Code::Byte(b'q'),
             ],
+            fingers: (0..5).collect(),
         };
         let state = KeyState::new(&program);
         for tied in [false, true] {
@@ -1312,6 +1357,7 @@ pub(crate) mod tests {
             let program = Program {
                 keys: vec![Key::Byte(b'q'), Key::Byte(b'x'), Key::Action(0)],
                 actions: vec![Code::TextOne { table }],
+                fingers: (0..3).collect(),
             };
             let state = KeyState::new(&program);
             let mut mapper = Mapper::new(&program, &state);
@@ -1345,6 +1391,7 @@ pub(crate) mod tests {
         let program = Program {
             keys: vec![],
             actions: vec![],
+            fingers: vec![],
         };
         let state = KeyState::new(&program);
         let mut stack = [0; 32];

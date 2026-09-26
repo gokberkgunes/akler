@@ -17,11 +17,12 @@ Saved files preserve the supported bindings, rules, finger assignments, and
 geometry; source comments and formatting are not kept.
 JSONC saves use four-space indentation, one keyboard/fingermap row per line,
 and the field order `layout`, `fingermap`, `board`, `layers`, `magic`.
-Ordinary magic and adaptive rules are written as readable `inputs`/`output`
-pairs in `magic.rules`, with physical key labels in the keyboard rows.
-The exporter checks that reimport preserves the bindings and reachable action
-definitions exactly before using this simpler representation. It does not add
-explicit repeat rules for unlisted contexts.
+Text magic and skip magic share one readable `magic` block with `keys`,
+`wildcards`, and `rules`. Each physical key stays visible in the keyboard rows.
+The exporter checks that reimport preserves the layout. It reports an error when
+JSONC cannot represent an action or geometry exactly.
+The base layout fields follow Mana's format. Akler interprets the wildcard
+fallbacks and `call` rules described below.
 
 ### Mana JSON/JSONC import
 
@@ -38,8 +39,8 @@ or `blank` for an empty physical slot and `space` for Space.
   "layout": {
     "fingers": [
       "q w e r t y u i o p",
-      "a s d f g h j k l ;",
-      "z x c v b n m , . ◇",
+      "a s d f g h j k @ $",
+      "z x c v b n m , . /",
     ],
     "thumbs": ["space", ""],
   },
@@ -53,7 +54,15 @@ or `blank` for an empty physical slot and `space` for Space.
     "rowOrColumnStagger": [0, 0.25, 0.75],
   },
   "magic": {
-    "rules": [{"inputs": "h◇", "output": "hr"}],
+    "keys": "@$",
+    "wildcards": "*",
+    "rules": [
+      {"inputs": "*@", "output": "**"},
+      {"inputs": "h@", "output": "hr"},
+      {"inputs": "*_$", "output": "*_*"},
+      {"inputs": "h_$", "output": "h_r"},
+      {"inputs": "@_$", "call": "@"},
+    ],
   },
 }
 ```
@@ -65,24 +74,30 @@ Thumb IDs 4/5 are not valid on the three main rows. With
 offsets. With `false`, it supplies one vertical offset per physical column.
 Both use the [numeric geometry rules](#geometry-and-finger-assignments) below.
 
-A magic rule's `inputs` ends with the physical key label; the preceding text is
-its context. Its `output` must preserve that context and append exactly one
-printable ASCII character. The example emits r from ◇ after h. Repeated inputs
-use the last definition. Dedicated symbols such as `@`, `*`, and ◇ repeat for
-unlisted contexts; rules on ordinary letters or punctuation retain that key's
-literal fallback. `char:X` preserves a literal reserved symbol such as `char:@`.
+`magic.keys` lists every physical magic key. `magic.wildcards` names the marker
+used by its fallback rules. `*@` with output `**` makes `@` repeat the previous
+output when no explicit text rule matches. For example, the wildcard makes
+`a@` emit `aa`. Put the wildcard rule first; following rules such as `h@`
+override it and emit their specific output, `hr` in this example.
+
+An underscore means exactly one intervening physical press. `*_$` with output
+`*_*` gives `$` its skip fallback: repeat the output from two physical presses
+back. A rule such as `h_$` overrides the wildcard after h and one intervening
+press. The `@_$` rule calls the action on `@`. Repeated explicit inputs use the
+last definition.
+
+The wildcard marker is reserved inside this block. `char:X` preserves a literal
+reserved physical symbol such as `char:@` or `char:*`.
 
 This imports the supported base layout, finger map, geometry, and append-only
-rules. Nonempty layers or combos, tap-hold keys, nonempty `magic.magicKeys`, nonzero
+rules. Nonempty layers or combos, tap-hold keys, nonzero
 `board.splitAngle`, and `board.mirrorLeftRowStagger: true` are unsupported and
 produce errors. Import does not reproduce Mana's complete typing engine.
-Saved JSONC uses visible `layout`, `fingermap`, and `board` fields for editing.
-Layouts requiring calls, explicit `none`, other history bases, or other behavior
-that the simple rule format cannot preserve retain an `akler` extension with native
-action definitions. Geometry may also need that extension. Existing layouts with
-the `layouter` extension remain readable. Edit simple rules in
-`magic.rules`, or native definitions in `akler.actions` when present; do not
-combine the two action representations in the same file.
+Saved JSONC uses visible `layout`, `fingermap`, `board`, and `magic` fields for
+editing. The current wildcard schema represents text magic with a repeat-output
+fallback and skip magic with a repeat-previous-output fallback. Other fallbacks,
+actions based on other histories, multi-character output, and geometry needing
+both row and column offsets cannot be saved as JSONC.
 
 ## Keyboard and thumbs
 
@@ -183,17 +198,17 @@ Each two-character token is previous **text character + new output**. After h,
 pressing this key emits r. Apostrophes are literal characters, not quotes.
 Compact contexts/outputs are lowercased; use explicit rules for uppercase output.
 
-`@`, `*`, and `◇` repeat remembered output when no rule matches.
+`@`, `*`, and `◇` default to repeating remembered output when no rule matches.
 `magic @ ...`, `magic * ...`, and `magic ◇ ...` are equivalent spellings.
 Other ASCII symbol keys can use `magic ! ay hr` if `!` occupies a slot.
-Diamond is an action label, not Unicode output. The repeat fallback is enforced
-for bound text-based magic keys in DAT, JSON, and JSONC, including explicit
-definitions that request a different fallback. Listed rules still take priority,
+Diamond is an action label, not Unicode output. Listed rules take priority,
 including a listed `none` output. Adaptive ordinary keys retain their literal
-fallback.
+fallback. The JSONC wildcard form currently represents repeat-output and
+skip-repeat fallbacks.
 
-Repeat availability does not force the evaluator to choose that key: current
-effort weights and literal-first ties still determine physical typing choices.
+When a literal and magic key can produce the same character, cached evaluation
+prefers the magic key if it avoids repeating the relevant finger. Otherwise it
+uses effort weights to choose a physical key.
 
 Existing shorthand such as `w@ wh`, `n@ n'`, and `a@ aa` remains supported.
 Only the new suffix is emitted by the action. Do not mix old shorthand and a
@@ -269,9 +284,11 @@ characters reset semantic and physical history. Static call cycles are rejected;
 dynamic cycles/depth limits are guarded at resolution.
 
 Cached evaluation supports one output byte per press and rejects multi-character
-macros. It chooses the lowest immediate effort, with literal-first ties. Effort
-uses current weights, so changing weights can also change physical typing choices
-for action layouts. Evaluation is a bounded-context estimate; optional n-gram
-limits additionally reduce its available history. See [corpora and limits](USAGE.md#corpora).
-Saving keeps meaning, using compact syntax where possible and explicit rules for
-longer contexts, calls, `none`, or custom fallbacks.
+macros. When a literal and magic key produce the same character, it prefers the
+magic key unless that key repeats the previous finger. Skip magic checks the
+finger used two presses back instead. Other choices use the lowest immediate
+effort, based on current weights. Evaluation is a bounded-context estimate;
+optional n-gram limits additionally reduce its available history. See
+[corpora and limits](USAGE.md#corpora).
+DAT saving supports every action above. JSONC saving reports an error when the
+unified `magic` block cannot preserve the action exactly.

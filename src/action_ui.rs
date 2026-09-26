@@ -322,8 +322,13 @@ fn action_keyboard(
     let step = kw + 1;
     let width = cols * step - 1 + gap + stagger_cells(max_offset, min_offset, step);
     let x = c.w.saturating_sub(width) / 2;
-    let left_thumbs = l.slots.iter().filter(|slot| !slot.main && slot.hand == 0).count();
-    let left_start = (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
+    let left_thumbs = l
+        .slots
+        .iter()
+        .filter(|slot| !slot.main && slot.hand == 0)
+        .count();
+    let left_start =
+        (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
     let right_start = x + width / 2 + 1;
     let mut thumb_index = [0; 2];
     for (i, s) in l.slots.iter().enumerate() {
@@ -2656,14 +2661,15 @@ mod ngram_integration_tests {
         assert_physical_mapping(&l, b"aan", &[Some(a), Some(m), Some(n)], true);
         assert_physical_mapping(&l, b"aap", &[Some(a), Some(m), Some(p)], true);
         assert_physical_mapping(&l, b"whn", &[Some(w), Some(m), Some(n)], true);
-        // A matching action loses a tie to the literal; mismatch/no-output
-        // attempts do not create extra presses. ! is a real history boundary.
-        assert_physical_mapping(&l, b"aan", &[Some(a), Some(a), Some(n)], false);
+        // Safe magic has priority over a literal even without an effort bonus;
+        // mismatch/no-output attempts do not create extra presses. ! is a real
+        // history boundary.
+        assert_physical_mapping(&l, b"aan", &[Some(a), Some(m), Some(n)], false);
         assert_physical_mapping(&l, b"a!an", &[Some(a), None, Some(a), Some(n)], true);
         assert_physical_mapping(
             &l,
             b"aaaaa",
-            &[Some(a), Some(m), Some(m), Some(m), Some(m)],
+            &[Some(a), Some(m), Some(a), Some(m), Some(a)],
             true,
         );
         l.swap(m, h);
@@ -2691,7 +2697,7 @@ mod ngram_integration_tests {
         assert_physical_mapping(&l, b"aan", &[Some(a), Some(m), Some(n)], true);
     }
     #[test]
-    fn default_effort_can_prefer_literal_repeat_over_action() {
+    fn safe_magic_priority_overrides_lower_literal_effort() {
         let l = history_layout();
         let a = history_key(&l, "a");
         let action = history_key(&l, "@");
@@ -2702,8 +2708,11 @@ mod ngram_integration_tests {
         let stop = AtomicBool::new(false);
         let detailed = evaluate(&l, &history_corpus(b"aan"), &weights, &stop).unwrap();
         let n = history_key(&l, "n");
-        assert_eq!(detailed.counts.tables[2].get(&vec![a, a, n]), Some(&1.0));
-        assert_eq!(detailed.counts.action_presses, 0.0);
+        assert_eq!(
+            detailed.counts.tables[2].get(&vec![a, action, n]),
+            Some(&1.0)
+        );
+        assert_eq!(detailed.counts.action_presses, 1.0);
     }
 
     #[test]

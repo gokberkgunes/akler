@@ -416,7 +416,7 @@ fn corpus_tui(term: &mut Terminal) -> AppResult<()> {
 // when opened; corpus caches and optimizer reports do not become chooser rows.
 fn recognizable_layout(text: &str) -> bool {
     if crate::layout_io::is_json_layout(text) {
-        let fields = ["layout", "fingermap", "akler", "layouter"];
+        let fields = ["layout", "fingermap", "magic", "skip"];
         return match crate::layout_io::parse_jsonc(text) {
             Ok(Json::Object(object)) => fields.iter().any(|field| object.contains_key(*field)),
             Ok(_) => false,

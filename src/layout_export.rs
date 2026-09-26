@@ -217,12 +217,6 @@ fn string(value: impl Into<String>) -> Json {
     Json::String(value.into())
 }
 
-fn bytes(value: &[u8]) -> Result<Json> {
-    std::str::from_utf8(value)
-        .map(string)
-        .map_err(|_| "cannot export a non-UTF-8 layout value to JSONC".into())
-}
-
 pub(crate) fn json_quote(value: &str) -> String {
     let mut out = String::from("\"");
     for ch in value.chars() {
@@ -271,7 +265,7 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
         }
         Json::Object(values) => {
             let order: &[&str] = match (depth, field) {
-                (0, _) => &["layout", "fingermap", "board", "layers", "magic", "akler"],
+                (0, _) => &["layout", "fingermap", "board", "layers", "magic"],
                 (_, "layout") => &["fingers", "thumbs"],
                 (_, "board") => &[
                     "isRowStaggered",
@@ -279,15 +273,8 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                     "splitAngle",
                     "rowOrColumnStagger",
                 ],
-                (_, "magic") => &["magicKeys", "rules"],
-                (_, "rule") => &["inputs", "output"],
-                (_, "akler") => &[
-                    "version",
-                    "actions",
-                    "labels",
-                    "columnOrigins",
-                    "rowOffsets",
-                ],
+                (_, "magic") => &["keys", "wildcards", "rules"],
+                (_, "rule") => &["inputs", "output", "call"],
                 _ => &[],
             };
             let padding = "    ".repeat(depth + 1);
@@ -313,149 +300,216 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
     }
 }
 
-/// Use ordinary input/output rules only when reimport reproduces every physical
-/// binding and reachable action definition. Calls, explicit none, aliases, and
-/// other histories keep their native representation instead of losing semantics.
-fn simple_jsonc(
-    root: &BTreeMap<String, Json>,
-    layout: &Layout,
-    needed: &std::collections::BTreeSet<String>,
-) -> Option<String> {
-    let mut rules = BTreeMap::new();
-    for slot in &layout.slots {
-        let Binding::Named(name) = &slot.binding else {
-            continue;
-        };
-        if name != &slot.label || name.chars().count() != 1 {
-            return None;
-        }
-        let Action::Rules {
-            basis: Basis::Text,
-            rules: entries,
-            ..
-        } = layout.actions.get(name)?
-        else {
-            return None;
-        };
-        for (context, emission) in entries {
-            let Emission::Text(output) = emission else {
-                return None;
-            };
-            if output.len() != 1 {
-                return None;
-            }
-            let context = std::str::from_utf8(context).ok()?;
-            let output = std::str::from_utf8(output).ok()?;
-            rules.insert(format!("{context}{name}"), format!("{context}{output}"));
-        }
-    }
-
-    let mut simple = root.clone();
-    let Json::Object(keys) = simple.get_mut("layout")? else {
-        return None;
-    };
-    for field in ["fingers", "thumbs"] {
-        let Json::Array(values) = keys.get_mut(field)? else {
-            return None;
-        };
-        for value in values {
-            let Json::String(text) = value else {
-                return None;
-            };
-            // Retain cosmetic row indentation and literal char:@ escapes.
-            *text = text
-                .split(' ')
-                .map(|token| token.strip_prefix('@').unwrap_or(token))
-                .collect::<Vec<_>>()
-                .join(" ");
-        }
-    }
-    let remove_extension = if let Some(Json::Object(native)) = simple.get_mut("akler") {
-        native.remove("actions");
-        native.remove("labels");
-        native.len() == 1
+fn printable_byte(value: &[u8], what: &str) -> Result<char> {
+    if value.len() == 1 && (32..=126).contains(&value[0]) {
+        Ok(value[0] as char)
     } else {
-        false
-    };
-    if remove_extension {
-        simple.remove("akler");
+        Err(format!(
+            "JSONC {what} must be one printable ASCII character"
+        ))
     }
+}
 
-    let rules = rules
-        .into_iter()
-        .map(|(input, output)| object([("inputs", string(input)), ("output", string(output))]))
-        .collect();
-    simple.insert(
-        "magic".into(),
-        object([("magicKeys", Json::Null), ("rules", Json::Array(rules))]),
-    );
+fn rule_json(
+    input: String,
+    emission: &Emission,
+    prefix: &str,
+    labels: &BTreeMap<String, String>,
+) -> Result<Json> {
+    match emission {
+        Emission::Text(text) => Ok(object([
+            ("inputs", string(input)),
+            (
+                "output",
+                string(format!("{prefix}{}", printable_byte(text, "rule output")?)),
+            ),
+        ])),
+        Emission::Call(name) => {
+            let label = labels
+                .get(name)
+                .ok_or_else(|| format!("JSONC rule calls unrepresentable action @{name}"))?;
+            Ok(object([("inputs", string(input)), ("call", string(label))]))
+        }
+        Emission::None => Err("JSONC action rules cannot represent a none output".into()),
+    }
+}
 
-    let text = format!("{}\n", json_text(&Json::Object(simple), 0, ""));
-    let restored = crate::layout_io::parse_json_layout(&text, &layout.path).ok()?;
-    if restored.slots != layout.slots
-        || restored.left_outer != layout.left_outer
-        || restored.right_outer != layout.right_outer
-        || restored.extended() != layout.extended()
-        || needed
-            .iter()
-            .any(|name| restored.actions.get(name) != layout.actions.get(name))
+fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Json>)> {
+    let mut labels = BTreeMap::new();
+    let mut label_counts = BTreeMap::new();
+    for slot in &layout.slots {
+        *label_counts.entry(slot.label.clone()).or_insert(0_usize) += 1;
+        if let Binding::Named(name) = &slot.binding {
+            if slot.label.chars().count() != 1 || !slot.label.chars().all(|ch| !ch.is_control()) {
+                return Err(format!(
+                    "JSONC action @{name} needs a one-character physical key label"
+                ));
+            }
+            match labels.insert(name.clone(), slot.label.clone()) {
+                Some(previous) if previous != slot.label => {
+                    return Err(format!(
+                        "JSONC cannot represent different physical labels for action @{name}"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    if let Some(label) = labels
+        .values()
+        .find(|label| label_counts.get(*label) != Some(&1))
     {
-        return None;
+        return Err(format!(
+            "JSONC action key {label:?} must occur exactly once"
+        ));
     }
-    Some(text)
-}
 
-fn emission_json(emission: &Emission) -> Result<Json> {
-    Ok(match emission {
-        Emission::None => Json::Null,
-        Emission::Text(text) => object([("text", bytes(text)?)]),
-        Emission::Call(name) => object([("call", string(name))]),
-    })
-}
-
-fn action_json(action: &Action) -> Result<Json> {
-    Ok(match action {
-        Action::Text(text) => object([("kind", string("text")), ("text", bytes(text)?)]),
-        Action::RepeatOutput => object([("kind", string("repeat-output"))]),
-        Action::RepeatPreviousOutput => object([("kind", string("repeat-previous-output"))]),
-        Action::RepeatAction => object([("kind", string("repeat-action"))]),
-        Action::Inactive => object([("kind", string("inactive"))]),
-        Action::Rules {
+    let mut wildcard_rules = Vec::new();
+    let mut explicit_rules = BTreeMap::new();
+    let mut keys = String::new();
+    for (name, label) in &labels {
+        let action = layout
+            .actions
+            .get(name)
+            .ok_or_else(|| format!("physical key refers to missing action @{name}"))?;
+        let Action::Rules {
             basis,
             rules,
             fallback,
-        } => {
-            let basis = match basis {
-                Basis::Text => "text",
-                Basis::Press => "press",
-                Basis::SkipPress => "skip-press",
-                Basis::Output => "output",
-                Basis::SkipOutput => "skip-output",
-                Basis::Remembered => "remembered",
-            };
-            let mut entries = BTreeMap::new();
-            for (context, emission) in rules {
-                let context = std::str::from_utf8(context)
-                    .map_err(|_| "cannot export non-UTF-8 action context")?;
-                entries.insert(context.into(), emission_json(emission)?);
-            }
-            object([
-                ("kind", string("rules")),
-                ("basis", string(basis)),
-                ("rules", Json::Object(entries)),
-                ("fallback", emission_json(fallback)?),
-            ])
+        } = action
+        else {
+            return Err(format!(
+                "JSONC cannot represent bound action @{name}; only magic and skip-magic rules are supported"
+            ));
+        };
+        let expected_name = match label.as_str() {
+            "@" => "magic",
+            "$" => "skip",
+            _ => label,
+        };
+        if name != expected_name {
+            return Err(format!(
+                "JSONC action key {label:?} must use action name @{expected_name}, found @{name}"
+            ));
         }
-    })
+        keys.push_str(label);
+        match basis {
+            Basis::Text => {
+                if !matches!(
+                    fallback,
+                    Emission::Call(fallback_name)
+                        if matches!(layout.actions.get(fallback_name), Some(Action::RepeatOutput))
+                ) {
+                    return Err(format!(
+                        "JSONC wildcard magic key {label:?} requires a repeat-output fallback"
+                    ));
+                }
+                wildcard_rules.push(object([
+                    ("inputs", string(format!("*{label}"))),
+                    ("output", string("**")),
+                ]));
+                for (context, emission) in rules {
+                    let context = std::str::from_utf8(context)
+                        .map_err(|_| "JSONC magic contexts must be UTF-8")?;
+                    if context.is_empty()
+                        || !context.bytes().all(|byte| (32..=126).contains(&byte))
+                        || context != context.to_ascii_lowercase()
+                    {
+                        return Err(
+                            "JSONC magic contexts must be nonempty lowercase printable ASCII"
+                                .into(),
+                        );
+                    }
+                    if context == "*" {
+                        return Err(
+                            "JSONC magic context '*' is reserved as the wildcard marker".into()
+                        );
+                    }
+                    if let Emission::Text(output) = emission {
+                        let output = printable_byte(output, "magic rule output")?;
+                        if output != output.to_ascii_lowercase() {
+                            return Err(
+                                "JSONC magic rule output must be lowercase printable ASCII".into(),
+                            );
+                        }
+                    } else {
+                        return Err("JSONC magic rules cannot call another action".into());
+                    }
+                    let input = format!("{context}{label}");
+                    let rule = rule_json(input.clone(), emission, context, &labels)?;
+                    if explicit_rules.insert(input.clone(), rule).is_some() {
+                        return Err(format!("JSONC has duplicate magic input {input:?}"));
+                    }
+                }
+            }
+            Basis::SkipPress => {
+                if !matches!(
+                    fallback,
+                    Emission::Call(fallback_name)
+                        if matches!(
+                            layout.actions.get(fallback_name),
+                            Some(Action::RepeatPreviousOutput)
+                        )
+                ) {
+                    return Err(format!(
+                        "JSONC wildcard skip key {label:?} requires a repeat-previous-output fallback"
+                    ));
+                }
+                wildcard_rules.push(object([
+                    ("inputs", string(format!("*_{label}"))),
+                    ("output", string("*_*")),
+                ]));
+                for (context, emission) in rules {
+                    let context = if let Some(label) = labels.get(
+                        std::str::from_utf8(context)
+                            .map_err(|_| "JSONC skip contexts must be UTF-8")?,
+                    ) {
+                        label.clone()
+                    } else {
+                        printable_byte(context, "skip context")?.to_string()
+                    };
+                    if context == "*" {
+                        return Err(
+                            "JSONC skip context '*' is reserved as the wildcard marker".into()
+                        );
+                    }
+                    let prefix = format!("{context}_");
+                    let input = format!("{prefix}{label}");
+                    let rule = rule_json(input.clone(), emission, &prefix, &labels)?;
+                    if explicit_rules.insert(input.clone(), rule).is_some() {
+                        return Err(format!("JSONC has duplicate magic input {input:?}"));
+                    }
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "JSONC cannot represent action @{name} with {basis:?} history"
+                ));
+            }
+        }
+    }
+
+    if labels.is_empty() {
+        return Ok((labels, None));
+    }
+    wildcard_rules.extend(explicit_rules.into_values());
+    Ok((
+        labels,
+        Some(object([
+            ("keys", string(keys)),
+            ("wildcards", string("*")),
+            ("rules", Json::Array(wildcard_rules)),
+        ])),
+    ))
 }
 
-fn token(binding: &Binding) -> Result<String> {
+fn token(binding: &Binding, action_labels: &BTreeMap<String, String>) -> Result<String> {
     match binding {
         Binding::Empty => Ok("skip".into()),
-        Binding::Named(name) => {
-            validate_name(name)?;
-            Ok(format!("@{name}"))
-        }
+        Binding::Named(name) => action_labels
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("JSONC cannot represent action @{name}")),
         Binding::Text(text) if text == b" " => Ok("space".into()),
         Binding::Text(text) if text.len() == 1 && text[0].is_ascii_graphic() => {
             let ch = text[0] as char;
@@ -480,12 +534,9 @@ fn offsets(values: impl IntoIterator<Item = i16>) -> Json {
     )
 }
 
-/// The visible layout, fingermap, and board fields are the editable source of
-/// positions. The extension stores only action semantics/labels and geometry
-/// that the Mana fields cannot express (a second axis or legacy column origin).
+/// Export the subset that the readable Mana-style JSONC fields preserve exactly.
 pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
-    let mut layout = layout.clone();
-    layout.normalize_magic_fallbacks();
+    let (action_labels, magic) = action_blocks(layout)?;
     for slot in &layout.slots {
         let expected = match &slot.binding {
             Binding::Empty => Some("·".to_string()),
@@ -507,7 +558,6 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let mut rows = Vec::new();
     let mut finger_rows = Vec::new();
     let mut row_offsets = Vec::new();
-    let mut origins = Vec::new();
     let mut columns = BTreeMap::new();
     // Internal finger IDs are left fingers 0..3, right fingers 4..7,
     // thumbs 8..9. Mana places the two thumbs between the hands.
@@ -526,17 +576,17 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
             ));
         }
         let origin = slots[0].col;
-        if !matches!(origin, -1 | 0)
+        if origin != 0
             || slots
                 .iter()
                 .enumerate()
                 .any(|(index, slot)| slot.col != origin + index as i8)
         {
-            return Err(
-                "JSONC export needs consecutive physical columns starting at -1 or 0".into(),
-            );
+            return Err(format!(
+                "JSONC cannot represent row {} column origin; use DAT for this geometry",
+                row + 1
+            ));
         }
-        origins.push(Json::Number(origin as f64));
         let row_offset = slots[0].row_offset;
         if slots.iter().any(|slot| slot.row_offset != row_offset) {
             return Err(
@@ -562,7 +612,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         rows.push(string(
             slots
                 .iter()
-                .map(|slot| token(&slot.binding))
+                .map(|slot| token(&slot.binding, &action_labels))
                 .collect::<Result<Vec<_>>>()?
                 .join(" "),
         ));
@@ -594,7 +644,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         {
             return Err("JSONC cannot represent custom thumb geometry".into());
         }
-        thumbs[hand].push(token(&slot.binding)?);
+        thumbs[hand].push(token(&slot.binding, &action_labels)?);
     }
     let thumbs = thumbs
         .into_iter()
@@ -603,6 +653,12 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let column_offsets: Vec<_> = columns.values().copied().collect();
     let has_columns = column_offsets.iter().any(|offset| *offset != 0);
     let has_rows = row_offsets.iter().any(|offset| *offset != 0);
+    if has_columns && has_rows {
+        return Err(
+            "JSONC cannot represent row and column offsets together; use DAT for this geometry"
+                .into(),
+        );
+    }
     let board = object([
         ("isRowStaggered", Json::Bool(!has_columns && has_rows)),
         ("mirrorLeftRowStagger", Json::Bool(false)),
@@ -616,82 +672,6 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
             },
         ),
     ]);
-    let mut native = BTreeMap::new();
-    native.insert("version".into(), Json::Number(1.0));
-    if origins
-        .iter()
-        .any(|origin| matches!(origin, Json::Number(value) if *value != 0.0))
-    {
-        native.insert("columnOrigins".into(), Json::Array(origins));
-    }
-    if has_rows && has_columns {
-        native.insert("rowOffsets".into(), offsets(row_offsets));
-    }
-    let mut actions = BTreeMap::new();
-    let mut needed = std::collections::BTreeSet::new();
-    let mut pending: Vec<_> = layout
-        .slots
-        .iter()
-        .filter_map(|slot| match &slot.binding {
-            Binding::Named(name) => Some(name.clone()),
-            _ => None,
-        })
-        .collect();
-    while let Some(name) = pending.pop() {
-        if !needed.insert(name.clone()) {
-            continue;
-        }
-        if let Some(Action::Rules {
-            rules, fallback, ..
-        }) = layout.actions.get(&name)
-        {
-            for emission in rules.values().chain(std::iter::once(fallback)) {
-                if let Emission::Call(called) = emission {
-                    pending.push(called.clone());
-                }
-            }
-        }
-    }
-    for (name, action) in layout
-        .actions
-        .iter()
-        .filter(|(name, _)| needed.contains(*name))
-    {
-        // Unused built-ins are supplied by the DAT runtime already.
-        let builtin = match name.as_str() {
-            "repeat" | "repeat-output" => Some(Action::RepeatOutput),
-            "repeat-previous-output" => Some(Action::RepeatPreviousOutput),
-            "repeat-action" | "again" => Some(Action::RepeatAction),
-            _ => None,
-        };
-        if builtin.as_ref() == Some(action)
-            && !layout
-                .slots
-                .iter()
-                .any(|slot| matches!(&slot.binding, Binding::Named(bound) if bound == name))
-        {
-            continue;
-        }
-        validate_name(name)?;
-        actions.insert(name.clone(), action_json(action)?);
-    }
-    let mut labels = BTreeMap::new();
-    for slot in &layout.slots {
-        if let Binding::Named(name) = &slot.binding {
-            match labels.insert(name.clone(), string(&slot.label)) {
-                Some(Json::String(previous)) if previous != slot.label => {
-                    return Err(format!("JSONC cannot represent different display labels for the same action @{name}"));
-                }
-                _ => {}
-            }
-        }
-    }
-    if !actions.is_empty() {
-        native.insert("actions".into(), Json::Object(actions));
-    }
-    if !labels.is_empty() {
-        native.insert("labels".into(), Json::Object(labels));
-    }
     let mut root = BTreeMap::new();
     root.insert(
         "layout".into(),
@@ -703,201 +683,20 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     root.insert("fingermap".into(), Json::Array(finger_rows));
     root.insert("board".into(), board);
     root.insert("layers".into(), Json::Null);
-    root.insert(
-        "magic".into(),
-        object([
-            ("magicKeys", Json::Null),
-            ("rules", Json::Array(Vec::new())),
-        ]),
-    );
-    if native.len() > 1 {
-        root.insert("akler".into(), Json::Object(native));
+    if let Some(magic) = magic {
+        root.insert("magic".into(), magic);
     }
-
-    if let Some(text) = simple_jsonc(&root, &layout, &needed) {
-        return Ok(text);
-    }
-    Ok(format!("{}\n", json_text(&Json::Object(root), 0, "")))
-}
-
-fn expect_object<'a>(value: &'a Json, field: &str) -> Result<&'a BTreeMap<String, Json>> {
-    match value {
-        Json::Object(value) => Ok(value),
-        _ => Err(format!("{field}: expected an object")),
-    }
-}
-
-fn expect_string<'a>(value: &'a Json, field: &str) -> Result<&'a str> {
-    match value {
-        Json::String(value) => Ok(value),
-        _ => Err(format!("{field}: expected a string")),
-    }
-}
-
-fn field<'a>(map: &'a BTreeMap<String, Json>, name: &str) -> Result<&'a Json> {
-    map.get(name)
-        .ok_or_else(|| format!("missing native action field {name:?}"))
-}
-
-fn allowed(map: &BTreeMap<String, Json>, names: &[&str], context: &str) -> Result<()> {
-    if let Some(name) = map.keys().find(|name| !names.contains(&name.as_str())) {
-        return Err(format!("{context}: unsupported field {name:?}"));
-    }
-    Ok(())
-}
-
-fn validate_name(name: &str) -> Result<()> {
-    if name.is_empty()
-        || name != name.to_ascii_lowercase()
-        || (name.starts_with('@') && name != "@")
-        || name
-            .chars()
-            .any(|ch| ch.is_control() || ch.is_whitespace() || matches!(ch, '=' | '"'))
+    let text = format!("{}\n", json_text(&Json::Object(root), 0, ""));
+    let restored = crate::layout_io::parse_json_layout(&text, &layout.path)
+        .map_err(|error| format!("JSONC export failed its reimport check: {error}"))?;
+    if restored.slots != layout.slots
+        || restored.actions != layout.actions
+        || restored.left_outer != layout.left_outer
+        || restored.right_outer != layout.right_outer
     {
-        return Err(format!(
-            "native action name {name:?} cannot be represented in DAT"
-        ));
+        return Err("JSONC cannot preserve this layout exactly; save and use its DAT form".into());
     }
-    Ok(())
-}
-
-fn native_emission(value: &Json) -> Result<String> {
-    if matches!(value, Json::Null) {
-        return Ok("none".into());
-    }
-    let value = expect_object(value, "native action emission")?;
-    allowed(value, &["text", "call"], "native action emission")?;
-    if value.len() != 1 {
-        return Err("native action emission needs exactly one of text or call".into());
-    }
-    if let Some(text) = value.get("text") {
-        return Ok(json_quote(expect_string(text, "emission.text")?));
-    }
-    let name = expect_string(field(value, "call")?, "emission.call")?;
-    validate_name(name)?;
-    Ok(format!("@{name}"))
-}
-
-/// Translate only the nonstandard action definitions. The JSON importer still
-/// owns all visible physical slots and geometry and validates the resulting DAT.
-pub(crate) fn native_action_dat(
-    root: &BTreeMap<String, Json>,
-) -> Result<(String, BTreeMap<String, String>)> {
-    if root.contains_key("akler") && root.contains_key("layouter") {
-        return Err("layout cannot contain both akler and layouter extensions".into());
-    }
-    let Some(native) = root.get("akler").or_else(|| root.get("layouter")) else {
-        return Ok((String::new(), BTreeMap::new()));
-    };
-    let native = expect_object(native, "akler")?;
-    allowed(
-        native,
-        &[
-            "version",
-            "actions",
-            "labels",
-            "rowOffsets",
-            "columnOrigins",
-        ],
-        "akler",
-    )?;
-    if !matches!(native.get("version"), Some(Json::Number(1.0))) {
-        return Err("akler.version must be 1".into());
-    }
-    let mut dat = String::new();
-    let mut names = std::collections::BTreeSet::new();
-    if let Some(actions) = native.get("actions") {
-        for (name, value) in expect_object(actions, "akler.actions")? {
-            validate_name(name)?;
-            names.insert(name.clone());
-            let value = expect_object(value, "native action")?;
-            let kind = expect_string(field(value, "kind")?, "action.kind")?;
-            match kind {
-                "text" => {
-                    allowed(value, &["kind", "text"], "text action")?;
-                    let text = expect_string(field(value, "text")?, "action.text")?;
-                    dat.push_str(&format!("action @{name} = text {}\n", json_quote(text)));
-                }
-                "repeat-output" | "repeat-previous-output" | "repeat-action" | "inactive" => {
-                    allowed(value, &["kind"], "native action")?;
-                    dat.push_str(&format!("action @{name} = {kind}\n"));
-                }
-                "rules" => {
-                    allowed(
-                        value,
-                        &["kind", "basis", "rules", "fallback"],
-                        "rules action",
-                    )?;
-                    let basis = expect_string(field(value, "basis")?, "action.basis")?;
-                    let dat_basis = match basis {
-                        "text" => "magic",
-                        "press" => "press-magic",
-                        "skip-press" => "skip-magic",
-                        "output" => "output-magic",
-                        "skip-output" => "skip-output-magic",
-                        "remembered" => "alternate",
-                        _ => return Err(format!("unknown native action basis {basis:?}")),
-                    };
-                    dat.push_str(&format!("action @{name} = {dat_basis}\n"));
-                    for (context, emission) in
-                        expect_object(field(value, "rules")?, "action.rules")?
-                    {
-                        if context.is_empty() {
-                            return Err("native action rule contexts must not be empty".into());
-                        }
-                        dat.push_str(&format!(
-                            "map @{name} {} = {}\n",
-                            json_quote(context),
-                            native_emission(emission)?
-                        ));
-                    }
-                    dat.push_str(&format!(
-                        "fallback @{name} = {}\n",
-                        native_emission(field(value, "fallback")?)?
-                    ));
-                }
-                _ => return Err(format!("unknown native action kind {kind:?}")),
-            }
-        }
-    }
-    let mut labels = BTreeMap::new();
-    if let Some(value) = native.get("labels") {
-        for (name, value) in expect_object(value, "akler.labels")? {
-            if !names.contains(name) {
-                return Err(format!("native label refers to undefined action @{name}"));
-            }
-            let label = expect_string(value, "native action label")?;
-            if label.is_empty() || label.chars().any(char::is_control) {
-                return Err("native action labels must be nonempty printable strings".into());
-            }
-            labels.insert(name.clone(), label.into());
-        }
-    }
-    if let Some(value) = native.get("rowOffsets") {
-        let Json::Array(values) = value else {
-            return Err("akler.rowOffsets must contain three numeric values".into());
-        };
-        if values.len() != 3 {
-            return Err("akler.rowOffsets must contain three numeric values".into());
-        }
-        let mut numbers = Vec::new();
-        for value in values {
-            let Json::Number(value) = value else {
-                return Err("akler.rowOffsets must contain three numeric values".into());
-            };
-            numbers.push(value.to_string());
-        }
-        if let Some(Json::Object(board)) = root.get("board") {
-            if matches!(board.get("isRowStaggered"), Some(Json::Bool(true))) {
-                return Err(
-                    "akler.rowOffsets is only for layouts whose board specifies column stagger"
-                        .into(),
-                );
-            }
-        }
-        dat.push_str(&format!("row-offsets: {}\n", numbers.join(" ")));
-    }
-    Ok((dat, labels))
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -943,11 +742,11 @@ mod tests {
         assert!(text.contains("        \"thumbs\": [\"space\", \"\"],\n"));
         assert!(text.contains("    \"fingermap\": [\n        \"0 1 2 3 3 6 6 7 8 9\",\n"));
         assert!(text.contains("        \"rowOrColumnStagger\": [0, 0.25, 0.75],\n"));
-        assert!(!text.contains("\"akler\""));
 
-        let fields = ["layout", "fingermap", "board", "layers", "magic"];
+        let fields = ["layout", "fingermap", "board", "layers"];
         let positions = fields.map(|field| text.find(&format!("    \"{field}\":")).unwrap());
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(!text.contains("\"magic\":"));
         let restored = Layout::parse(&text, Path::new("round")).unwrap();
         assert_eq!(restored.slots, layout.slots);
         assert_eq!(restored.actions, layout.actions);
@@ -955,49 +754,29 @@ mod tests {
     }
 
     #[test]
-    fn simple_magic_and_adaptive_rules_keep_exact_definitions_after_swaps() {
-        for marker in ["@", "*", "◇"] {
-            let rows = GRID.replace("q w e", &format!("q w {marker}"));
-            let source = format!(
-                "{rows}thumbs: space e\n{marker} hr a' zz\nswap j nu y ,u\nrow-offsets: 0 0.25 0.75\n"
-            );
-            let mut layout = Layout::parse(&source, Path::new("inline")).unwrap();
-            for moved in [false, true] {
-                if moved {
-                    layout.swap(2, 19);
-                    layout.swap(5, 25);
-                }
-                let text = jsonc_text(&layout).unwrap();
-                assert!(!text.contains("\"akler\""), "{text}");
-                assert!(!text.contains("\"actions\""));
-                assert!(text.contains(&format!("\"inputs\": \"h{marker}\"")));
-                assert!(text.contains("\"output\": \"hr\""));
-                assert!(text.contains("\"inputs\": \"y,\""));
-                assert!(text.contains(&format!("\"inputs\": \"z{marker}\"")));
-                // Never synthesize explicit repeat rules from the implicit fallback.
-                assert!(!text.contains(&format!("\"inputs\": \"q{marker}\"")));
-
-                let restored = Layout::parse(&text, Path::new("round")).unwrap();
-                assert_eq!(restored.slots, layout.slots);
-                assert_eq!(restored.actions, layout.actions);
-                let dat = Layout::parse(&layout.text(), Path::new("round.dat")).unwrap();
-                assert_eq!(restored.slots, dat.slots);
-                assert_eq!(restored.actions, dat.actions);
-            }
-        }
+    fn unified_magic_writes_wildcard_before_explicit_rules() {
+        let original = Layout::parse(
+            include_str!("../layouts/afterburner.jsonc"),
+            Path::new("afterburner.jsonc"),
+        )
+        .unwrap();
+        let text = jsonc_text(&original).unwrap();
+        let wildcard = text.find("\"inputs\": \"*@\"").unwrap();
+        let explicit = text.find("\"inputs\": \"a@\"").unwrap();
+        assert!(wildcard < explicit, "{text}");
+        assert!(text.contains("\"output\": \"**\""), "{text}");
     }
 
     #[test]
     fn simple_rule_round_trip_preserves_physical_mapping_and_metric_bits() {
         use crate::{action_ngrams, action_ui, AtomicBool, AtomicU64, Weights};
 
-        let source = format!(
-            "{}thumbs: space e\n@ hr a' zz\nswap j nu y ,u\n",
-            GRID.replace("q w e", "q w @"),
-        );
-        let layout = Layout::parse(&source, Path::new("inline")).unwrap();
+        let layout = Layout::parse(
+            include_str!("../layouts/afterburner.jsonc"),
+            Path::new("afterburner.jsonc"),
+        )
+        .unwrap();
         let text = jsonc_text(&layout).unwrap();
-        assert!(!text.contains("\"akler\""));
         let restored = Layout::parse(&text, Path::new("round")).unwrap();
         let tables = crate::action_keys::text_ngrams(b"hr hrr aa a' zz zzz ju jn yu y, q!qq");
         let names = ["letters", "bigrams", "trigrams", "fourgrams", "fivegrams"];
@@ -1041,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_export_does_not_lose_advanced_rules_or_case() {
+    fn unsupported_action_rules_fail_instead_of_exporting_lossily() {
         let rows = GRID.replace("q w e", "q w @*");
         for definitions in [
             "action * = magic\nmap * \"q\" = none\n",
@@ -1054,11 +833,8 @@ mod tests {
         ] {
             let layout =
                 Layout::parse(&format!("{rows}{definitions}"), Path::new("inline")).unwrap();
-            let text = jsonc_text(&layout).unwrap();
-            assert!(text.contains("\"akler\""), "{text}");
-            let restored = Layout::parse(&text, Path::new("round")).unwrap();
-            assert_eq!(restored.slots, layout.slots);
-            assert_eq!(restored.actions, layout.actions);
+            let error = jsonc_text(&layout).unwrap_err();
+            assert!(error.contains("JSONC"), "{error}");
         }
     }
 
@@ -1067,77 +843,98 @@ mod tests {
         let source = format!("{}adaptive n hr\n", GRID.replace("q w e", "n w e"),);
         let mut layout = Layout::parse(&source, Path::new("inline")).unwrap();
         layout.slots[0].binding = Binding::Text(b"n".to_vec());
-        let text = jsonc_text(&layout).unwrap();
-        assert!(text.contains("\"akler\""));
-        let restored = Layout::parse(&text, Path::new("round")).unwrap();
-        assert_eq!(restored.slots, layout.slots);
-        assert_eq!(restored.actions, layout.actions);
+        assert!(jsonc_text(&layout)
+            .unwrap_err()
+            .contains("must occur exactly once"));
     }
 
     #[test]
-    fn native_rules_calls_labels_and_transformed_bindings_round_trip() {
+    fn unsupported_action_graph_fails_instead_of_exporting_lossily() {
         let source = format!("{}action ◇ = magic\nmap ◇ \"q\" = \"u\"\nmap ◇ \"x\" = none\naction a = magic\nmap a \"i\" = \"o\"\nfallback a = \"a\"\naction press = press-magic\nmap press \"q\" = @macro\nfallback press = none\naction macro = text \"the\"\naction again-key = repeat-action\n", GRID.replace("q w e r t", "@◇ @a @press @again-key t").replace("a s d f g", "q s d f g"));
         let mut original = Layout::parse(&source, Path::new("source")).unwrap();
         original.swap(0, 10);
         original.swap(1, 20);
-        let dat = original.text();
-        let (original, restored) = round_trip(&dat);
-        assert!(matches!(
-            restored.actions.get("press"),
-            Some(Action::Rules {
-                basis: Basis::Press,
-                fallback: Emission::None,
-                ..
-            })
-        ));
-        assert!(
-            matches!(restored.actions.get("a"), Some(Action::Rules { fallback: Emission::Text(text), .. }) if text == b"a")
-        );
-        assert_eq!(
-            original
-                .slots
-                .iter()
-                .filter(|slot| slot.label == "◇")
-                .count(),
-            1
-        );
+        let error = jsonc_text(&original).unwrap_err();
+        assert!(error.contains("JSONC"), "{error}");
     }
 
     #[test]
-    fn both_stagger_axes_custom_fingers_and_legacy_columns_round_trip() {
+    fn both_stagger_axes_fail_instead_of_exporting_lossily() {
         let source = "q w e r t y | u i o p [ ]\na s d f g h | j k l ; ' /\nz x c v b n | m , . = - \\\nrow-offsets: -0.25 0 0.5\ncolumn-offsets: 0 0 -0.2 -0.3 -0.1 0 0 -0.1 -0.3 -0.2 0 0\nfingermap: LP LP LR LM LI LI / LP LP LR LM LI LI / LP LP LR LM LI LI\n";
         // Supply complete custom finger rows separately to keep the geometry explicit.
         let source = source.replace("LP LP LR LM LI LI / LP LP LR LM LI LI / LP LP LR LM LI LI", "LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP");
-        let (original, restored) = round_trip(&source);
-        assert_eq!(original.slots[0].col, -1);
-        assert!(restored.slots.iter().any(|slot| slot.column_offset == -300));
-        assert!(restored.slots.iter().any(|slot| slot.row_offset == 500));
+        let layout = Layout::parse(&source, Path::new("source")).unwrap();
+        let error = jsonc_text(&layout).unwrap_err();
+        assert!(error.contains("geometry"), "{error}");
     }
 
     #[test]
-    fn visible_native_layout_positions_remain_editable() {
+    fn standalone_repeat_action_fails_instead_of_exporting_lossily() {
         let source = format!("{}action m = repeat-output\n", GRID.replace("q w", "@m w"));
         let original = Layout::parse(&source, Path::new("source")).unwrap();
-        let jsonc = jsonc_text(&original).unwrap().replace("@m w e", "w @m e");
-        let restored = Layout::parse(&jsonc, Path::new("edited")).unwrap();
-        assert_eq!(restored.slots[0].binding, Binding::Text(vec![b'w']));
-        assert_eq!(restored.slots[1].binding, Binding::Named("m".into()));
+        assert!(jsonc_text(&original)
+            .unwrap_err()
+            .contains("one-character physical key label"));
     }
 
     #[test]
-    fn repeat_previous_output_round_trips_through_native_jsonc() {
+    fn skip_magic_round_trips_in_the_unified_magic_block() {
         let source = format!(
-            "{}action sk = skip-magic\nfallback sk = repeat-previous-output\n",
-            GRID.replace("q w", "@sk w")
+            "{}action skip = skip-magic\nfallback skip = repeat-previous-output\n",
+            GRID.replace("q w", "@skip w")
         );
-        let original = Layout::parse(&source, Path::new("source")).unwrap();
+        let mut original = Layout::parse(&source, Path::new("source")).unwrap();
+        original.slots[0].label = "$".into();
         let jsonc = jsonc_text(&original).unwrap();
+        assert!(jsonc.contains("\"keys\": \"$\""), "{jsonc}");
+        assert!(jsonc.contains("\"wildcards\": \"*\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"*_$\""), "{jsonc}");
+        assert!(jsonc.contains("\"output\": \"*_*\""), "{jsonc}");
+        assert!(!jsonc.contains("\"skip\": {"), "{jsonc}");
         let restored = Layout::parse(&jsonc, Path::new("round.jsonc")).unwrap();
         assert_eq!(restored.actions, original.actions);
         assert_eq!(
             restored.actions["repeat-previous-output"],
             Action::RepeatPreviousOutput
         );
+    }
+
+    #[test]
+    fn afterburner_export_uses_one_magic_block_with_both_keys() {
+        let original = Layout::parse(
+            include_str!("../layouts/afterburner.jsonc"),
+            Path::new("afterburner.jsonc"),
+        )
+        .unwrap();
+        let jsonc = jsonc_text(&original).unwrap();
+        assert!(jsonc.contains("q h n s t m @ $ a e i -\""), "{jsonc}");
+        assert!(
+            jsonc.contains("\"thumbs\": [\"r l\", \"space\"]"),
+            "{jsonc}"
+        );
+        assert!(jsonc.contains("\"keys\": \"@$\""), "{jsonc}");
+        assert!(jsonc.contains("\"wildcards\": \"*\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"*@\""), "{jsonc}");
+        assert!(jsonc.contains("\"output\": \"**\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"a@\""), "{jsonc}");
+        assert!(jsonc.contains("\"output\": \"ao\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"*_$\""), "{jsonc}");
+        assert!(jsonc.contains("\"output\": \"*_*\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"@_$\""), "{jsonc}");
+        assert!(jsonc.contains("\"call\": \"@\""), "{jsonc}");
+        assert!(!jsonc.contains("\"skip\":"), "{jsonc}");
+
+        let restored = Layout::parse(&jsonc, Path::new("round.jsonc")).unwrap();
+        assert_eq!(restored.slots, original.slots, "{jsonc}");
+        assert_eq!(restored.actions, original.actions, "{jsonc}");
+    }
+
+    #[test]
+    fn unsupported_magic_fallbacks_fail_clearly() {
+        let original =
+            Layout::parse(include_str!("../layouts/opal.dat"), Path::new("opal.dat")).unwrap();
+        let error = jsonc_text(&original).unwrap_err();
+        assert!(error.contains("wildcard magic key"), "{error}");
     }
 
     #[test]

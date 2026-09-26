@@ -146,20 +146,22 @@ fn source_problem() -> Problem {
 }
 
 #[test]
-fn paired_formats_preserve_ordinary_geometry_and_exact_metrics() {
+fn dat_preserves_ordinary_geometry_and_exact_metrics() {
     let text = format!(
         "{PACKET}row-offsets: 0 0.25 0.75\n\
          column-offsets: 0 -0.3 -0.4 -0.3 -0.2 -0.2 -0.3 -0.4 -0.3 0\n"
     );
     let board = board_from_text(&text, Path::new("ordinary")).unwrap();
     let layout = board_as_action_layout(&board, &board.symbols).unwrap();
-    let jsonc = layout_export::jsonc_text(&layout).unwrap();
+    assert!(layout_export::jsonc_text(&layout)
+        .unwrap_err()
+        .contains("row and column offsets together"));
     let source = small_source();
     let baseline = Model::new(board.clone());
     let baseline_corpus = baseline.corpus(&source).unwrap();
     let baseline_raw = full_raw(&baseline.original, &baseline_corpus, &baseline.geometry);
 
-    for saved in [layout.text(), jsonc] {
+    for saved in [layout.text()] {
         // The deliberately misleading suffix must have no effect on loading.
         let round = board_from_text(&saved, Path::new("ordinary.unrelated")).unwrap();
         assert_eq!(round.keys, board.keys);
@@ -179,7 +181,7 @@ fn paired_formats_preserve_ordinary_geometry_and_exact_metrics() {
 }
 
 #[test]
-fn paired_formats_preserve_action_mapping_metrics_and_moved_bindings() {
+fn dat_preserves_action_mapping_metrics_and_moved_bindings() {
     let text = "q w e r t | y u i o p\n\
                 a s d f g | h j k l ;\n\
                 z x c v b | n m , . /\n\
@@ -223,7 +225,10 @@ fn paired_formats_preserve_action_mapping_metrics_and_moved_bindings() {
         }
         let baseline =
             action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
-        for saved in [layout.text(), layout_export::jsonc_text(&layout).unwrap()] {
+        assert!(layout_export::jsonc_text(&layout)
+            .unwrap_err()
+            .contains("requires a repeat-output fallback"));
+        for saved in [layout.text()] {
             let round = action_keys::Layout::parse(&saved, Path::new("extensionless")).unwrap();
             assert_eq!(round.slots, layout.slots);
             assert_eq!(round.actions, layout.actions);
