@@ -17,6 +17,7 @@
    ],
    "board": {
      "isRowStaggered": false,
+     "isColumnStaggered": true,
      "mirrorLeftRowStagger": false,
      "splitAngle": 0,
      "rowOrColumnStagger": [

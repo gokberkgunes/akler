@@ -71,9 +71,12 @@ or `blank` for an empty physical slot and `space` for Space.
 `fingermap` is optional; when present, its three strings must match the key
 counts. Main-finger IDs are 0/1/2/3 for LP/LR/LM/LI and 6/7/8/9 for RI/RM/RR/RP.
 Thumb IDs 4/5 are not valid on the three main rows. With
-`board.isRowStaggered: true`, `rowOrColumnStagger` supplies three horizontal row
-offsets. With `false`, it supplies one vertical offset per physical column.
-Both use the [numeric geometry rules](#geometry-and-finger-assignments) below.
+With `board.isRowStaggered: true`, `rowOrColumnStagger` supplies three horizontal
+row offsets. With `board.isColumnStaggered: true`, it supplies one vertical
+offset per physical column. The two flags cannot both be true. When neither
+flag is true, `rowOrColumnStagger` is ignored and the layout has no numeric
+stagger. Both use the [numeric geometry rules](#geometry-and-finger-assignments)
+below.
 
 `magic.keys` lists every physical magic key. `magic.wildcards` names the marker
 used by its fallback rules. `*@` with output `**` makes `@` repeat the previous

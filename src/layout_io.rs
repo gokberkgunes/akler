@@ -734,7 +734,17 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             _ => return Err("board.splitAngle must be a number".into()),
         }
         let row_staggered = bool_field(board, "isRowStaggered", false)?;
-        if let Some(value) = board.get("rowOrColumnStagger") {
+        let column_staggered = bool_field(board, "isColumnStaggered", false)?;
+        if row_staggered && column_staggered {
+            return Err(
+                "board.isRowStaggered and board.isColumnStaggered cannot both be true".into(),
+            );
+        }
+        if row_staggered || column_staggered {
+            let value = board.get("rowOrColumnStagger").ok_or_else(|| {
+                "board.rowOrColumnStagger is required when row or column stagger is enabled"
+                    .to_string()
+            })?;
             let values = array(value, "board.rowOrColumnStagger")?;
             let expected = if row_staggered {
                 3
@@ -966,11 +976,37 @@ mod tests {
         assert_eq!(layout.slots[key(&layout, "z")].row_offset, 750);
         assert_eq!(layout.slots[key(&layout, "y")].finger, 4);
 
-        let board = r#"{"isRowStaggered":false,"rowOrColumnStagger":[0,-0.3,-0.4,-0.3,-0.2,-0.2,-0.3,-0.4,-0.3,0]}"#;
+        let board = r#"{"isColumnStaggered":true,"rowOrColumnStagger":[0,-0.3,-0.4,-0.3,-0.2,-0.2,-0.3,-0.4,-0.3,0]}"#;
         let columns = parse(&example("@", "", board));
         assert_eq!(columns.slots[key(&columns, "w")].column_offset, -300);
         assert_eq!(columns.slots[key(&columns, "w")].row_offset, 0);
         assert_eq!(columns.slots[key(&columns, "s")].column_offset, -300);
+    }
+
+    #[test]
+    fn stagger_offsets_need_an_explicit_direction() {
+        let flat = parse(&example(
+            "@",
+            "",
+            r#"{"isRowStaggered":false,"rowOrColumnStagger":[0,0,5]}"#,
+        ));
+        assert!(flat
+            .slots
+            .iter()
+            .filter(|slot| slot.main)
+            .all(|slot| slot.row_offset == 0 && slot.column_offset == 0));
+
+        let both = example(
+            "@",
+            "",
+            r#"{"isRowStaggered":true,"isColumnStaggered":true,"rowOrColumnStagger":[0,0,0]}"#,
+        );
+        let error = Layout::parse(&both, Path::new("both.jsonc")).unwrap_err();
+        assert!(error.contains("cannot both be true"), "{error}");
+
+        let missing = example("@", "", r#"{"isColumnStaggered":true}"#);
+        let error = Layout::parse(&missing, Path::new("missing.jsonc")).unwrap_err();
+        assert!(error.contains("rowOrColumnStagger is required"), "{error}");
     }
 
     #[test]
@@ -1148,7 +1184,7 @@ mod tests {
                 "thumbs": ["space"]
             },
             "fingermap": ["0 1 2 3 3 6 6 7 8 9 9 9", "0 1 2 3 3 6 6 7 8 9 9 9", "0 1 2 3 3 6 6 7 8 9 9 9"],
-            "board": {"isRowStaggered": false, "rowOrColumnStagger": [0,0,0,0,0,0,0,0,0,0,0.2,0.3]}
+            "board": {"isColumnStaggered": true, "rowOrColumnStagger": [0,0,0,0,0,0,0,0,0,0,0.2,0.3]}
         }"#;
         let layout = parse(text);
         assert!(!layout.extended());

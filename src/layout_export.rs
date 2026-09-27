@@ -269,6 +269,7 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                 (_, "layout") => &["fingers", "thumbs"],
                 (_, "board") => &[
                     "isRowStaggered",
+                    "isColumnStaggered",
                     "mirrorLeftRowStagger",
                     "splitAngle",
                     "rowOrColumnStagger",
@@ -669,6 +670,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     }
     let board = object([
         ("isRowStaggered", Json::Bool(!has_columns && has_rows)),
+        ("isColumnStaggered", Json::Bool(has_columns)),
         ("mirrorLeftRowStagger", Json::Bool(false)),
         ("splitAngle", Json::Number(0.0)),
         (
@@ -732,6 +734,17 @@ mod tests {
         assert_eq!(restored.slots.iter().filter(|slot| !slot.main).count(), 1);
         assert!(!original.extended());
         assert!(!restored.extended());
+    }
+
+    #[test]
+    fn column_stagger_export_declares_its_mode_and_keeps_physical_offsets() {
+        let source = format!("{GRID}column-offsets: 0 -0.3 -0.4 -0.3 -0.2 -0.2 -0.3 -0.4 -0.3 0\n");
+        let original = Layout::parse(&source, Path::new("columns.dat")).unwrap();
+        let jsonc = jsonc_text(&original).unwrap();
+        assert!(jsonc.contains("\"isRowStaggered\": false"), "{jsonc}");
+        assert!(jsonc.contains("\"isColumnStaggered\": true"), "{jsonc}");
+        let restored = Layout::parse(&jsonc, Path::new("columns.jsonc")).unwrap();
+        assert_eq!(restored.slots, original.slots);
     }
 
     #[test]
