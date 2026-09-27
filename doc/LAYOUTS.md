@@ -78,13 +78,15 @@ flag is true, `rowOrColumnStagger` is ignored and the layout has no numeric
 stagger. Both use the [numeric geometry rules](#geometry-and-finger-assignments)
 below.
 
-`magic.keys` lists every physical magic key. `magic.wildcards` names the marker
-used by its fallback rules. `*@` with output `**` makes `@` repeat the previous
-output when no explicit text rule matches. For example, the wildcard makes
-`a@` emit `aa`. Put the wildcard rule first; following rules such as `h@`
+When `magic.wildcards` is present, `magic.keys` lists its physical magic keys
+and `wildcards` names the marker used by fallback rules. `*@` with output `**`
+makes `@` repeat the previous output when no explicit text rule matches. For
+example, `a@` emits `aa`. Put the wildcard rule first; following rules such as `h@`
 override it and emit their specific output, `hr` in this example.
-An `@` in `layout.fingers` is an ordinary `@` key unless `magic.keys`,
-`magic.key`, or a legacy rule ending in `@` explicitly declares it. An empty
+Without `wildcards`, older JSONC rules select their action keys by the last
+character of each input; `magic.keys` is accepted for compatibility but does
+not restrict those rules. An `@` in `layout.fingers` is ordinary unless
+`magic.key` or a legacy rule ending in `@` declares it. An empty
 legacy `magic` block, including `"magicKeys": []` and `"rules": []`, declares no
 magic keys.
 

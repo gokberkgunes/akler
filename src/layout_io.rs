@@ -507,7 +507,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         let magic = object(magic, "magic")?;
         empty_feature(magic, "magicKeys")?;
         empty_feature(magic, "combos")?;
-        if magic.contains_key("keys") || magic.contains_key("wildcards") {
+        if magic.contains_key("wildcards") {
             if magic.contains_key("key") || magic.contains_key("fallback") {
                 return Err(
                     "magic.keys and magic.wildcards cannot be combined with key or fallback".into(),
