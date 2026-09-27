@@ -16,7 +16,7 @@ const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 // This is a modeling assumption, not a universal anatomical measurement.
 const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
-const N_METRICS: usize = 34;
+const N_METRICS: usize = 36;
 
 const N_WEIGHTS: usize = N_METRICS + 4;
 
@@ -76,7 +76,7 @@ const LTRAVEL: usize = 26;
 
 const SFTRAVEL: usize = 27;
 
-// Roll breakdowns are display-only; ROLL carries their combined reward.
+// Directional roll metrics carry the reward; ROLL is their display total.
 const IN2: usize = 28;
 
 const OUT2: usize = 29;
@@ -89,6 +89,10 @@ const INROLL: usize = 32;
 
 const OUTROLL: usize = 33;
 
+const INSRAF: usize = 34;
+
+const OUTSRAF: usize = 35;
+
 const USAGE: usize = N_METRICS;
 
 const OFF: usize = USAGE + 10;
@@ -99,9 +103,7 @@ const RHYTHM_DEN: usize = SRAF_DEN + 1;
 
 const RAW_SRAF: usize = RHYTHM_DEN + 1;
 
-const RAW_ROLL: usize = RAW_SRAF + 1;
-
-const RAW_ALT: usize = RAW_ROLL + 1;
+const RAW_ALT: usize = RAW_SRAF + 1;
 
 const ROW1_BI: usize = RAW_ALT + 1;
 
@@ -117,27 +119,27 @@ const ROLL_DEN: usize = SIMPLE_ROLL + 1;
 
 const N_RAW: usize = ROLL_DEN + 1;
 
-const SIMPLE_NAMES: [&str; 7] = ["SFB", "SFS", "Lat. stretch", "1-row change", "2-row change", "SRAF", "ROLL"];
+const SIMPLE_NAMES: [&str; 9] = ["SFB", "SFS", "Lat. stretch", "1-row change", "2-row change", "IN SRAF", "OUT SRAF", "INROLL", "OUTROLL"];
 
-const SIMPLE_KEYS: [&str; 7] = ["sfb", "sfs", "lateral", "row1", "row2", "sraf_reward", "roll_reward"];
+const SIMPLE_KEYS: [&str; 9] = ["sfb", "sfs", "lateral", "row1", "row2", "insraf_reward", "outsraf_reward", "inroll_reward", "outroll_reward"];
 
-const DEFAULT_SIMPLE: [f64; 7] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25];
+const DEFAULT_SIMPLE: [f64; 9] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25, 0.25, 0.25];
 
 const METRIC_NAMES: [&str; N_METRICS] = [
     "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
     "DSB", "DSS", "RED", "WRED", "WISH", "SRAF", "ROLL",
     "DFSB", "CFSB", "DFSS", "CFSS", "ALT", "CSB", "CSS",
     "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL",
-    "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL",
+    "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL", "INSRAF", "OUTSRAF",
 ];
 
-// FSB/FSS and roll breakdowns are display-only. Weight D/C scissors and total ROLL.
+// FSB/FSS and combined rhythm totals are display-only. Weight directional credits.
 const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dsb", "dss",
     "red", "wred", "wish", "sraf_reward", "roll_reward",
     "dfsb", "cfsb", "dfss", "cfss", "alt_reward", "csb", "css",
     "travel", "vtravel", "ltravel", "sftravel",
-    "in2", "out2", "in3", "out3", "inroll", "outroll",
+    "in2", "out2", "in3", "out3", "inroll", "outroll", "insraf_reward", "outsraf_reward",
     "off_pinky", "off_ring", "off_middle", "off_index",
 ];
 
@@ -159,8 +161,8 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Same-hand, no-thumb trigram whose finger direction reverses.",
     "Redirect with no index finger. Subset of RED, with an extra penalty.",
     "Redirect with an index and a ring/pinky. Subset of RED.",
-    "Clean same-row adjacent-finger bigram. Same hand, no thumbs; lateral stretches receive no credit.",
-    "Total directional rolls: IN2 + OUT2 + IN3 + OUT3. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
+    "Clean same-row adjacent-finger bigram. Display total of INSRAF + OUTSRAF; same hand, no thumbs, and no blocked movement.",
+    "Display total of INROLL + OUTROLL. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
     "Discordant full-scissor bigram: adjacent fingers, shorter above longer, two rows apart.",
     "Concordant full-scissor bigram: adjacent fingers, longer above shorter, two rows apart. Still penalized.",
     "Discordant full-scissor skipgram; the same endpoint geometry as DFSB.",
@@ -176,8 +178,10 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Outward two-finger roll within a mixed-hand trigram (LLR/RRL/LRR/RLL). Uses [rolls] settings. Display-only part of ROLL.",
     "Three distinct fingers on one hand moving strictly inward. Uses [rolls] settings. Display-only part of ROLL.",
     "Three distinct fingers on one hand moving strictly outward. Uses [rolls] settings. Display-only part of ROLL.",
-    "All inward rolls: IN2 + IN3. Percentage of eligible trigrams under [rolls]; display-only part of ROLL.",
-    "All outward rolls: OUT2 + OUT3. Percentage of eligible trigrams under [rolls]; display-only part of ROLL.",
+    "All inward rolls: IN2 + IN3. Percentage of eligible trigrams under [rolls]; independently rewarded.",
+    "All outward rolls: OUT2 + OUT3. Percentage of eligible trigrams under [rolls]; independently rewarded.",
+    "Clean inward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
+    "Clean outward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
 ];
 
 fn physical_metric(m: usize) -> bool {
@@ -208,11 +212,11 @@ fn is_rhythm(m: usize) -> bool {
 }
 
 fn higher_better(m: usize) -> bool {
-    matches!(m, SRAF | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL)
+    matches!(m, SRAF | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL | INSRAF | OUTSRAF)
 }
 
 fn aggregate(m: usize) -> bool {
-    matches!(m, FSB | FSS | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL)
+    matches!(m, FSB | FSS | SRAF | ROLL | IN2 | OUT2 | IN3 | OUT3)
 }
 
 fn raw_positive(m: usize) -> Option<usize> {
@@ -568,7 +572,7 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     if sraf_shape(a, b) {
         f.bi|=bit(RAW_SRAF);
         if f.bi&BAD_BI == 0 {
-            f.bi|=bit(SRAF);
+            f.bi|=bit(SRAF) | bit(if a.rank < b.rank { INSRAF } else { OUTSRAF });
         }
     }
     f
@@ -630,7 +634,7 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
             } else {
                 OUTROLL
             };
-            bits |= bit(kind) | bit(direction) | bit(ROLL) | bit(RAW_ROLL) | bit(SIMPLE_ROLL);
+            bits |= bit(kind) | bit(direction) | bit(ROLL) | bit(SIMPLE_ROLL);
         }
     }
 
@@ -1749,7 +1753,7 @@ struct Metrics {
     v: [f64; N_METRICS],
     usage: [f64; 10],
     off: [f64; 8],
-    simple: [f64; 7]
+    simple: [f64; 9]
 }
 
 fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
@@ -1759,7 +1763,7 @@ fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
 fn denominator_totals(m: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
     if matches!(m, TRAVEL|VTRAVEL|LTRAVEL) {
         totals[0]
-    } else if m == SRAF {
+    } else if matches!(m, SRAF | INSRAF | OUTSRAF) {
         raw.0[SRAF_DEN].max(0.0)
     } else if roll_metric(m) {
         raw.0[ROLL_DEN].max(0.0)
@@ -1790,8 +1794,10 @@ fn metrics_totals(raw: &Raw, totals: &[f64; 4]) -> Metrics {
             pct((raw.0[LSB] + raw.0[LSS]).max(0.0), totals[1] + totals[2]),
             pct((raw.0[ROW1_BI] + raw.0[ROW1_SK]).max(0.0), totals[1] + totals[2]),
             pct((raw.0[ROW2_BI] + raw.0[ROW2_SK]).max(0.0), totals[1] + totals[2]),
-            pct(raw.0[SRAF].max(0.0), raw.0[SRAF_DEN]),
-            pct(raw.0[SIMPLE_ROLL].max(0.0), raw.0[ROLL_DEN]),
+            pct(raw.0[INSRAF].max(0.0), raw.0[SRAF_DEN]),
+            pct(raw.0[OUTSRAF].max(0.0), raw.0[SRAF_DEN]),
+            pct(raw.0[INROLL].max(0.0), raw.0[ROLL_DEN]),
+            pct(raw.0[OUTROLL].max(0.0), raw.0[ROLL_DEN]),
         ],
     }
 }
@@ -1820,10 +1826,10 @@ impl Default for Weights {
     fn default() -> Self {
         Self::new([
                 12.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.4, 3.0, 0.75, 1.0, 0.25,
-                0.75, 2.5, 1.25, 0.25, 0.25,
+                0.75, 2.5, 1.25, 0.0, 0.0,
                 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15,
                 0.02, 0.0, 0.0, 0.10,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25,
                 0.60, 0.20, 0.05, 0.0,
             ])
     }
@@ -1920,6 +1926,22 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
             }
             if !entries.contains_key(WEIGHT_NAMES[c]) {
                 w.0[c] = value*0.5;
+            }
+        }
+    }
+    // Combined legacy rewards seed both directions. An explicit directional
+    // setting always takes precedence, regardless of configuration order.
+    for (legacy, inward, outward) in [
+        ("sraf_reward", INSRAF, OUTSRAF),
+        ("roll_reward", INROLL, OUTROLL),
+    ] {
+        if let Some(value) = entries.get(legacy) {
+            let value = finite_nonnegative(value)?;
+            if !entries.contains_key(WEIGHT_NAMES[inward]) {
+                w.0[inward] = value;
+            }
+            if !entries.contains_key(WEIGHT_NAMES[outward]) {
+                w.0[outward] = value;
             }
         }
     }
@@ -2090,9 +2112,9 @@ fn contributor_data(m: usize, before: &[usize], after: &[usize], c: &Corpus, mod
     contributor_data_mode(m, before, after, c, model, merge_reverse, CreditView::Clean)
 }
 
-fn simple_breakdown(m: &Metrics, w: &[f64; 7]) -> Breakdown {
+fn simple_breakdown(m: &Metrics, w: &[f64; 9]) -> Breakdown {
     let mut b = Breakdown::default();
-    for i in 0..7 {
+    for i in 0..9 {
         let v = m.simple[i]*w[i];
         if i >= 5 {
             b.bonus += v;

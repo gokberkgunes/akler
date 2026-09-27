@@ -1011,17 +1011,24 @@ mod tests {
     #[test]
     fn simple_objective_and_normalized_mixture_use_numeric_totals() {
         let seed = layout();
-        let weights = Weights::default();
+        let mut weights = Weights::default();
+        weights.0[INSRAF] = 0.2;
+        weights.0[OUTSRAF] = 0.7;
+        weights.0[INROLL] = 0.3;
+        weights.0[OUTROLL] = 0.9;
         let corpora = vec![
             (corpus("first.json", b"aa aq hr rh aqr qra"), 1.0),
             (corpus("second.json", b"hhh rrr ar ar qr"), 3.0),
         ];
         let locked = vec![true; seed.slots.len()];
         for mode in ["detailed", "simple"] {
-            let settings = SearchSettings {
+            let mut settings = SearchSettings {
                 mode: mode.into(),
                 ..settings()
             };
+            if mode == "simple" {
+                settings.simple[5..9].copy_from_slice(&[0.2, 0.7, 0.3, 0.9]);
+            }
             let effort = LocalEffort::new(&seed, &weights);
             let expected: f64 = corpora
                 .iter()

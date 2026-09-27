@@ -1117,25 +1117,11 @@ fn action_simple_rows(
     for (side, evaluation) in [before, after].into_iter().enumerate() {
         let model = &evaluation.model;
         let positions = positions(&model.original);
-        let denominator = match metric {
-            0 => evaluation.corpus.totals[1],
-            1 => evaluation.corpus.totals[2],
-            2..=4 => evaluation.corpus.totals[1] + evaluation.corpus.totals[2],
-            5 => evaluation.raw.0[SRAF_DEN],
-            _ => evaluation.raw.0[ROLL_DEN],
-        };
+        let denominator = simple_denominator(metric, &evaluation.raw, &evaluation.corpus.totals);
         for gram in &evaluation.corpus.grams {
             let mut contribution = Raw::default();
             add_gram(&mut contribution, gram, &positions, &model.geometry, 1.0);
-            let mass = match metric {
-                0 => contribution.0[SFB],
-                1 => contribution.0[SFS],
-                2 => contribution.0[LSB] + contribution.0[LSS],
-                3 => contribution.0[ROW1_BI] + contribution.0[ROW1_SK],
-                4 => contribution.0[ROW2_BI] + contribution.0[ROW2_SK],
-                5 => contribution.0[SRAF],
-                _ => contribution.0[SIMPLE_ROLL],
-            };
+            let mass = simple_mass(metric, &contribution);
             let value = pct(mass.max(0.0), denominator);
             if value == 0.0 {
                 continue;
@@ -1179,7 +1165,7 @@ fn action_simple_contributors(
     let source = action_simple_rows(metric, layout, before, after);
     // These IDs supply the common percentage unit and improvement colors;
     // the contributions and totals above are the actual simple metrics.
-    let color_metric = [SFB, SFS, LSB, DSB, DSB, SRAF, ROLL][metric];
+    let color_metric = SIMPLE_METRIC_IDS[metric];
     let mut sort_change = false;
     let mut all = false;
     let mut scroll = 0;
@@ -2473,7 +2459,7 @@ mod ngram_integration_tests {
         let text = canvas_text(&canvas);
         assert!(text.contains("sweep"));
         assert!(text.contains("history:2"));
-        for i in 0..7 {
+        for i in 0..SIMPLE_NAMES.len() {
             assert!(canvas.hits.iter().any(|(_, action)| matches!(
                 action, Action::SimpleWeight(index) if *index == i
             )));
@@ -2519,7 +2505,7 @@ mod ngram_integration_tests {
         );
         let effort_before = LocalEffort::new(&layout, &weights);
         settings.mode = "simple".into();
-        settings.simple = [3.0, 7.0, 1.0, 2.0, 5.0, 0.5, 0.8];
+        settings.simple = [3.0, 7.0, 1.0, 2.0, 5.0, 0.5, 0.6, 0.8, 0.9];
         assert_eq!(
             action_score_breakdown(&evaluation.metrics, &weights, &settings)
                 .net
@@ -2535,13 +2521,32 @@ mod ngram_integration_tests {
     }
 
     #[test]
+    fn simple_action_objective_weights_inward_and_outward_rolls_separately() {
+        let layout = history_layout();
+        let corpus = history_corpus(b"fdlfdlldf");
+        let weights = Weights::default();
+        let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
+        assert!(evaluation.metrics.simple[7] > 0.0);
+        assert!(evaluation.metrics.simple[8] > 0.0);
+
+        let mut settings = SearchSettings::default();
+        settings.mode = "simple".into();
+        settings.simple = [0.0; 9];
+        settings.simple[7] = 0.2;
+        settings.simple[8] = 0.8;
+        let score = action_score_breakdown(&evaluation.metrics, &weights, &settings);
+        let expected = -(evaluation.metrics.simple[7] * 0.2 + evaluation.metrics.simple[8] * 0.8);
+        assert!((score.net - expected).abs() < 1e-12);
+    }
+
+    #[test]
     fn simple_action_details_use_physical_labels_and_exact_simple_components() {
         let layout = history_layout();
         let corpus = history_corpus(b"aanwaapnwhn");
         let mut weights = Weights::new([0.0; N_WEIGHTS]);
         weights.0[SKB] = 2.0;
         let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
-        for metric in 0..7 {
+        for metric in 0..SIMPLE_NAMES.len() {
             let rows = action_simple_rows(metric, &layout, &evaluation, &evaluation);
             let total: f64 = rows.iter().map(|row| row.2).sum();
             assert!((total - evaluation.metrics.simple[metric]).abs() < 1e-9);
@@ -2872,9 +2877,11 @@ mod ngram_integration_tests {
                         let total: f64 = rows.iter().map(|(_, _, after)| after).sum();
                         assert!((total - full.metrics.v[metric]).abs() < 1e-9);
                     }
-                    let simple = action_simple_rows(6, &layout, &full, &full);
-                    let total: f64 = simple.iter().map(|(_, _, after)| after).sum();
-                    assert!((total - full.metrics.simple[6]).abs() < 1e-9);
+                    for simple_metric in 7..=8 {
+                        let simple = action_simple_rows(simple_metric, &layout, &full, &full);
+                        let total: f64 = simple.iter().map(|(_, _, after)| after).sum();
+                        assert!((total - full.metrics.simple[simple_metric]).abs() < 1e-9);
+                    }
 
                     let effort = LocalEffort::new(&layout, &weights);
                     let mut cache = ng::Incremental::new(

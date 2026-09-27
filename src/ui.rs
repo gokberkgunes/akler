@@ -854,13 +854,15 @@ static OPT_GROUP_RHYTHM: [usize; 3] = [REDIR, WRED, WISH];
 
 static OPT_GROUP_PREF: [usize; 3] = [SRAF, ROLL, ALT];
 
+static OPT_GROUP_SRAF_DIRECTIONS: [usize; 2] = [INSRAF, OUTSRAF];
+
 static OPT_GROUP_ROLL_TOTALS: [usize; 2] = [INROLL, OUTROLL];
 
 static OPT_GROUP_ROLL_TYPES: [usize; 4] = [IN2, OUT2, IN3, OUT3];
 
 static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
-static OPT_METRIC_GROUPS: [(&str, &[usize]); 11] = [
+static OPT_METRIC_GROUPS: [(&str, &[usize]); 12] = [
     ("Same finger", &OPT_GROUP_SAME),
     ("Full scissors", &OPT_GROUP_FULL),
     ("Half scissors", &OPT_GROUP_HALF),
@@ -869,12 +871,13 @@ static OPT_METRIC_GROUPS: [(&str, &[usize]); 11] = [
     ("Other 2-row", &OPT_GROUP_ROW),
     ("Rhythm", &OPT_GROUP_RHYTHM),
     ("Preferences", &OPT_GROUP_PREF),
-    ("Roll totals", &OPT_GROUP_ROLL_TOTALS),
+    ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
+    ("Roll directions", &OPT_GROUP_ROLL_TOTALS),
     ("Roll types", &OPT_GROUP_ROLL_TYPES),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-static TABLE_GROUPS: [(&str, &[usize]); 11] = [
+static TABLE_GROUPS: [(&str, &[usize]); 12] = [
     ("Same finger", &OPT_GROUP_SAME),
     ("Full", &OPT_GROUP_FULL),
     ("Half", &OPT_GROUP_HALF),
@@ -883,7 +886,8 @@ static TABLE_GROUPS: [(&str, &[usize]); 11] = [
     ("Other 2-row", &OPT_GROUP_ROW),
     ("Rhythm", &OPT_GROUP_RHYTHM),
     ("Preferences", &OPT_GROUP_PREF),
-    ("Roll totals", &OPT_GROUP_ROLL_TOTALS),
+    ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
+    ("Roll directions", &OPT_GROUP_ROLL_TOTALS),
     ("Roll types", &OPT_GROUP_ROLL_TYPES),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
@@ -1666,7 +1670,7 @@ fn objective_view(
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
             "FSB/FSS totals are not weighted twice. Other 2-row changes exclude adjacent full scissors; lateral stretch stays independent.".into(),
-            "SRAF/ALT reward clean movement; ROLL follows [rolls] and rewards the four types once. Roll breakdowns are display-only.".into()
+            "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
     info_page(term, "Objective audit — selected corpus", &lines)
 }
@@ -1779,7 +1783,7 @@ fn dashboard(
 
 fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResult<()> {
     if aggregate(i) {
-        return Err("Display-only metrics have no separate weight; edit D/C scissors or the combined ROLL weight.".into());
+        return Err("Display-only totals have no separate weight; edit their directional or D/C components.".into());
     }
     let hint = if i<N_METRICS {
         METRIC_HELP[i]
@@ -2002,20 +2006,48 @@ fn metric_short_name(m: usize) -> &'static str {
     }
 }
 
+const SIMPLE_METRIC_IDS: [usize; 9] = [
+    SFB, SFS, LSB, DSB, DSB, INSRAF, OUTSRAF, INROLL, OUTROLL,
+];
+
+fn simple_denominator(id: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
+    match id {
+        0 => totals[1],
+        1 => totals[2],
+        2..=4 => totals[1] + totals[2],
+        5 | 6 => raw.0[SRAF_DEN],
+        _ => raw.0[ROLL_DEN],
+    }
+}
+
+fn simple_mass(id: usize, raw: &Raw) -> f64 {
+    match id {
+        0 => raw.0[SFB],
+        1 => raw.0[SFS],
+        2 => raw.0[LSB] + raw.0[LSS],
+        3 => raw.0[ROW1_BI] + raw.0[ROW1_SK],
+        4 => raw.0[ROW2_BI] + raw.0[ROW2_SK],
+        5 => raw.0[INSRAF],
+        6 => raw.0[OUTSRAF],
+        7 => raw.0[INROLL],
+        _ => raw.0[OUTROLL],
+    }
+}
+
 fn simple_metric_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metrics, dp: usize) -> usize {
-    let ids: [[Option<usize>; 3]; 3] = [
-        [Some(0), Some(1), None],
-        [Some(2), Some(3), Some(4)],
-        [Some(5), Some(6), None]
+    let groups: [(&str, &[usize]); 3] = [
+        ("Same finger", &[0, 1]),
+        ("Movement", &[2, 3, 4]),
+        ("Preferences", &[5, 6, 7, 8]),
     ];
-    let groups = ["Same finger", "Movement", "Preferences"];
-    let labels = ["SFB", "SFS", "LAT", "ROW1", "ROW2", "SRAF", "ROLL"];
+    let labels = ["SFB", "SFS", "LAT", "ROW1", "ROW2", "IN-SR", "OUT-SR", "IN-RL", "OUT-RL"];
     let label = 13;
+    let metric_label = labels.iter().map(|name| name.len()).max().unwrap_or(0);
     let value = (dp + 4).max(after.simple.iter().map(|v| format!("{}%", number( * v, dp)).len()).max().unwrap_or(0));
-    let delta = (dp + 3).max((0..7).map(|i| delta_text(before.simple[i], after.simple[i], dp).chars().count()).max().unwrap_or(0));
-    let cell = 1 + 4 + 1 + value + 2 + delta + 1;
+    let delta = (dp + 3).max((0..SIMPLE_NAMES.len()).map(|i| delta_text(before.simple[i], after.simple[i], dp).chars().count()).max().unwrap_or(0));
+    let cell = 1 + metric_label + 1 + value + 2 + delta + 1;
     let cols = ((c.w.saturating_sub(label + 2)) /(cell + 1)).clamp(1, 3);
-    let rows = ids.iter().map(|r|(r.iter().flatten().count() + cols - 1) / cols).sum:: <usize>();
+    let rows = groups.iter().map(|(_, ids)|(ids.len() + cols - 1) / cols).sum:: <usize>();
     let width = label + 2 + cols *(cell + 1);
     let x = c.w.saturating_sub(width) / 2;
     let h = rows + 2;
@@ -2034,27 +2066,23 @@ fn simple_metric_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metri
         }
     }
     let mut row = 0;
-    for (i, items) in ids.iter().enumerate() {
-        c.text(x + 2, y + 1 + row, groups[i], MUTED);
+    for (group, items) in groups {
+        c.text(x + 2, y + 1 + row, group, MUTED);
         let mut n = 0;
-        for &id in items.iter().flatten() {
+        for &id in items {
             let xx = x + 2 + label +(n % cols) *(cell + 1);
             let yy = y + 1 + row + n / cols;
-            let m = if id >= 5 {
-                ROLL
-            } else {
-                SFB
-            };
+            let m = SIMPLE_METRIC_IDS[id];
             c.text(xx + 1, yy, labels[id], FG);
             c.right(
-                xx + 6,
+                xx + 2 + metric_label,
                 yy,
                 value,
                 &format!("{}%", number(after.simple[id], dp)),
                 change_color(m, before.simple[id], after.simple[id])
             );
             c.right(
-                xx + 6 + value + 2,
+                xx + 2 + metric_label + value + 2,
                 yy,
                 delta,
                 &delta_text(before.simple[id], after.simple[id], dp),
@@ -2084,30 +2112,15 @@ fn simple_contributors(
     let p1 = positions(after);
     let r0 = full_raw(before, co, &model.geometry);
     let r1 = full_raw(after, co, &model.geometry);
-    let den=|r: &Raw | match id {
-        0 => co.totals[1],
-        1 => co.totals[2],
-        2..=4 => co.totals[1] + co.totals[2],
-        5 => r.0[SRAF_DEN],
-        _ => r.0[ROLL_DEN]
-    };
-    let mass=|r: &Raw | match id {
-        0 => r.0[SFB],
-        1 => r.0[SFS],
-        2 => r.0[LSB] + r.0[LSS],
-        3 => r.0[ROW1_BI] + r.0[ROW1_SK],
-        4 => r.0[ROW2_BI] + r.0[ROW2_SK],
-        5 => r.0[SRAF],
-        _ => r.0[SIMPLE_ROLL]
-    };
+    let den=|r: &Raw | simple_denominator(id, r, &co.totals);
     let mut out = Vec::new();
     for g in &co.grams {
         let mut a = Raw::default();
         let mut b = Raw::default();
         add_gram(&mut a, g, &p0, &model.geometry, 1.0);
         add_gram(&mut b, g, &p1, &model.geometry, 1.0);
-        let old = pct(mass(&a).max(0.0), den(&r0));
-        let new = pct(mass(&b).max(0.0), den(&r1));
+        let old = pct(simple_mass(id, &a).max(0.0), den(&r0));
+        let new = pct(simple_mass(id, &b).max(0.0), den(&r1));
         if old != 0.0 || new != 0.0 {
             out.push(Contributor {
                 gram: gram_name(g, &model.canonical),
@@ -2154,11 +2167,7 @@ fn simple_contributor_view(
         let pw = c.w.saturating_sub(px + 1);
         for (i, r) in rows.iter().take(16).enumerate() {
             let yy = y + i;
-            let m = if id >= 5 {
-                ROLL
-            } else {
-                SFB
-            };
+            let m = SIMPLE_METRIC_IDS[id];
             let col = change_color(m, r.before, r.after);
             c.text(0, yy, &r.gram, FG);
             c.right(8, yy, 10, &number(r.before, 4), MUTED);
@@ -2716,7 +2725,7 @@ fn save_result(
         for j in 0..N_METRICS {
             report.push_str(&format!("{} = {:.9} -> {:.9}\n", METRIC_NAMES[j], old.v[j], new.v[j]));
         }
-        for j in 0..7 {
+        for j in 0..SIMPLE_KEYS.len() {
             report.push_str(&format!(
                     "simple_{} = {:.9} -> {:.9}\n",
                     SIMPLE_KEYS[j],
@@ -2789,12 +2798,12 @@ fn simple_objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
         return problem_objective_view(term, p, arr);
     }
     let mut lines = vec!["Term                Weight        Before          After".into()];
-    let mut old = [0.0; 7];
-    let mut new = [0.0; 7];
+    let mut old = [0.0; 9];
+    let mut new = [0.0; 9];
     for (i, c) in p.corpora.iter().enumerate() {
         let a = metrics(&full_raw(&p.model.original, c, &p.model.geometry), c);
         let b = metrics(&full_raw(arr, c, &p.model.geometry), c);
-        for j in 0..7 {
+        for j in 0..SIMPLE_NAMES.len() {
             let scale = p.shares[i] * p.settings.simple[j] * if j >= 5 {
                 -1.0
             } else {
@@ -2804,7 +2813,7 @@ fn simple_objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
             new[j] += b.simple[j] * scale;
         }
     }
-    for j in 0..7 {
+    for j in 0..SIMPLE_NAMES.len() {
         lines.push(format!(
                 "{:<18} {:8.3} {:13.4} {:13.4}",
                 SIMPLE_NAMES[j],

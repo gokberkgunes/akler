@@ -62,9 +62,10 @@ AB, BC, and skip AC.
 | RED | Three presses on one hand; finger direction reverses, with both steps nonzero. | `red` | 0.75 |
 | WRED | RED with no index finger. Subset of RED, carrying an additional penalty. | `wred` | 2.5 |
 | WISH | RED with an index finger and at least one ring/pinky. Subset of RED. | `wish` | 1.25 |
-| SRAF | Clean same-row adjacent-finger pair on one hand. | `sraf_reward` | 0.25 |
-| ROLL | IN2 + OUT2 + IN3 + OUT3; combined roll credit. | `roll_reward` | 0.25 |
-| INROLL / OUTROLL | IN2 + IN3 / OUT2 + OUT3. | Display only | — |
+| SRAF | All clean same-row adjacent-finger pairs on one hand: INSRAF + OUTSRAF. | Display total only | — |
+| INSRAF / OUTSRAF | Clean SRAF moving inward / outward. | `insraf_reward` / `outsraf_reward` | 0.25 / 0.25 |
+| ROLL | IN2 + OUT2 + IN3 + OUT3; combined roll total. | Display total only | — |
+| INROLL / OUTROLL | IN2 + IN3 / OUT2 + OUT3. | `inroll` / `outroll` | 0.25 / 0.25 |
 | IN2 / OUT2 | Mixed-hand trigram (LLR/RRL/LRR/RLL); its consecutive same-hand pair moves inward / outward on different fingers. | Display only | — |
 | IN3 / OUT3 | Three distinct fingers on one hand, moving strictly inward / outward. | Display only | — |
 | ALT | Clean LRL/RLR triple; the returning AC pair uses different fingers. | `alt_reward` | 0.05 |
@@ -94,14 +95,15 @@ physical hand participates in the direction test.
 An action key uses the finger of its winning physical slot, not its output.
 
 ROLL = INROLL + OUTROLL. Each roll belongs to exactly one of IN2/OUT2/IN3/OUT3.
-The six breakdown columns are display-only: `roll_reward` rewards the combined
-ROLL percentage once. Existing configurations using ROLL remain supported.
-The definition change intentionally changes roll credit and may change scores
-and optimized layouts; weights themselves are unchanged.
+The four type columns are display-only. INROLL and OUTROLL have independent
+weights, while combined ROLL remains an unweighted display total.
 
-SRAF remains a pair metric. SRAF/ALT details can show `clean`, `raw` (shape
-before blockers), or `rejected` (raw minus clean); their scoring remains clean
-credit. Roll details show the directional physical trigrams directly.
+SRAF remains a pair metric. INSRAF moves from pinky toward index and OUTSRAF
+moves from index toward pinky, using the same anatomical order on each hand;
+physical left-to-right direction is irrelevant. SRAF is their unweighted
+display total. SRAF/ALT details can show `clean`, `raw` (shape before blockers),
+or `rejected` (raw minus clean); directional SRAF scoring uses clean credit.
+Roll details show the directional physical trigrams directly.
 
 ## Travel, usage, and score
 
@@ -129,7 +131,8 @@ Normalization uses supported physical events:
 
 - Bigram penalties (including SKB) and SFTRAVEL: all mapped bigrams, including thumbs.
 - Skip penalties (including SKS): all mapped skipgrams, including thumbs.
-- SRAF: mapped non-thumb bigrams; blocked pairs stay in the denominator.
+- SRAF, INSRAF, and OUTSRAF: mapped non-thumb bigrams; blocked pairs stay in
+  their shared denominator.
 - RED/WRED/WISH and ALT: mapped non-thumb trigrams; nonmatching and blocked
   triples stay in the denominator.
 - All roll types/totals: mapped non-thumb trigrams by default, or all mapped
@@ -163,7 +166,7 @@ row separation, so they include scissors and the corresponding other-row
 changes. They must not be added as extra columns to a detailed scissors total.
 
 Numeric geometry does not turn these logical row changes into distance bins.
-Simple mode uses only seven terms, configured in `[search]` in `akler.conf`:
+Simple mode uses nine terms, configured in `[search]` in `akler.conf`:
 
 | Setting | Meaning | Default |
 |---|---|---:|
@@ -172,8 +175,10 @@ Simple mode uses only seven terms, configured in `[search]` in `akler.conf`:
 | `simple_lateral` | Combined bigram/skipgram lateral-stretch penalty. | 2 |
 | `simple_row1` | Combined one-row-change penalty. | 0.75 |
 | `simple_row2` | Combined two-row-change penalty. | 2 |
-| `simple_sraf_reward` | Clean SRAF credit. | 0.25 |
-| `simple_roll_reward` | Combined ROLL credit, using the same `[rolls]` filters as detailed mode. | 0.25 |
+| `simple_insraf_reward` | Clean inward SRAF credit. | 0.25 |
+| `simple_outsraf_reward` | Clean outward SRAF credit. | 0.25 |
+| `simple_inroll_reward` | Inward roll credit, using the detailed mode `[rolls]` filters. | 0.25 |
+| `simple_outroll_reward` | Outward roll credit, using the detailed mode `[rolls]` filters. | 0.25 |
 
 Combined pair/skip terms divide their summed counts by bigram + skipgram mass.
 Simple mode does not add detailed scissors, SKB/SKS, travel, or off-home weights.
@@ -192,3 +197,9 @@ Legacy `fsb`/`fss` entries are accepted for migration: they set the discordant
 child to that value and concordant child to half, unless those children are
 explicitly set. The aggregate itself is never weighted. Column visibility
 does not edit weights, caps, or metric calculations.
+
+Legacy `sraf_reward` and `roll_reward` entries set both of their directional
+children, unless a corresponding child is explicitly configured. Likewise,
+legacy `simple_sraf_reward` and `simple_roll_reward` set both simple-mode
+directions. Equal inward and outward weights reproduce the old combined reward;
+the directional keys allow the optimizer to prefer one direction.

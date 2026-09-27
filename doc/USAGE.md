@@ -57,7 +57,8 @@ be disabled independently. `include_stetches` is accepted as an alias for
 
 The switches apply to IN2/OUT2/IN3/OUT3, INROLL/OUTROLL, and combined ROLL in
 editor, ranker, evaluation, and both optimizer objectives. They therefore
-change roll credit and can change optimizer decisions. They do not change
+change the independently weighted inward/outward roll credits and can change
+optimizer decisions. They do not change
 how magic keys type the corpus or how other metrics are classified.
 
 Filters check consecutive pairs AB and BC, not skip pair AC. They use
@@ -96,10 +97,10 @@ Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggl
 shared by ordinary and action layouts. Detailed D/C categories remain available
 without crowding the initial table. The column value accepts
 whitespace-separated metric names (case-insensitive); at least one is required.
-Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB,
-LSS, RED, INROLL, OUTROLL, ALT, and COVERAGE. IN2/OUT2/IN3/OUT3 and combined
-ROLL are available in the column picker; existing saved column selections are
-preserved. `H` in the main ranker restores all columns/rows
+Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB,
+FSS, HSS, LSB, LSS, RED, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, and COVERAGE.
+Combined SRAF/ROLL and IN2/OUT2/IN3/OUT3 are available in the column picker;
+existing saved column selections are preserved. `H` in the main ranker restores all columns/rows
 for the current session. Middle-click hiding is temporary unless saved via `v`, `s`.
 Ranker `r` reloads configuration, including weights/limits, and the layouts.
 Opened inspectors use the same weight snapshot as their ranking results. Magic
@@ -299,10 +300,10 @@ following settings under `[search]` in the same file.
 | `max_sfb_increase` / `max_sfs_increase` | Allowed increase from the original layout, in percentage points, per training corpus; `none` disables. | 0 / 0 |
 | `max_travel_increase` / `max_sftravel_increase` | Analogous limits in key units/100; `none` disables. | none / none |
 | `design` | `refine` improves the input; `random` starts shuffled layouts; `evolve` can cross/mutate retained parents. | refine |
-| `mode` | `detailed` weights or seven-term `simple` scoring. | detailed |
+| `mode` | `detailed` weights or nine-term `simple` scoring. | detailed |
 | `preset` | Name recorded for a settings selection. File loading does not apply other preset values automatically. | custom |
 | `min_distance` | Minimum differing letter positions for candidate diversity, and from the template for generation. | 6 |
-| `simple_*` | Seven simple-mode weights listed in METRICS.md. | See table |
+| `simple_*` | Nine simple-mode weights listed in METRICS.md. | See table |
 | `corpus.NAME` | Relative training share; positive shares are normalized to sum to 1. No mixture means selected corpus only. | No mixture |
 
 `metrics` aliases `mode`; legacy `max_sfb`/`max_sfs` are also baseline-relative
@@ -310,6 +311,8 @@ increase limits, not absolute ceilings. Caps are checked per training corpus,
 not just on the mixture's mean score. Weights and floating settings must be
 finite/nonnegative; cycle probability is at most 1, and hybrid mode requires
 0 < end temperature ≤ start temperature. Iteration counts must be positive.
+Legacy combined SRAF/ROLL reward names remain accepted and initialize both
+directions unless the corresponding directional setting is explicit.
 
 Choosing a preset in either optimizer changes settings immediately:
 

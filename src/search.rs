@@ -19,7 +19,7 @@ struct SearchSettings {
     mode: String,
     preset: String,
     diversity: usize,
-    simple: [f64; 7],
+    simple: [f64; 9],
 }
 
 impl Default for SearchSettings {
@@ -128,6 +128,9 @@ fn validate_search_settings(s: &SearchSettings) -> AppResult<()> {
 
 fn search_from_text(text: &str) -> AppResult<SearchSettings> {
     let mut s = SearchSettings::default();
+    let mut explicit_simple = [false; 9];
+    let mut legacy_sraf = None;
+    let mut legacy_roll = None;
     for (k, v) in config_lines(text)? {
         match k.as_str() {
             "method" => s.hybrid = match v.as_str() {
@@ -156,15 +159,27 @@ fn search_from_text(text: &str) -> AppResult<SearchSettings> {
             "mode"|"metrics" => s.mode = v.to_ascii_lowercase(),
             "preset" => s.preset = v.to_ascii_lowercase(),
             "min_distance" => s.diversity = v.parse()?,
+            "simple_sraf_reward" => legacy_sraf = Some(finite_nonnegative(&v)?),
+            "simple_roll_reward" => legacy_roll = Some(finite_nonnegative(&v)?),
             _ if k.starts_with("simple_") => {
                 let name=&k[7..];
                 let i = SIMPLE_KEYS.iter().position(|&x|x == name).ok_or_else(|| format!("unknown simple weight {k}"))?;
                 s.simple[i] = finite_nonnegative(&v)?;
+                explicit_simple[i] = true;
             },
             _ if k.starts_with("corpus.") => {
                 s.mix.insert(k[7..].to_ascii_lowercase(), finite_nonnegative(&v)?);
             },
             _ => return Err(format!("unknown search setting {k}").into())
+        }
+    }
+    for (legacy, children) in [(legacy_sraf, [5, 6]), (legacy_roll, [7, 8])] {
+        if let Some(value) = legacy {
+            for child in children {
+                if !explicit_simple[child] {
+                    s.simple[child] = value;
+                }
+            }
         }
     }
     validate_search_settings(&s)?;
@@ -970,4 +985,42 @@ fn run_search(p: &Problem, seed_arr: &[usize], locked: &[bool], control: &Contro
     }.into();
     rt.progress.elapsed = started.elapsed().as_secs_f64();
     Ok(rt.snapshot())
+}
+
+#[cfg(test)]
+mod simple_direction_config_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_simple_rewards_seed_both_directions_with_explicit_overrides() {
+        let settings = search_from_text(
+            "simple_sraf_reward = 0.4\n\
+             simple_outsraf_reward = 0.7\n\
+             simple_roll_reward = 0.2\n\
+             simple_inroll_reward = 0.9\n",
+        )
+        .unwrap();
+
+        assert_eq!(&settings.simple[5..9], &[0.4, 0.7, 0.9, 0.2]);
+    }
+
+    #[test]
+    fn simple_direction_settings_serialize_without_legacy_combined_rewards() {
+        let settings = search_from_text(
+            "simple_insraf_reward = 0.1\n\
+             simple_outsraf_reward = 0.2\n\
+             simple_inroll_reward = 0.3\n\
+             simple_outroll_reward = 0.4\n",
+        )
+        .unwrap();
+        let text = search_settings_text(&settings);
+
+        assert!(!text.lines().any(|line| line.starts_with("simple_sraf_reward =")));
+        assert!(!text.lines().any(|line| line.starts_with("simple_roll_reward =")));
+        assert!(text.contains("simple_insraf_reward = 0.1"));
+        assert!(text.contains("simple_outsraf_reward = 0.2"));
+        assert!(text.contains("simple_inroll_reward = 0.3"));
+        assert!(text.contains("simple_outroll_reward = 0.4"));
+        assert_eq!(search_from_text(&text).unwrap().simple, settings.simple);
+    }
 }

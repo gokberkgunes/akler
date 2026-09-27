@@ -607,6 +607,10 @@ mod tests {
         let stats = |population, slots| report_for(population, slots).rows[0].stats.clone();
         assert!(stats(Population::Bigrams, vec![0, 10]).contains(&"SFB"));
         assert!(stats(Population::Bigrams, vec![0, 0]).contains(&"SKB"));
+        let inward = stats(Population::Bigrams, vec![0, 1]);
+        assert!(inward.contains(&"SRAF") && inward.contains(&"INSRAF"));
+        let outward = stats(Population::Bigrams, vec![1, 0]);
+        assert!(outward.contains(&"SRAF") && outward.contains(&"OUTSRAF"));
         for (slots, full, directional) in
             [(vec![0, 21], "FSB", "DFSB"), (vec![1, 20], "FSB", "CFSB")]
         {
@@ -903,7 +907,7 @@ mod tests {
         assert!(text.contains("Match percentage: 100%"));
         let (header, rows) = table_lines(&report);
         assert_eq!(header.split(" | ").count(), 5);
-        assert!(header.ends_with("Stats"));
+        assert!(header.trim_end().ends_with("Stats"));
         assert!(!header.contains("Frequency"));
         let widths = header
             .split(" | ")

@@ -306,7 +306,11 @@ fn exclusive_pair_categories() {
                 assert_eq!(f.bi & BAD_BI, 0);
                 assert_ne!(f.bi & bit(RAW_SRAF), 0);
             }
-            assert_eq!(f.bi, pair_flags(b, a, i == j).bi);
+            let reverse = pair_flags(b, a, i == j).bi;
+            let directions = bit(INSRAF) | bit(OUTSRAF);
+            assert_eq!(f.bi & !directions, reverse & !directions);
+            assert_eq!(f.bi & bit(INSRAF) != 0, reverse & bit(OUTSRAF) != 0);
+            assert_eq!(f.bi & bit(OUTSRAF) != 0, reverse & bit(INSRAF) != 0);
         }
     }
 }
@@ -350,7 +354,7 @@ fn alternation_vetoes_and_unfiltered_roll_credit() {
                     assert_eq!(blockers, 0);
                 }
                 if t.bits & bit(ROLL) != 0 {
-                    assert_ne!(t.bits & bit(RAW_ROLL), 0);
+                    assert_ne!(t.bits & (bit(INROLL) | bit(OUTROLL)), 0);
                 }
                 if t.bits & bit(ALT) != 0 {
                     assert_ne!(t.bits & bit(RAW_ALT), 0);
@@ -380,6 +384,99 @@ fn familiar_positive_examples() {
     assert!(!is_alternation(q(b'a'), q(b'j'), q(b'q')));
     assert!(!is_alternation(q(b'e'), q(b'j'), q(b'v')));
     assert!(!is_alternation(q(b'a'), q(b'j'), q(b'a')));
+}
+
+#[test]
+fn clean_sraf_direction_and_legacy_rewards_are_independent() {
+    for (pinky, ring) in [(key(0, 0), key(0, 1)), (key(0, 9), key(0, 8))] {
+        let inward = pair_flags(pinky, ring, false).bi;
+        let outward = pair_flags(ring, pinky, false).bi;
+        assert_ne!(inward & bit(SRAF), 0);
+        assert_ne!(inward & bit(INSRAF), 0);
+        assert_eq!(inward & bit(OUTSRAF), 0);
+        assert_ne!(outward & bit(SRAF), 0);
+        assert_ne!(outward & bit(OUTSRAF), 0);
+        assert_eq!(outward & bit(INSRAF), 0);
+    }
+    let mut stretched = key(0, 0);
+    stretched.row_offset = -2000;
+    let blocked = pair_flags(stretched, key(0, 1), false).bi;
+    assert_ne!(blocked & bit(RAW_SRAF), 0);
+    assert_eq!(blocked & (bit(SRAF) | bit(INSRAF) | bit(OUTSRAF)), 0);
+
+    let legacy = weights_from_text("sraf_reward = 0.3\nroll_reward = 0.1\n").unwrap();
+    assert_eq!((legacy.0[INSRAF], legacy.0[OUTSRAF]), (0.3, 0.3));
+    assert_eq!((legacy.0[INROLL], legacy.0[OUTROLL]), (0.1, 0.1));
+    let split = weights_from_text(
+        "outroll = 0.4\nroll_reward = 0.1\noutsraf_reward = 0.7\nsraf_reward = 0.3\n",
+    )
+    .unwrap();
+    assert_eq!((split.0[INROLL], split.0[OUTROLL]), (0.1, 0.4));
+    assert_eq!((split.0[INSRAF], split.0[OUTSRAF]), (0.3, 0.7));
+    let serialized = weights_text(&split);
+    assert!(!serialized.contains("\nroll_reward ="));
+    assert!(!serialized.contains("\nsraf_reward ="));
+    assert_eq!(weights_from_text(&serialized).unwrap().0, split.0);
+
+    let board = board_from_text(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("sraf.dat"),
+    )
+    .unwrap();
+    let model = Model::new(board);
+    let source = Source::from_text(
+        r#"{"letters":{"q":3,"w":3},"bigrams":{"qw":2,"wq":1}}"#,
+        Path::new("sraf.json"),
+    )
+    .unwrap();
+    let corpus = model.corpus(&source).unwrap();
+    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    assert_eq!(
+        (raw.0[SRAF], raw.0[INSRAF], raw.0[OUTSRAF]),
+        (3.0, 2.0, 1.0)
+    );
+    let metrics = metrics(&raw, &corpus);
+    close(metrics.v[INSRAF] + metrics.v[OUTSRAF], metrics.v[SRAF]);
+    close(metrics.simple[5] + metrics.simple[6], metrics.v[SRAF]);
+    let mut weights = Weights::new([0.0; N_WEIGHTS]);
+    weights.0[INSRAF] = 0.5;
+    weights.0[OUTSRAF] = 1.0;
+    weights.0[SRAF] = 100.0; // Combined display total never scores twice.
+    let score = breakdown(&metrics, &weights);
+    assert_eq!(score.contributions[SRAF], 0.0);
+    close(score.net, -metrics.v[INSRAF] * 0.5 - metrics.v[OUTSRAF]);
+}
+
+#[test]
+fn action_sraf_uses_current_root_slot_and_directional_objective() {
+    let rows = "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
+    let mut layout = action_keys::Layout::parse(
+        &format!("{rows}action m = text \"q\"\n"),
+        Path::new("action-sraf.dat"),
+    )
+    .unwrap();
+    let corpus = action_ngrams::NgramCorpus::from_text(
+        r#"{"letters":{"q":3,"w":3},"bigrams":{"qw":2,"wq":1},"trigrams":{"qwq":1}}"#,
+        Path::new("action-sraf.json"),
+    )
+    .unwrap();
+    let mut weights = Weights::new([0.0; N_WEIGHTS]);
+    weights.0[INSRAF] = 0.5;
+    weights.0[OUTSRAF] = 1.0;
+    let stop = AtomicBool::new(false);
+    let progress = AtomicU64::new(0);
+    let first = action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
+    assert_eq!((first.raw.0[INSRAF], first.raw.0[OUTSRAF]), (2.0, 1.0));
+    close(
+        first.metrics.v[INSRAF] + first.metrics.v[OUTSRAF],
+        first.metrics.v[SRAF],
+    );
+    close(first.score, breakdown(&first.metrics, &weights).net);
+
+    layout.swap(0, 9);
+    let moved = action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
+    assert_eq!((moved.raw.0[INSRAF], moved.raw.0[OUTSRAF]), (0.0, 0.0));
+    assert_ne!(first.score, moved.score);
 }
 
 #[test]
@@ -743,7 +840,7 @@ fn contributors_reconcile_all_metrics() {
             );
         }
     }
-    for i in 0..7 {
+    for i in 0..SIMPLE_NAMES.len() {
         let rows = simple_contributors(i, &p.model, before, &after, c);
         close(
             rows.iter().map(|x| x.before).sum(),
@@ -1402,16 +1499,23 @@ fn roll_percentages_exclude_thumbs_and_reward_the_total_once() {
         assert!(higher_better(metric));
     }
     close(metrics.v[INROLL] + metrics.v[OUTROLL], metrics.v[ROLL]);
-    assert_eq!(metrics.simple[6].to_bits(), metrics.v[ROLL].to_bits());
+    assert_eq!(metrics.simple[7].to_bits(), metrics.v[INROLL].to_bits());
+    assert_eq!(metrics.simple[8].to_bits(), metrics.v[OUTROLL].to_bits());
 
     let mut weights = Weights::new([0.0; N_WEIGHTS]);
-    weights.0[ROLL] = 0.25;
-    for metric in [IN2, OUT2, IN3, OUT3, INROLL, OUTROLL] {
-        weights.0[metric] = 1000.0; // Display-only even if internal storage is set.
+    weights.0[ROLL] = 1000.0; // Combined total is display-only.
+    weights.0[INROLL] = 0.25;
+    weights.0[OUTROLL] = 0.5;
+    for metric in [IN2, OUT2, IN3, OUT3] {
+        weights.0[metric] = 1000.0; // Length breakdowns are display-only.
     }
     let score = breakdown(&metrics, &weights);
-    assert_eq!(score.net, -metrics.v[ROLL] * 0.25);
-    for metric in [IN2, OUT2, IN3, OUT3, INROLL, OUTROLL] {
+    assert_eq!(
+        score.net,
+        -metrics.v[INROLL] * 0.25 - metrics.v[OUTROLL] * 0.5
+    );
+    assert_eq!(score.contributions[ROLL], 0.0);
+    for metric in [IN2, OUT2, IN3, OUT3] {
         assert_eq!(score.contributions[metric], 0.0);
         assert!(raw_positive(metric).is_none());
     }
@@ -1421,7 +1525,9 @@ fn roll_percentages_exclude_thumbs_and_reward_the_total_once() {
 
 #[test]
 fn roll_columns_and_detail_groups_cover_each_metric_once() {
-    for metric in [ROLL, INROLL, OUTROLL, IN2, OUT2, IN3, OUT3] {
+    for metric in [
+        SRAF, INSRAF, OUTSRAF, ROLL, INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
+    ] {
         assert_eq!(RANK_ORDER.iter().filter(|&&m| m == metric).count(), 1);
         assert_eq!(
             TABLE_GROUPS
@@ -1558,7 +1664,7 @@ fn thumb_rolls_have_their_own_denominator_and_inward_finger_rank() {
         }
         assert_eq!(raw.0[RHYTHM_DEN], 2.0);
         let metrics = metrics_totals(&raw, &[0.0, 0.0, 0.0, 10.0]);
-        assert_eq!(metrics.simple[6], metrics.v[ROLL]);
+        close(metrics.simple[7] + metrics.simple[8], metrics.v[ROLL]);
         totals.push((raw.0[ROLL_DEN], metrics.v[IN2]));
     }
     assert_eq!(totals, [(2.0, 100.0), (10.0, 50.0)]);
