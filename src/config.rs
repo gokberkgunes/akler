@@ -354,8 +354,8 @@ mod config_tests {
 
         let parsed = parse_app_config(&app_config_text(&legacy)).unwrap();
         assert_eq!(parsed.weights.0, legacy.weights.0);
-        assert_eq!(parsed.weights.0[DFSB], 9.0);
-        assert_eq!(parsed.weights.0[CFSB], 4.5);
+        assert_eq!(parsed.weights.0[DFJB], 9.0);
+        assert_eq!(parsed.weights.0[CFJB], 4.5);
         assert_eq!(
             search_settings_text(&parsed.search),
             search_settings_text(&legacy.search)

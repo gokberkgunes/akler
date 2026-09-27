@@ -268,7 +268,7 @@ fn dat_preserves_action_mapping_metrics_and_moved_bindings() {
 }
 
 #[test]
-fn exclusive_pair_categories() {
+fn jump_categories_and_adjacent_discordant_subsets() {
     let keys: Vec<_> = (0..30)
         .map(|i| key(i / 10, i % 10))
         .chain([thumb_key(0), thumb_key(1)])
@@ -276,31 +276,44 @@ fn exclusive_pair_categories() {
     for (i, &a) in keys.iter().enumerate() {
         for (j, &b) in keys.iter().enumerate() {
             let f = pair_flags(a, b, i == j);
-            assert_eq!(f.bi & bit(FSB) != 0, f.bi & (bit(DFSB) | bit(CFSB)) != 0);
-            assert_eq!(f.sk & bit(FSS) != 0, f.sk & (bit(DFSS) | bit(CFSS)) != 0);
-            assert_eq!(
-                (f.bi & bit(DFSB) != 0) as u8 + (f.bi & bit(CFSB) != 0) as u8,
-                (f.bi & bit(FSB) != 0) as u8
-            );
-            assert_eq!(
-                f.bi & bit(FSB) != 0 && (f.bi & (bit(DSB) | bit(CSB)) != 0),
-                false
-            );
-            assert_eq!(
-                f.sk & bit(FSS) != 0 && (f.sk & (bit(DSS) | bit(CSS)) != 0),
-                false
-            );
-            if same_hand(a, b) && a.finger != b.finger && (a.row - b.row).abs() == 2 {
-                assert_eq!(
-                    f.bi & (bit(FSB) | bit(DSB) | bit(CSB)),
-                    if (a.rank - b.rank).abs() == 1 {
-                        bit(FSB)
-                    } else if row_motion(a, b) == RowMotion::Discordant {
-                        bit(DSB)
-                    } else {
-                        bit(CSB)
-                    }
-                );
+            let adjacent = (a.rank - b.rank).abs() == 1;
+            let row_gap = (a.row - b.row).abs();
+            let motion = row_motion(a, b);
+            for (metric, expected) in [
+                (DFJB, row_gap == 2 && motion == RowMotion::Discordant),
+                (CFJB, row_gap == 2 && motion == RowMotion::Concordant),
+                (DHJB, row_gap == 1 && motion == RowMotion::Discordant),
+                (CHJB, row_gap == 1 && motion == RowMotion::Concordant),
+                (
+                    FSB,
+                    adjacent && row_gap == 2 && motion == RowMotion::Discordant,
+                ),
+                (
+                    HSB,
+                    adjacent && row_gap == 1 && motion == RowMotion::Discordant,
+                ),
+                (
+                    DSB,
+                    !adjacent && row_gap == 2 && motion == RowMotion::Discordant,
+                ),
+                (
+                    CSB,
+                    !adjacent && row_gap == 2 && motion == RowMotion::Concordant,
+                ),
+            ] {
+                assert_eq!(f.bi & bit(metric) != 0, expected, "{metric}: {i} -> {j}");
+            }
+            for (bigram, skipgram) in [
+                (DFJB, DFJS),
+                (CFJB, CFJS),
+                (DHJB, DHJS),
+                (CHJB, CHJS),
+                (FSB, FSS),
+                (HSB, HSS),
+                (DSB, DSS),
+                (CSB, CSS),
+            ] {
+                assert_eq!(f.bi & bit(bigram) != 0, f.sk & bit(skipgram) != 0);
             }
             if f.bi & bit(SRAF) != 0 {
                 assert_eq!(f.bi & BAD_BI, 0);
@@ -316,19 +329,23 @@ fn exclusive_pair_categories() {
 }
 
 #[test]
-fn concordant_scissors_and_nonadjacent_stretches() {
+fn concordant_jumps_and_nonadjacent_subsets() {
     let ld = pair_flags(key(0, 2), key(2, 1), false);
-    assert_ne!(ld.bi & bit(CFSB), 0);
+    assert_ne!(ld.bi & bit(CFJB), 0);
+    assert_eq!(ld.bi & bit(FSB), 0);
     assert_eq!(ld.bi & bit(CSB), 0);
     let up = pair_flags(key(0, 8), key(2, 7), false);
-    assert_ne!(up.bi & bit(DFSB), 0);
+    assert_ne!(up.bi & bit(DFJB), 0);
+    assert_ne!(up.bi & bit(FSB), 0);
     assert_eq!(up.bi & bit(DSB), 0);
     assert!(is_lateral_stretch(key(1, 4), key(2, 0)));
     // inner index to pinky
     assert!(!is_lateral_stretch(key(1, 3), key(2, 0)));
     assert_eq!(scissor_kind(key(0, 2), key(1, 3)), 0);
-    // concordant one-row is not HSB
+    // A concordant one-row jump is CHJB but not the discordant HSB subset.
     assert!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(ROW1_BI) != 0);
+    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CHJB), 0);
+    assert_eq!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(HSB), 0);
 }
 
 #[test]
@@ -879,9 +896,14 @@ fn relative_guardrails_in_all_design_modes() {
 #[test]
 fn config_round_trips_and_presets() {
     let weights = weights_from_text("sfb = 17\nfsb = 6\ntravel = 0.05\n").unwrap();
-    assert_eq!(weights.0[DFSB], 6.0);
-    assert_eq!(weights.0[CFSB], 3.0);
+    assert_eq!(weights.0[DFJB], 6.0);
+    assert_eq!(weights.0[CFJB], 3.0);
     assert_eq!(weights.0[FSB], 0.0);
+    let migrated = weights_from_text("dfsb = 7\ndfjb = 8\nhsb = 3\nchjb = 4\n").unwrap();
+    assert_eq!(migrated.0[DFJB], 8.0);
+    assert_eq!(migrated.0[DHJB], 3.0);
+    assert_eq!(migrated.0[CHJB], 4.0);
+    assert_eq!(migrated.0[HSB], 0.0);
     let w = weights_from_text(&weights_text(&weights)).unwrap();
     assert_eq!(w.0, weights.0);
     let mut s = SearchSettings::default();
@@ -896,6 +918,36 @@ fn config_round_trips_and_presets() {
     assert_eq!(r.mix, s.mix);
     assert!(search_from_text("seconds = NaN").is_err());
     assert!(search_from_text("max_sfb_increase = -1").is_err());
+}
+
+#[test]
+fn usage_penalty_pairs_hands_ignores_thumbs_and_round_trips() {
+    let mut raw = Raw::default();
+    raw.0[USAGE] = 20.0;
+    raw.0[USAGE + 7] = 10.0;
+    raw.0[USAGE + 8] = 60.0;
+    raw.0[OFF] = 5.0;
+    raw.0[OFF + 7] = 4.0;
+    let metrics = metrics_totals(&raw, &[100.0, 0.0, 0.0, 0.0]);
+    let mut weights = Weights::new([0.0; N_WEIGHTS]);
+    weights.0[N_METRICS] = 0.6;
+    weights.0[USAGE_WEIGHT] = 0.06;
+    let score = breakdown(&metrics, &weights);
+    assert!((score.contributions[N_METRICS] - 5.4).abs() < 1e-12);
+    assert!((score.contributions[USAGE_WEIGHT] - 1.8).abs() < 1e-12);
+    assert!((score.net - 7.2).abs() < 1e-12);
+
+    let parsed = weights_from_text("usage_pinky = 0.06\nusage_index = 0.015\n").unwrap();
+    assert_eq!(parsed.0[USAGE_WEIGHT], 0.06);
+    assert_eq!(parsed.0[USAGE_WEIGHT + 3], 0.015);
+    assert_eq!(
+        weights_from_text(&weights_text(&parsed)).unwrap().0,
+        parsed.0
+    );
+    let defaults = Weights::default();
+    for i in 0..4 {
+        assert!(defaults.0[USAGE_WEIGHT + i] <= defaults.0[N_METRICS + i]);
+    }
 }
 
 #[test]
@@ -1033,6 +1085,21 @@ fn metric_grid_has_room_for_values_and_deltas() {
                 assert!(text.contains(label), "missing {label} at width {width}");
             }
         }
+    }
+    let mut editor = Canvas::new(108, 1);
+    editor_metric_cards(&mut editor, 0, &m, &m, &raw, &p.corpora[0], 2);
+    let editor_text: String = editor.cells.iter().map(|cell| cell.ch).collect();
+    assert_eq!(editor.cells[0].ch, ' ');
+    assert_ne!(editor.cells[1].ch, ' ');
+    assert!(!editor
+        .hits
+        .iter()
+        .any(|(_, action)| matches!(action, Action::Metric(_))));
+    for label in ["SRAF", "ROLL", "DFJB", "CFJB", "DHJB", "CHJB"] {
+        assert!(editor_text.contains(label));
+    }
+    for label in ["INSRAF", "OUTSRAF", "INROLL", "OUTROLL", "IN2", "OUT2"] {
+        assert!(!editor_text.contains(label));
     }
     assert_eq!(number(0.0001, 2), "<0.01");
     assert_eq!(delta_text(1.0, 1.0, 2), "—");
@@ -1520,7 +1587,7 @@ fn roll_percentages_exclude_thumbs_and_reward_the_total_once() {
         assert!(raw_positive(metric).is_none());
     }
     assert!(raw_positive(ROLL).is_none());
-    assert!(N_RAW <= 64);
+    assert!(N_RAW <= 128);
 }
 
 #[test]

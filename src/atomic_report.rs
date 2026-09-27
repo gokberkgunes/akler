@@ -754,20 +754,20 @@ mod tests {
         assert!(inward.contains(&"SRAF") && inward.contains(&"INSRAF"));
         let outward = stats(Population::Bigrams, vec![1, 0]);
         assert!(outward.contains(&"SRAF") && outward.contains(&"OUTSRAF"));
-        for (slots, full, directional) in
-            [(vec![0, 21], "FSB", "DFSB"), (vec![1, 20], "FSB", "CFSB")]
+        for (slots, adjacent_discordant, directional) in
+            [(vec![0, 21], true, "DFJB"), (vec![1, 20], false, "CFJB")]
         {
             let names = stats(Population::Bigrams, slots.clone());
             assert!(
-                names.contains(&full) && names.contains(&directional),
+                names.contains(&"FSB") == adjacent_discordant && names.contains(&directional),
                 "{names:?}"
             );
             let names = stats(Population::Skip1, slots);
-            assert!(names.contains(&"FSS"));
-            assert!(names.contains(&if directional == "DFSB" {
-                "DFSS"
+            assert_eq!(names.contains(&"FSS"), adjacent_discordant);
+            assert!(names.contains(&if directional == "DFJB" {
+                "DFJS"
             } else {
-                "CFSS"
+                "CFJS"
             }));
         }
         assert!(stats(Population::Skip1, vec![0, 10]).contains(&"SFS"));
@@ -778,7 +778,7 @@ mod tests {
         assert!(wish.contains(&"RED") && wish.contains(&"WISH"), "{wish:?}");
         let text = render_text(&report_for(Population::Bigrams, vec![0, 21]));
         assert!(text.contains("% | Stats"));
-        assert!(text.contains("FSB") && text.contains("DFSB"));
+        assert!(text.contains("FSB") && text.contains("DFJB"));
         let top_to_bottom = report_for(Population::Bigrams, vec![0, 21]);
         let (_, lines) = table_lines(&top_to_bottom);
         assert_eq!(lines[0].split(" | ").nth(2).unwrap().trim(), "1 → 3");

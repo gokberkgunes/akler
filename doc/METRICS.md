@@ -16,7 +16,8 @@ See [corpus behavior](USAGE.md#corpora) for the distinction between evaluators.
 
 ## Pair metrics
 
-`B` denotes consecutive presses; `S` denotes skipgram endpoints. D/C means
+`B` denotes consecutive presses; `S` denotes skipgram endpoints. In jump names,
+`F` and `H` mean a full (two-row) or half (one-row) jump. D/C means
 discordant/concordant geometry, not the temporal direction of typing.
 Discordant means the shorter finger is on the higher row; concordant means the
 longer finger is on the higher row. The model's finger-length ordering is
@@ -28,33 +29,43 @@ pinky < ring < index < middle; this is a modeling choice.
 | SKB | Same physical key twice in a row. | `skb` | 0 |
 | SFS | Different keys on the same finger at the skipgram endpoints. | `sfs` | 1.5 |
 | SKS | Same physical key at both skipgram endpoints. | `sks` | 0 |
-| FSB / FSS | Full scissors: adjacent fingers on the same hand, two rows apart. Totals of their D/C children. | Display totals only | — |
-| DFSB / DFSS | Discordant full scissors. | `dfsb` / `dfss` | 4 / 1.5 |
-| CFSB / CFSS | Concordant full scissors. | `cfsb` / `cfss` | 2 / 0.75 |
-| HSB / HSS | Half scissors: adjacent fingers, one row apart, discordant only. | `hsb` / `hss` | 1 / 0.4 |
+| FSB / FSS | Adjacent-finger, discordant two-row jumps. Kept as the familiar scissors subset. | Display only; old `fsb` / `fss` migrate | — |
+| HSB / HSS | Adjacent-finger, discordant one-row jumps. Kept as the familiar scissors subset. | Display only; old `hsb` / `hss` migrate | — |
+| DFJB / DFJS | All discordant two-row jumps, including adjacent and non-adjacent fingers. | `dfjb` / `dfjs` | 4 / 1.5 |
+| CFJB / CFJS | All concordant two-row jumps, including adjacent and non-adjacent fingers. | `cfjb` / `cfjs` | 2 / 0.75 |
+| DHJB / DHJS | All discordant one-row jumps, including adjacent and non-adjacent fingers. | `dhjb` / `dhjs` | 1 / 0.4 |
+| CHJB / CHJS | All concordant one-row jumps, including adjacent and non-adjacent fingers. | `chjb` / `chjs` | 0.5 / 0.2 |
 | LSB / LSS | Lateral stretch: same hand, different fingers; horizontal span is at least finger-rank separation + 1 key unit. | `lsb` / `lss` | 3 / 0.75 |
-| DSB / DSS | Other discordant two-row changes: non-adjacent fingers on the same hand. Excludes full scissors. | `dsb` / `dss` | 1 / 0.25 |
-| CSB / CSS | Other concordant two-row changes: non-adjacent fingers on the same hand. Excludes full scissors. | `csb` / `css` | 0.5 / 0.15 |
+| DSB / DSS | Non-adjacent subset of DFJB/DFJS. Its weight is an additional penalty. | `dsb` / `dss` | 1 / 0.25 |
+| CSB / CSS | Non-adjacent subset of CFJB/CFJS. Its weight is an additional penalty. | `csb` / `css` | 0.5 / 0.15 |
 
-Scissors/stretch/row-change categories exclude thumbs. SFB/SFS use physical
+Jump categories require different fingers on the same hand. Jump, scissors,
+stretch, and row-change categories exclude thumbs. SFB/SFS use physical
 finger identity, so different physical keys assigned to the same thumb can count.
 SKB/SKS use physical key identity and include thumb keys.
 
-Scissors, one/two-row changes, and same-row preferences use logical keyboard
+Jumps, scissors, and same-row preferences use logical keyboard
 rows. Numeric horizontal row offsets and vertical column offsets do not change
 those row categories. Lateral stretch uses physical horizontal coordinates;
 travel uses physical coordinates on both axes, in key units.
 
-**Do not sum every displayed column.** FSB = DFSB + CFSB, and FSS = DFSS + CFSS;
-the totals add no extra score penalty. Other two-row changes and full scissors
-are disjoint by finger adjacency, but lateral stretch can overlap either.
+**Do not sum every displayed column.** FSB/FSS and HSB/HSS are adjacent,
+discordant subsets of their corresponding D/C jump metrics. DSB/DSS and
+CSB/CSS are non-adjacent subsets. A nonzero subset weight is intentionally
+added to the broad jump penalty. Lateral stretch may overlap a jump.
 Different metrics also use different denominators.
+
+Old `dfsb`, `cfsb`, `dfss`, and `cfss` weight keys are accepted as aliases
+for the corresponding full-jump keys. Old `fsb`/`fss` values seed the
+discordant and concordant full-jump weights using the previous migration rule;
+old `hsb`/`hss` values seed discordant half jumps and half-sized concordant
+half jumps. Explicit new jump keys take precedence.
 
 ## Triple metrics and preferences
 
 Rhythm metrics exclude thumbs by default; `[rolls] include_thumbs` can include
 them specifically in roll metrics. A *clean* SRAF/ALT pattern has no SFB/SFS,
-SKB/SKS, scissors, lateral stretch, other two-row change, or redirect across
+SKB/SKS, jumps, lateral stretch, or redirect across
 AB, BC, and skip AC.
 
 | Metric | Meaning | Weight key | Default |
@@ -113,13 +124,17 @@ Roll details show the directional physical trigrams directly.
 | VTRAVEL | Vertical component of that home distance. | `vtravel` | 0 |
 | LTRAVEL | Horizontal component of that home distance, including numeric row offsets and preset stagger. | `ltravel` | 0 |
 | SFTRAVEL | Euclidean distance between consecutive main-finger presses using the same finger. | `sftravel` | 0.10 |
-| Usage | Presses assigned to each finger. | None | — |
-| Off | Main-finger presses outside the eight home positions. | `off_pinky`, `off_ring`, `off_middle`, `off_index` | 0.60, 0.20, 0.05, 0.1 |
+| Usage | Share of all mapped presses assigned to each finger. Left/right pairs are penalized by type. | `usage_pinky`, `usage_ring`, `usage_middle`, `usage_index` | 0.06, 0.02, 0.005, 0 |
+| Off | Main-finger presses outside the eight home positions. | `off_pinky`, `off_ring`, `off_middle`, `off_index` | 0.60, 0.20, 0.05, 0 |
 
 Travel uses **key units per 100 events** (`u/100`), not percent. TRAVEL/VTRAVEL/
 LTRAVEL measure distance from home, not a reconstructed hand trajectory. Thumb
 presses add no travel here. SFTRAVEL's same-key repeats have zero distance.
-The off-home weight combines the left and right finger of each type.
+Usage and off-home weights each combine the left and right finger of a type.
+Usage includes home and off-home presses; the two penalties therefore add.
+Thumb usage is displayed but has no usage weight. The built-in usage weights
+are one tenth of the corresponding off-home weights; `akler.conf` uses the
+same ratio.
 Each main finger's home position comes from the home-row finger map. JSONC rows
 must list the same number of slots; use `skip` to show empty positions.
 

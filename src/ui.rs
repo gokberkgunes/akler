@@ -24,6 +24,14 @@ const RED: u8 = 1;
 
 const YELLOW: u8 = 3;
 
+// Soft accents make neighboring metric families easy to scan without
+// competing with the red/green change colors used for their values.
+const GROUP_TINTS: [u8; 6] = [72, 73, 74, 75, 76, 77];
+
+fn group_tint(group: usize) -> u8 {
+    GROUP_TINTS[group % GROUP_TINTS.len()]
+}
+
 // Dedicated grayscale IDs, separate from the existing score gradient (16..=64).
 fn finger_tint(finger: usize) -> u8 {
     [70, 71, 70, 71, 71, 70, 71, 70, 70, 71][finger.min(9)]
@@ -45,6 +53,17 @@ fn ansi_color(color: u8) -> String {
     if matches!(color, 70 | 71) {
         let value = if color == 70 { 155 } else { 230 };
         return format!("\x1b[38;2;{value};{value};{value}m");
+    }
+    if (72..=77).contains(&color) {
+        let (r, g, b) = [
+            (170, 200, 225),
+            (190, 215, 190),
+            (220, 205, 170),
+            (205, 185, 220),
+            (175, 215, 215),
+            (220, 185, 195),
+        ][usize::from(color - 72)];
+        return format!("\x1b[38;2;{r};{g};{b}m");
     }
     if color >= 16 {
         let t = (color - 16).min(48) as f64 / 48.0;
@@ -840,11 +859,11 @@ fn config_number(value: f64) -> String {
 
 static OPT_GROUP_SAME: [usize; 4] = [SFB, SKB, SFS, SKS];
 
-static OPT_GROUP_FULL: [usize; 4] = [DFSB, CFSB, DFSS, CFSS];
+static OPT_GROUP_FULL: [usize; 4] = [DFJB, CFJB, DFJS, CFJS];
 
-static OPT_GROUP_HALF: [usize; 2] = [HSB, HSS];
+static OPT_GROUP_HALF: [usize; 4] = [DHJB, CHJB, DHJS, CHJS];
 
-static OPT_GROUP_TOTAL: [usize; 2] = [FSB, FSS];
+static OPT_GROUP_ADJACENT: [usize; 4] = [FSB, FSS, HSB, HSS];
 
 static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 
@@ -864,9 +883,9 @@ static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
 static OPT_METRIC_GROUPS: [(&str, &[usize]); 12] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Full scissors", &OPT_GROUP_FULL),
-    ("Half scissors", &OPT_GROUP_HALF),
-    ("Full totals", &OPT_GROUP_TOTAL),
+    ("Full jumps", &OPT_GROUP_FULL),
+    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent D", &OPT_GROUP_ADJACENT),
     ("Stretch", &OPT_GROUP_STRETCH),
     ("Other 2-row", &OPT_GROUP_ROW),
     ("Rhythm", &OPT_GROUP_RHYTHM),
@@ -879,9 +898,9 @@ static OPT_METRIC_GROUPS: [(&str, &[usize]); 12] = [
 
 static TABLE_GROUPS: [(&str, &[usize]); 12] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Full", &OPT_GROUP_FULL),
-    ("Half", &OPT_GROUP_HALF),
-    ("Full totals", &OPT_GROUP_TOTAL),
+    ("Full jumps", &OPT_GROUP_FULL),
+    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent D", &OPT_GROUP_ADJACENT),
     ("Stretch", &OPT_GROUP_STRETCH),
     ("Other 2-row", &OPT_GROUP_ROW),
     ("Rhythm", &OPT_GROUP_RHYTHM),
@@ -889,6 +908,20 @@ static TABLE_GROUPS: [(&str, &[usize]); 12] = [
     ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
     ("Roll directions", &OPT_GROUP_ROLL_TOTALS),
     ("Roll types", &OPT_GROUP_ROLL_TYPES),
+    ("Travel u/100", &OPT_GROUP_TRAVEL),
+];
+
+// Editors favor a compact overview. Directional SRAF and roll totals remain
+// available in the detailed reports and optimizer views.
+static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 9] = [
+    ("Same finger", &OPT_GROUP_SAME),
+    ("Full jumps", &OPT_GROUP_FULL),
+    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent D", &OPT_GROUP_ADJACENT),
+    ("Stretch", &OPT_GROUP_STRETCH),
+    ("Other 2-row", &OPT_GROUP_ROW),
+    ("Rhythm", &OPT_GROUP_RHYTHM),
+    ("Preferences", &OPT_GROUP_PREF),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
@@ -904,10 +937,17 @@ struct MetricGrid {
 }
 
 impl MetricGrid {
-    fn new(w: usize, values: &[String], deltas: &[String], decimals: usize) -> Self {
+    fn new(
+        w: usize,
+        values: &[String],
+        deltas: &[String],
+        decimals: usize,
+        groups: &[(&str, &[usize])],
+        left_aligned: bool
+    ) -> Self {
         let value = values.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 4);
         let delta = deltas.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 3);
-        let label = 13;
+        let label = if left_aligned { 14 } else { 13 };
         // left/right padding around the longest group name
         let cell = 1 + 7 + 1 + value + 2 + delta + 1;
         let fit = w.saturating_sub(label + 2) /(cell + 1);
@@ -918,10 +958,10 @@ impl MetricGrid {
         } else {
             1
         };
-        let rows = TABLE_GROUPS.iter().map(|(_, g) |(g.len() + cols - 1) / cols).sum();
+        let rows = groups.iter().map(|(_, g) |(g.len() + cols - 1) / cols).sum();
         let width = label + 2 + cols *(cell + 1);
         Self {
-            x: w.saturating_sub(width) / 2,
+            x: if left_aligned && width<w { 1 } else { w.saturating_sub(width) / 2 },
             width,
             label,
             cell,
@@ -945,6 +985,18 @@ fn grouped_metric_cards(
     grouped_metric_totals(c, y, before, after, raw, &corpus.totals, decimals)
 }
 
+fn editor_metric_cards(
+    c: &mut Canvas,
+    y: usize,
+    before: &Metrics,
+    after: &Metrics,
+    raw: &Raw,
+    corpus: &Corpus,
+    decimals: usize
+) -> usize {
+    grouped_metric_table(c, y, before, after, raw, &corpus.totals, decimals, &EDITOR_TABLE_GROUPS, true, false)
+}
+
 fn grouped_metric_totals(
     c: &mut Canvas,
     y: usize,
@@ -953,6 +1005,21 @@ fn grouped_metric_totals(
     raw: &Raw,
     totals: &[f64; 4],
     decimals: usize,
+) -> usize {
+    grouped_metric_table(c, y, before, after, raw, totals, decimals, &TABLE_GROUPS, false, true)
+}
+
+fn grouped_metric_table(
+    c: &mut Canvas,
+    y: usize,
+    before: &Metrics,
+    after: &Metrics,
+    raw: &Raw,
+    totals: &[f64; 4],
+    decimals: usize,
+    groups: &[(&str, &[usize])],
+    left_aligned: bool,
+    clickable: bool
 ) -> usize {
     let values: Vec<String> = (0..N_METRICS).map(|m| if denominator_totals(m, raw, totals)>0.0 {
         metric_value_text(m, after.v[m], decimals)
@@ -964,7 +1031,7 @@ fn grouped_metric_totals(
     } else {
         "—".into()
     }).collect();
-    let grid = MetricGrid::new(c.w, &values, &deltas, decimals);
+    let grid = MetricGrid::new(c.w, &values, &deltas, decimals, groups, left_aligned);
     let h = grid.rows + 2;
     c.boxed(Rect {
         x: grid.x,
@@ -981,25 +1048,28 @@ fn grouped_metric_totals(
         }
     }
     let mut row = 0;
-    for &(group, items) in TABLE_GROUPS.iter() {
-        c.text(grid.x + 2, y + 1 + row, group, MUTED);
+    for (group_index, &(group, items)) in groups.iter().enumerate() {
+        let tint = group_tint(group_index);
+        c.text(grid.x + 2, y + 1 + row, group, tint);
         for (i, &m) in items.iter().enumerate() {
             let xx = grid.x + 2 + grid.label +(i % grid.cols) *(grid.cell + 1);
             let yy = y + 1 + row + i / grid.cols;
             let vx = xx + 9;
-            c.text(xx + 1, yy, metric_short_name(m), FG);
+            c.text(xx + 1, yy, metric_short_name(m), tint);
             c.right(vx, yy, grid.value, &values[m], if values[m] == "n/a" {
                 MUTED
             } else {
                 change_color(m, before.v[m], after.v[m])
             });
             c.right(vx + grid.value + 2, yy, grid.delta, &deltas[m], delta_color(m, before.v[m], after.v[m]));
-            c.hit(Rect {
-                x: xx,
-                y: yy,
-                w: grid.cell,
-                h: 1
-            }, Action::Metric(m));
+            if clickable {
+                c.hit(Rect {
+                    x: xx,
+                    y: yy,
+                    w: grid.cell,
+                    h: 1
+                }, Action::Metric(m));
+            }
         }
         row +=(items.len() + grid.cols - 1) / grid.cols;
     }
@@ -1010,26 +1080,31 @@ fn weight_label(i: usize) -> &'static str {
     if i<N_METRICS {
         METRIC_NAMES[i]
     } else {
-        ["PINKY", "RING", "MIDDLE", "INDEX"][i - N_METRICS]
+        ["PINKY", "RING", "MIDDLE", "INDEX"][(i - N_METRICS) % 4]
     }
 }
 
 fn grouped_weight_rows(c: &mut Canvas, mut y: usize, w: &Weights) -> usize {
     c.text(0, y, &format!("Weights · {}", roll_settings_label(w.rolls())), FG);
     y += 1;
-    let groups: [(&str, &[usize]); 9] = [
+    let groups: [(&str, &[usize]); 10] = [
         ("Same finger", &OPT_GROUP_SAME),
-        ("Full scissors", &OPT_GROUP_FULL),
-        ("Half scissors", &OPT_GROUP_HALF),
+        ("Full jumps", &OPT_GROUP_FULL),
+        ("Half jumps", &OPT_GROUP_HALF),
         ("Stretch", &OPT_GROUP_STRETCH),
         ("Other 2-row", &OPT_GROUP_ROW),
         ("Rhythm", &OPT_GROUP_RHYTHM),
         ("Preferences", &OPT_GROUP_PREF),
         ("Travel", &OPT_GROUP_TRAVEL),
         ("Off-home", &[N_METRICS, N_METRICS + 1, N_METRICS + 2, N_METRICS + 3]),
+        (
+            "Finger usage",
+            &[N_METRICS + 4, N_METRICS + 5, N_METRICS + 6, N_METRICS + 7],
+        ),
     ];
-    for (group, items) in groups {
-        c.text(0, y, group, MUTED);
+    for (group_index, (group, items)) in groups.into_iter().enumerate() {
+        let tint = group_tint(group_index);
+        c.text(0, y, group, tint);
         let mut x = 16usize;
         for &i in items {
             let name = weight_label(i);
@@ -1039,7 +1114,7 @@ fn grouped_weight_rows(c: &mut Canvas, mut y: usize, w: &Weights) -> usize {
                 y += 1;
                 x = 16;
             }
-            c.text(x, y, name, FG);
+            c.text(x, y, name, tint);
             c.text(x + name.len() + 1, y, &value, CYAN);
             c.hit(Rect {
                 x,
@@ -1669,7 +1744,7 @@ fn objective_view(
             format!("Net objective     {:.4} → {:.4}", b.net, a.net),
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
-            "FSB/FSS totals are not weighted twice. Other 2-row changes exclude adjacent full scissors; lateral stretch stays independent.".into(),
+            "FSB/FSS/HSB/HSS are display subsets. Nonadjacent DSB/CSB penalties add to broad jumps; lateral stretch stays independent.".into(),
             "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
     info_page(term, "Objective audit — selected corpus", &lines)
@@ -1764,20 +1839,31 @@ fn dashboard(
     cursor: Option<usize>,
     status: &str,
     ensemble: Option<(f64, f64)>,
-    _optimizer_ui: bool
+    optimizer_ui: bool
 ) -> Canvas {
     let r0 = full_raw(baseline, corpus, &model.geometry);
     let r1 = full_raw(arr, corpus, &model.geometry);
     let b = metrics(&r0, corpus);
     let a = metrics(&r1, corpus);
     let mut c = Canvas::new(term.width(), 96);
-    header(&mut c, title, &corpus.name, &model.board.name, controls);
+    header(&mut c, title, &corpus.name, &model.board.name, if optimizer_ui { controls } else { "" });
     let mut y = keyboard(&mut c, 2, model, arr, baseline, locks, cursor, &[]);
-    y = score_panel(&mut c, y, &breakdown(&b, w), &breakdown(&a, w), ensemble, term.decimals());
-    y = grouped_metric_cards(&mut c, y, &b, &a, &r1, corpus, term.decimals());
-    y = finger_table(&mut c, y + 1, &b, &a, term.decimals());
+    if optimizer_ui {
+        y = grouped_metric_cards(&mut c, y, &b, &a, &r1, corpus, term.decimals());
+        y = finger_table(&mut c, y + 1, &b, &a, term.decimals());
+        y = score_panel(&mut c, y + 1, &breakdown(&b, w), &breakdown(&a, w), ensemble, term.decimals());
+    } else {
+        y = editor_metric_cards(&mut c, y, &b, &a, &r1, corpus, term.decimals());
+        y = finger_table(&mut c, y + 1, &b, &a, term.decimals());
+        y = score_panel(&mut c, y + 1, &breakdown(&b, w), &breakdown(&a, w), ensemble, term.decimals());
+    }
     c.text(0, y, &short(status, c.w), CYAN);
-    c.h = y + 2;
+    if optimizer_ui {
+        c.h = y + 2;
+    } else {
+        c.text(0, y + 1, &short(controls, c.w), MUTED);
+        c.h = y + 3;
+    }
     c
 }
 
@@ -1787,8 +1873,10 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     }
     let hint = if i<N_METRICS {
         METRIC_HELP[i]
-    } else {
+    } else if i<N_METRICS + 4 {
         "Extra penalty per percentage point of off-home use by this finger pair."
+    } else {
+        "Extra penalty per percentage point of total use by this finger pair."
     };
     if let Some(v) = input_box(term, &format!("Weight: {}", WEIGHT_NAMES[i]), hint, &format!("{}", w.0[i]))? {
         w.0[i] = finite_nonnegative(&v)?;
@@ -1872,9 +1960,6 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                     Some(Action::Key(i)) => {
                         drag = Some(i);
                         cursor = i;
-                    },
-                    Some(Action::Metric(m)) => {
-                        contributor_view(term, m, &model, &baseline, &arr, &c, false)?;
                     },
                     _ => {
                     }
@@ -1965,7 +2050,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
             Event::Char('?') => info_page(
                 term,
                 "Editor controls",
-                &["Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "Click a metric for before/after contributors. a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
+                &["Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
             )?,
             Event::Escape if selected.is_some() || drag.is_some() => {
                 selected = None;
@@ -2066,14 +2151,15 @@ fn simple_metric_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metri
         }
     }
     let mut row = 0;
-    for (group, items) in groups {
-        c.text(x + 2, y + 1 + row, group, MUTED);
+    for (group_index, (group, items)) in groups.into_iter().enumerate() {
+        let tint = group_tint(group_index);
+        c.text(x + 2, y + 1 + row, group, tint);
         let mut n = 0;
         for &id in items {
             let xx = x + 2 + label +(n % cols) *(cell + 1);
             let yy = y + 1 + row + n / cols;
             let m = SIMPLE_METRIC_IDS[id];
-            c.text(xx + 1, yy, labels[id], FG);
+            c.text(xx + 1, yy, labels[id], tint);
             c.right(
                 xx + 2 + metric_label,
                 yy,
@@ -2553,7 +2639,6 @@ fn optimizer_dashboard(
     } else {
         None
     };
-    y = score_panel(&mut cv, y, &p.breakdown(&r0, co), &p.breakdown(&r1, co), mix, term.decimals());
     if p.settings.mode == "simple" {
         y = simple_metric_table(&mut cv, y, &a, &b, term.decimals()) + 1;
         cv.text(
@@ -2567,6 +2652,7 @@ fn optimizer_dashboard(
         y = grouped_metric_cards(&mut cv, y, &a, &b, &r1, co, term.decimals());
         y = finger_table(&mut cv, y + 1, &a, &b, term.decimals());
     }
+    y = score_panel(&mut cv, y + 1, &p.breakdown(&r0, co), &p.breakdown(&r1, co), mix, term.decimals());
     cv.text(0, y, &short(status, cv.w), CYAN);
     cv.h = y + 2;
     cv

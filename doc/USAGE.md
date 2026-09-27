@@ -18,7 +18,7 @@ Edit the commented [akler.conf](../akler.conf) in the current directory:
 
 | Section | Contents |
 |---|---|
-| `[weights]` | Detailed metric and off-home weights; see [METRICS.md](METRICS.md). |
+| `[weights]` | Detailed metric, finger-usage, and off-home weights; see [METRICS.md](METRICS.md). |
 | `[search]` | Search options, simple-mode weights, and `corpus.NAME` mixture shares. |
 | `[rolls]` | Independent `include_thumbs`, `include_scissors`, and `include_stretches` toggles. |
 | `[ranker]` | `columns = SCORE SFB SFS ...`, using displayed metric names. |
@@ -62,7 +62,7 @@ optimizer decisions. They do not change
 how magic keys type the corpus or how other metrics are classified.
 
 Filters check consecutive pairs AB and BC, not skip pair AC. They use
-akler's full/half-scissor and lateral-stretch definitions. Those movement
+akler's adjacent discordant jump and lateral-stretch definitions. Those movement
 classifiers exclude thumb pairs; when thumbs are enabled, a main-finger pair
 within the same trigram can still veto its roll. Thumb is inward of index.
 

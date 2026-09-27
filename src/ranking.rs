@@ -11,7 +11,7 @@ const RANK_DATA: usize = 6;
 const RANK_ORDER: [usize; RANK_COUNT] = [
     RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB, LSS, REDIR, WRED, WISH, SRAF, INSRAF, OUTSRAF, ROLL,
     INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
-    DFSB, CFSB, DFSS, CFSS, ALT, DSB, CSB, DSS, CSS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
+    DFJB, CFJB, DFJS, CFJS, DHJB, CHJB, DHJS, CHJS, ALT, DSB, CSB, DSS, CSS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
 ];
 
 fn rank_name(m: usize) -> &'static str {
@@ -452,8 +452,15 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
     for line in text.lines() {
         let content = line.split('#').next().unwrap_or("");
         for name in content.split_whitespace() {
+            let canonical = match name.to_ascii_uppercase().as_str() {
+                "DFSB" => "DFJB",
+                "CFSB" => "CFJB",
+                "DFSS" => "DFJS",
+                "CFSS" => "CFJS",
+                _ => name,
+            };
             let metric = RANK_ORDER.iter().copied()
-                .find(|&metric| rank_name(metric).eq_ignore_ascii_case(name))
+                .find(|&metric| rank_name(metric).eq_ignore_ascii_case(canonical))
                 .ok_or_else(|| format!("unknown ranker column {name:?}"))?;
             hidden[metric] = false;
         }
@@ -1097,13 +1104,17 @@ mod ranker_tests {
         }
         assert!(!hidden[FSB]);
         assert!(!hidden[FSS]);
-        for metric in [DFSB, CFSB, DFSS, CFSS, DSB, CSB, DSS, CSS] {
+        for metric in [DFJB, CFJB, DFJS, CFJS, DSB, CSB, DSS, CSS] {
             assert!(hidden[metric]);
         }
         assert_eq!(parse_rank_columns(&rank_columns_text(&hidden)).unwrap(), hidden);
 
         let all = [false; RANK_COUNT];
         assert_eq!(parse_rank_columns(&rank_columns_text(&all)).unwrap(), all);
+        assert_eq!(
+            parse_rank_columns("DFSB CFSS").unwrap(),
+            parse_rank_columns("DFJB CFJS").unwrap()
+        );
 
         let selected = parse_rank_columns("score sfb\n# note\nSFS COVERAGE").unwrap();
         assert!(!selected[RANK_SCORE]);

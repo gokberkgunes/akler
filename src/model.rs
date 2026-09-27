@@ -8,7 +8,7 @@ const WEIGHTS_FILE: &str = "optimizer-weights.conf";
 
 const SEARCH_FILE: &str = "optimizer-search.conf";
 
-const MODEL_VERSION: &str = "ortholinear-custom-6-directional-rolls";
+const MODEL_VERSION: &str = "ortholinear-custom-8-finger-usage";
 
 const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 
@@ -16,9 +16,11 @@ const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 // This is a modeling assumption, not a universal anatomical measurement.
 const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
-const N_METRICS: usize = 36;
+const N_METRICS: usize = 40;
 
-const N_WEIGHTS: usize = N_METRICS + 4;
+const N_WEIGHTS: usize = N_METRICS + 8;
+
+const USAGE_WEIGHT: usize = N_METRICS + 4;
 
 const SFB: usize = 0;
 
@@ -54,13 +56,13 @@ const SRAF: usize = 15;
 
 const ROLL: usize = 16;
 
-const DFSB: usize = 17;
+const DFJB: usize = 17;
 
-const CFSB: usize = 18;
+const CFJB: usize = 18;
 
-const DFSS: usize = 19;
+const DFJS: usize = 19;
 
-const CFSS: usize = 20;
+const CFJS: usize = 20;
 
 const ALT: usize = 21;
 
@@ -92,6 +94,14 @@ const OUTROLL: usize = 33;
 const INSRAF: usize = 34;
 
 const OUTSRAF: usize = 35;
+
+const DHJB: usize = 36;
+
+const CHJB: usize = 37;
+
+const DHJS: usize = 38;
+
+const CHJS: usize = 39;
 
 const USAGE: usize = N_METRICS;
 
@@ -128,19 +138,22 @@ const DEFAULT_SIMPLE: [f64; 9] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25, 0.25, 0
 const METRIC_NAMES: [&str; N_METRICS] = [
     "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
     "DSB", "DSS", "RED", "WRED", "WISH", "SRAF", "ROLL",
-    "DFSB", "CFSB", "DFSS", "CFSS", "ALT", "CSB", "CSS",
+    "DFJB", "CFJB", "DFJS", "CFJS", "ALT", "CSB", "CSS",
     "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL",
     "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL", "INSRAF", "OUTSRAF",
+    "DHJB", "CHJB", "DHJS", "CHJS",
 ];
 
-// FSB/FSS and combined rhythm totals are display-only. Weight directional credits.
+// Adjacent discordant jump subsets and combined rhythm totals are display-only.
 const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dsb", "dss",
     "red", "wred", "wish", "sraf_reward", "roll_reward",
-    "dfsb", "cfsb", "dfss", "cfss", "alt_reward", "csb", "css",
+    "dfjb", "cfjb", "dfjs", "cfjs", "alt_reward", "csb", "css",
     "travel", "vtravel", "ltravel", "sftravel",
     "in2", "out2", "in3", "out3", "inroll", "outroll", "insraf_reward", "outsraf_reward",
+    "dhjb", "chjb", "dhjs", "chjs",
     "off_pinky", "off_ring", "off_middle", "off_index",
+    "usage_pinky", "usage_ring", "usage_middle", "usage_index",
 ];
 
 const FINGER_NAMES: [&str; 10] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP", "LT", "RT"];
@@ -150,26 +163,26 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Different keys on the same finger with one intervening press.",
     "Same physical key twice in a row.",
     "Same physical key at both skipgram endpoints.",
-    "Full scissors: adjacent different fingers, two rows apart. FSB = DFSB + CFSB. Display total, not an extra penalty.",
-    "Adjacent fingers; shorter finger above longer finger; one row apart. Unchanged discordant half-scissor rule.",
-    "Full-scissor skipgrams: FSS = DFSS + CFSS. Display total, not an extra penalty.",
-    "Unchanged discordant half-scissor rule applied to skipgram endpoints.",
+    "Adjacent-finger discordant two-row jump. Display subset of DFJB; not an extra penalty.",
+    "Adjacent-finger discordant one-row jump. Display subset of DHJB; not an extra penalty.",
+    "Adjacent-finger discordant two-row skipgram. Display subset of DFJS; not an extra penalty.",
+    "Adjacent-finger discordant one-row skipgram. Display subset of DHJS; not an extra penalty.",
     "Same hand, different fingers; horizontal span exceeds finger separation.",
     "Lateral-stretch rule applied to skipgram endpoints.",
-    "Discordant two-row change between non-adjacent fingers; excludes DFSB.",
-    "Discordant two-row skipgram between non-adjacent fingers; excludes DFSS.",
+    "Discordant two-row change between non-adjacent fingers. Additional subset penalty of DFJB.",
+    "Discordant two-row skipgram between non-adjacent fingers. Additional subset penalty of DFJS.",
     "Same-hand, no-thumb trigram whose finger direction reverses.",
     "Redirect with no index finger. Subset of RED, with an extra penalty.",
     "Redirect with an index and a ring/pinky. Subset of RED.",
     "Clean same-row adjacent-finger bigram. Display total of INSRAF + OUTSRAF; same hand, no thumbs, and no blocked movement.",
     "Display total of INROLL + OUTROLL. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
-    "Discordant full-scissor bigram: adjacent fingers, shorter above longer, two rows apart.",
-    "Concordant full-scissor bigram: adjacent fingers, longer above shorter, two rows apart. Still penalized.",
-    "Discordant full-scissor skipgram; the same endpoint geometry as DFSB.",
-    "Concordant full-scissor skipgram; the same endpoint geometry as CFSB.",
+    "Discordant full jump bigram: same-hand fingers two rows apart, shorter above longer.",
+    "Concordant full jump bigram: same-hand fingers two rows apart, longer above shorter.",
+    "Discordant full jump skipgram; the same endpoint geometry as DFJB.",
+    "Concordant full jump skipgram; the same endpoint geometry as CFJB.",
     "Clean hand alternation: LRL or RLR. The returning AC pair must use different fingers without a scissor, stretch or two-row change. No thumbs.",
-    "Concordant two-row change between non-adjacent fingers; excludes CFSB.",
-    "Concordant two-row skipgram between non-adjacent fingers; excludes CFSS.",
+    "Concordant two-row change between non-adjacent fingers. Additional subset penalty of CFJB.",
+    "Concordant two-row skipgram between non-adjacent fingers. Additional subset penalty of CFJS.",
     "Main-finger distance from home, key units per 100 supported presses. Not a physical trajectory.",
     "Vertical distance from home, key units per 100 supported presses.",
     "Lateral distance from home, key units per 100 supported presses.",
@@ -182,6 +195,10 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "All outward rolls: OUT2 + OUT3. Percentage of eligible trigrams under [rolls]; independently rewarded.",
     "Clean inward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
     "Clean outward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
+    "Discordant half jump bigram: same-hand fingers, one row apart; includes adjacent and non-adjacent fingers.",
+    "Concordant half jump bigram: same-hand fingers, one row apart; includes adjacent and non-adjacent fingers.",
+    "Discordant half jump skipgram; same endpoint geometry as DHJB.",
+    "Concordant half jump skipgram; same endpoint geometry as CHJB.",
 ];
 
 fn physical_metric(m: usize) -> bool {
@@ -196,12 +213,12 @@ fn metric_unit(m: usize) -> &'static str {
     }
 }
 
-fn bit(m: usize) -> u64 {
-    1u64 << m
+fn bit(m: usize) -> u128 {
+    1u128 << m
 }
 
 fn is_skip(m: usize) -> bool {
-    matches!(m, SFS|SKS|FSS|HSS|LSS|DSS|DFSS|CFSS|CSS)
+    matches!(m, SFS|SKS|FSS|HSS|LSS|DSS|DFJS|CFJS|CSS|DHJS|CHJS)
 }
 
 fn is_rhythm(m: usize) -> bool {
@@ -216,7 +233,7 @@ fn higher_better(m: usize) -> bool {
 }
 
 fn aggregate(m: usize) -> bool {
-    matches!(m, FSB | FSS | SRAF | ROLL | IN2 | OUT2 | IN3 | OUT3)
+    matches!(m, FSB | FSS | HSB | HSS | SRAF | ROLL | IN2 | OUT2 | IN3 | OUT3)
 }
 
 fn raw_positive(m: usize) -> Option<usize> {
@@ -387,8 +404,7 @@ fn scissor_kind(a: Key, b: Key) -> u8 {
         return 0;
     }
     match (a.row - b.row).abs() {
-        2 => 2,
-        // Both orientations; the children preserve the D/C distinction.
+        2 if row_motion(a, b) == RowMotion::Discordant => 2,
         1 if row_motion(a, b) == RowMotion::Discordant => 1,
         _ => 0,
     }
@@ -494,18 +510,18 @@ fn alternation_shape(a: Key, b: Key, c: Key) -> bool {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct PairFlags {
-    bi: u64,
-    sk: u64,
+    bi: u128,
+    sk: u128,
     main: bool
 }
 
 // Local movement events veto SRAF and ALT credit, but not basic rolls.
-// Off-home usage is an aggregate load penalty, not a local movement veto.
-const BAD_BI: u64 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DFSB)|(1<<CFSB)|(1<<HSB)|(1<<LSB)|(1<<DSB)|(1<<CSB);
+// Finger load is an aggregate penalty, not a local movement veto.
+const BAD_BI: u128 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DFJB)|(1<<CFJB)|(1<<HSB)|(1<<DHJB)|(1<<CHJB)|(1<<LSB)|(1<<DSB)|(1<<CSB);
 
-const BAD_SK: u64 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DFSS)|(1<<CFSS)|(1<<HSS)|(1<<LSS)|(1<<DSS)|(1<<CSS);
+const BAD_SK: u128 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DFJS)|(1<<CFJS)|(1<<HSS)|(1<<DHJS)|(1<<CHJS)|(1<<LSS)|(1<<DSS)|(1<<CSS);
 
-const BAD_TRI: u64 = (1<<REDIR)|(1<<WRED)|(1<<WISH);
+const BAD_TRI: u128 = (1<<REDIR)|(1<<WRED)|(1<<WISH);
 
 fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     let mut f = PairFlags {
@@ -527,21 +543,28 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         2 => {
             f.bi|=bit(FSB);
             f.sk|=bit(FSS);
-            match row_motion(a, b) {
-                RowMotion::Discordant => {
-                    f.bi|=bit(DFSB);
-                    f.sk|=bit(DFSS);
-                },
-                RowMotion::Concordant => {
-                    f.bi|=bit(CFSB);
-                    f.sk|=bit(CFSS);
-                },
-                RowMotion::None => {
-                },
-            }
         },
         _ => {
         },
+    }
+    match ((a.row - b.row).abs(), row_motion(a, b)) {
+        (2, RowMotion::Discordant) => {
+            f.bi|=bit(DFJB);
+            f.sk|=bit(DFJS);
+        },
+        (2, RowMotion::Concordant) => {
+            f.bi|=bit(CFJB);
+            f.sk|=bit(CFJS);
+        },
+        (1, RowMotion::Discordant) => {
+            f.bi|=bit(DHJB);
+            f.sk|=bit(DHJS);
+        },
+        (1, RowMotion::Concordant) => {
+            f.bi|=bit(CHJB);
+            f.sk|=bit(CHJS);
+        },
+        _ => {},
     }
     if is_lateral_stretch(a, b) {
         f.bi|=bit(LSB);
@@ -580,11 +603,11 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
 
 #[derive(Clone, Copy, Debug, Default)]
 struct TriFlags {
-    bits: u64,
+    bits: u128,
     main: bool
 }
 
-fn trigram_penalties(a: Key, b: Key, c: Key) -> u64 {
+fn trigram_penalties(a: Key, b: Key, c: Key) -> u128 {
     if !(a.main && b.main && c.main) {
         return 0;
     }
@@ -604,7 +627,7 @@ fn trigram_penalties(a: Key, b: Key, c: Key) -> u64 {
     bits
 }
 
-fn triple_blockers(a: Key, b: Key, c: Key, ab: PairFlags, bc: PairFlags, ac: PairFlags) -> u64 {
+fn triple_blockers(a: Key, b: Key, c: Key, ab: PairFlags, bc: PairFlags, ac: PairFlags) -> u128 {
     (ab.bi&BAD_BI)|(bc.bi&BAD_BI)|(ac.sk&BAD_SK)|(trigram_penalties(a, b, c)&BAD_TRI)
 }
 
@@ -623,8 +646,8 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
     let bc = pair_flags(b, c, b.row == c.row && b.col == c.col);
 
     if let Some(kind) = roll_kind_with_settings(a, b, c, settings) {
-        // Filter consecutive pairs only. FSB covers both full-scissor directions;
-        // HSB is the existing half-scissor definition. Skip AC is not a veto.
+        // Filter consecutive pairs only. FSB and HSB identify adjacent
+        // discordant jumps. Skip AC is not a veto.
         let pairs = ab.bi | bc.bi;
         let blocked_scissors = !settings.include_scissors && pairs & (bit(FSB) | bit(HSB)) != 0;
         let blocked_stretches = !settings.include_stretches && pairs & bit(LSB) != 0;
@@ -1690,7 +1713,7 @@ fn positions(arr: &[usize]) -> Vec<usize> {
     p
 }
 
-fn add_bits(raw: &mut Raw, mut bits: u64, f: f64) {
+fn add_bits(raw: &mut Raw, mut bits: u128, f: f64) {
     while bits != 0 {
         let bit = bits.trailing_zeros() as usize;
         raw.0[bit] += f;
@@ -1825,12 +1848,14 @@ impl Weights {
 impl Default for Weights {
     fn default() -> Self {
         Self::new([
-                12.0, 1.5, 0.0, 0.0, 0.0, 1.0, 0.0, 0.4, 3.0, 0.75, 1.0, 0.25,
+                12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25,
                 0.75, 2.5, 1.25, 0.0, 0.0,
                 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15,
                 0.02, 0.0, 0.0, 0.10,
                 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25,
+                1.0, 0.5, 0.4, 0.2,
                 0.60, 0.20, 0.05, 0.0,
+                0.06, 0.02, 0.005, 0.0,
             ])
     }
 }
@@ -1867,6 +1892,10 @@ fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
     }
     for i in 0..4 {
         b.contributions[N_METRICS + i] = (m.off[i] + m.off[7 - i])*w.0[N_METRICS + i];
+    }
+    for i in 0..4 {
+        b.contributions[USAGE_WEIGHT + i] =
+            (m.usage[i] + m.usage[7 - i]) * w.0[USAGE_WEIGHT + i];
     }
     for &v in &b.contributions {
         if v >= 0.0 {
@@ -1905,27 +1934,48 @@ fn config_lines(text: &str) -> AppResult<Vec<(String, String)>> {
     Ok(result)
 }
 
+fn canonical_weight_key(key: &str) -> &str {
+    match key {
+        "dfsb" => "dfjb",
+        "cfsb" => "cfjb",
+        "dfss" => "dfjs",
+        "cfss" => "cfjs",
+        _ => key,
+    }
+}
+
 fn weights_from_text(text: &str) -> AppResult<Weights> {
     let entries: BTreeMap<String, String> = config_lines(text)?.into_iter().collect();
     let mut w = Weights::default();
     for (k, v) in &entries {
-        let i = WEIGHT_NAMES.iter().position(|s|*s == k.as_str()).ok_or_else(|| format!("unknown weight {k}"))?;
+        let name = canonical_weight_key(k);
+        let i = WEIGHT_NAMES.iter().position(|s|*s == name).ok_or_else(|| format!("unknown weight {k}"))?;
         let value = finite_nonnegative(v)?;
-        if !aggregate(i) {
+        if !aggregate(i) && (k == name || !entries.contains_key(name)) {
             w.0[i] = value;
         }
     }
-    // An old fsb/fss weight described only discordant full scissors. Preserve
-    // that cost; seed the new concordant component at half the old value.
-    // Explicit new keys win regardless of line order. Never weight the total.
-    for (legacy, d, c) in [("fsb", DFSB, CFSB),("fss", DFSS, CFSS)] {
+    // Legacy aggregate keys seed directional jump weights. Explicit direction
+    // keys win regardless of line order; display subsets are never weighted.
+    for (legacy, d, c) in [("fsb", DFJB, CFJB),("fss", DFJS, CFJS)] {
+        if let Some(v) = entries.get(legacy) {
+            let value = finite_nonnegative(v)?;
+            if !entries.keys().any(|key| canonical_weight_key(key) == WEIGHT_NAMES[d]) {
+                w.0[d] = value;
+            }
+            if !entries.keys().any(|key| canonical_weight_key(key) == WEIGHT_NAMES[c]) {
+                w.0[c] = value*0.5;
+            }
+        }
+    }
+    for (legacy, d, c) in [("hsb", DHJB, CHJB), ("hss", DHJS, CHJS)] {
         if let Some(v) = entries.get(legacy) {
             let value = finite_nonnegative(v)?;
             if !entries.contains_key(WEIGHT_NAMES[d]) {
                 w.0[d] = value;
             }
             if !entries.contains_key(WEIGHT_NAMES[c]) {
-                w.0[c] = value*0.5;
+                w.0[c] = value * 0.5;
             }
         }
     }
@@ -1959,7 +2009,7 @@ fn load_weights(path: &Path) -> AppResult<Weights> {
 }
 
 fn weights_text(w: &Weights) -> String {
-    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS are display totals. Other 2-row changes exclude full scissors.\n");
+    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS/HSB/HSS display adjacent discordant subsets. DSB/CSB are extra non-adjacent jump penalties.\n");
     for i in 0..N_WEIGHTS {
         if !aggregate(i) {
             s.push_str(&format!("{} = {}\n", WEIGHT_NAMES[i], w.0[i]));
@@ -2004,10 +2054,10 @@ fn contribution_mass(m: usize, raw: &Raw, view: CreditView) -> f64 {
     }
 }
 
-fn blocker_names(bits: u64) -> String {
+fn blocker_names(bits: u128) -> String {
     let mut names = Vec::new();
-    // Show the D/C children instead of repeating the aggregate FSB/FSS label.
-    for m in [SFB, SFS, SKB, SKS, DFSB, CFSB, DFSS, CFSS, HSB, HSS, LSB, LSS, DSB, DSS, CSB, CSS, REDIR, WRED, WISH] {
+    // Show directional jumps instead of repeating their adjacent display subsets.
+    for m in [SFB, SFS, SKB, SKS, DFJB, CFJB, DFJS, CFJS, DHJB, CHJB, DHJS, CHJS, LSB, LSS, DSB, DSS, CSB, CSS, REDIR, WRED, WISH] {
         if bits&bit(m) != 0 {
             names.push(METRIC_NAMES[m]);
         }
@@ -2015,7 +2065,7 @@ fn blocker_names(bits: u64) -> String {
     names.join("+")
 }
 
-fn reward_blockers(g: &Gram, pos: &[usize], geometry: &Geometry) -> u64 {
+fn reward_blockers(g: &Gram, pos: &[usize], geometry: &Geometry) -> u128 {
     let a = pos[g.ids[0]];
     let b = pos[g.ids[1]];
     if g.len == 2 {
@@ -2032,8 +2082,8 @@ struct Contributor {
     ids: Vec<usize>,
     before: f64,
     after: f64,
-    why_before: u64,
-    why_after: u64
+    why_before: u128,
+    why_after: u128
 }
 
 fn gram_name(g: &Gram, canonical: &[u8]) -> String {

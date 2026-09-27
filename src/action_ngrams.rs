@@ -571,24 +571,24 @@ fn contribute(
 // fields of a terminal history into one mask; retain floating travel values in
 // Geometry. No frequency, binding, weight or candidate state lives here.
 struct TailContributions {
-    unary: Vec<u64>,
-    pair: Vec<u64>,
-    triple: Vec<u64>,
+    unary: Vec<u128>,
+    pair: Vec<u128>,
+    triple: Vec<u128>,
     n: usize,
 }
 
 impl TailContributions {
     fn new(g: &Geometry) -> Self {
-        assert!(N_RAW <= 64);
+        assert!(N_RAW <= 128);
         let travel = bit(TRAVEL) | bit(VTRAVEL) | bit(LTRAVEL) | bit(SFTRAVEL);
         // OR is exact only for disjoint fields. Fail at setup if future metric
         // definitions introduce multiplicity rather than silently losing it.
-        let join = |left: u64, right: u64| {
+        let join = |left: u128, right: u128| {
             assert_eq!(left & right, 0, "overlapping tail contribution fields");
             assert_eq!((left | right) & travel, 0, "travel must remain numeric");
             left | right
         };
-        let unary: Vec<u64> = g
+        let unary: Vec<u128> = g
             .keys
             .iter()
             .enumerate()
@@ -685,6 +685,16 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
         let a = pct(raw.0[OFF + i].max(0.0), totals[0]);
         let b = pct(raw.0[OFF + 7 - i].max(0.0), totals[0]);
         let contribution = (a + b) * w.0[N_METRICS + i];
+        if contribution >= 0.0 {
+            penalty += contribution;
+        } else {
+            bonus -= contribution;
+        }
+    }
+    for i in 0..4 {
+        let a = pct(raw.0[USAGE + i].max(0.0), totals[0]);
+        let b = pct(raw.0[USAGE + 7 - i].max(0.0), totals[0]);
+        let contribution = (a + b) * w.0[USAGE_WEIGHT + i];
         if contribution >= 0.0 {
             penalty += contribution;
         } else {

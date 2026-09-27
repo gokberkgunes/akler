@@ -21,7 +21,7 @@ impl AtomicKeyboard {
         slots: &[u32],
         skip: bool,
         rolls: RollSettings,
-    ) -> Result<u64, String> {
+    ) -> Result<u128, String> {
         let keys = slots
             .iter()
             .map(|&slot| {
@@ -102,7 +102,7 @@ fn adapt(keys: &[Key], labels: impl IntoIterator<Item = String>) -> Result<Atomi
         for (to, &b) in keys.iter().enumerate() {
             let flags = pair_flags(a, b, from == to).bi;
             // The existing pair flags are the source of truth. HSB is its
-            // discordant half-scissor; FSB is its full-scissor aggregate.
+            // adjacent discordant half jump; FSB is the two-row counterpart.
             // LSB and DSB are respectively its lateral and discordant
             // diagonal stretch flags. No threshold is reproduced here.
             pairs.insert(
@@ -249,7 +249,7 @@ mod tests {
     fn geometry_mappings_are_exact_existing_pair_flags() {
         let source = board("thumbs: space | char:?\n");
         let atomic = from_board(&source).unwrap();
-        // q->s: existing discordant half-scissor. a->t: lateral stretch.
+        // q->s: adjacent discordant half jump. a->t: lateral stretch.
         // q->v: existing discordant diagonal stretch. Thumb and cross-hand
         // pairs have known false values rather than missing classifications.
         assert_eq!(scissor_kind(source.keys[0], source.keys[11]), 1);

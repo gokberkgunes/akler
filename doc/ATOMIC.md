@@ -84,7 +84,7 @@ from 1 (top = 1, home = 2, bottom = 3); Atomic queries still use their existing
 logical row values and names.
 
 `Stats` lists the applicable existing akler metric names for each physical pattern, including
-overlapping totals and subsets such as `FSB, DFSB` or `RED, WRED`. Bigrams use
+overlapping broad categories and subsets such as `DFJB, FSB` or `RED, WRED`. Bigrams use
 bigram flags, skip1 uses skip flags, and trigrams use triple flags. A row with
 no applicable flag shows `—`. These names follow the existing metric rules and
 configured roll settings; they are separate from Atomic query attributes.

@@ -410,20 +410,12 @@ fn action_frame(
 ) -> Canvas {
     let mut c = Canvas::new(term.width(), 150);
     let controls = if title == "Layout" {
-        "Click metric for details | i corpus | t text trace | p key trace | . digits | q back"
+        "i corpus | t text trace | p key trace | . digits | q back"
     } else {
         action_controls(locks.is_some())
     };
-    header(&mut c, title, &a.corpus.name, &l.name, controls);
+    header(&mut c, title, &a.corpus.name, &l.name, "");
     let mut y = action_keyboard(&mut c, 2, l, base, locks, selected) + 1;
-    y = score_panel(
-        &mut c,
-        y,
-        &breakdown(&b.metrics, w),
-        &breakdown(&a.metrics, w),
-        None,
-        term.decimals(),
-    );
     let limited = if a
         .corpus
         .warnings
@@ -434,6 +426,17 @@ fn action_frame(
     } else {
         ""
     };
+    if title == "Editor" {
+        y = editor_metric_cards(
+            &mut c,
+            y,
+            &b.metrics,
+            &a.metrics,
+            &a.raw,
+            &a.corpus,
+            term.decimals(),
+        );
+    }
     c.text(
         0,
         y,
@@ -449,18 +452,29 @@ fn action_frame(
         MUTED,
     );
     y += 2;
-    y = grouped_metric_cards(
+    if title != "Editor" {
+        y = grouped_metric_cards(
+            &mut c,
+            y,
+            &b.metrics,
+            &a.metrics,
+            &a.raw,
+            &a.corpus,
+            term.decimals(),
+        );
+    }
+    y = finger_table(&mut c, y + 1, &b.metrics, &a.metrics, term.decimals());
+    y = score_panel(
         &mut c,
-        y,
-        &b.metrics,
-        &a.metrics,
-        &a.raw,
-        &a.corpus,
+        y + 1,
+        &breakdown(&b.metrics, w),
+        &breakdown(&a.metrics, w),
+        None,
         term.decimals(),
     );
-    y = finger_table(&mut c, y + 1, &b.metrics, &a.metrics, term.decimals());
     c.text(0, y, &short(status, c.w), CYAN);
-    c.h = y + 2;
+    c.text(0, y + 1, &short(controls, c.w), MUTED);
+    c.h = y + 3;
     c
 }
 
@@ -985,7 +999,7 @@ pub(crate) fn action_editor(
             Event::Char('?') => info_page(
                 term,
                 "Action controls",
-                &[action_controls(false).into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Click metrics for physical contributions. Save creates a new copy; r restores the original layout.".into()]
+                &[action_controls(false).into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into()]
             )?,
             Event::Char('i') => show_corpus_info(term, &current.corpus)?,
             Event::Char('t') => trace_view(term, &l, &w, false)?,
@@ -1046,7 +1060,6 @@ pub(crate) fn action_editor(
             } => {
                 match term.hit(&c, x, y, scroll) {
                     Some(Action::Key(i)) => drag = Some(i),
-                    Some(Action::Metric(m)) => action_contributors(term, m, &l, &original, &baseline, &current)?,
                     Some(Action::Weight(i)) => {
                         let mut next_w = w;
                         edit_single_weight(term, &mut next_w, i)?;
@@ -1459,27 +1472,6 @@ fn action_optimizer_search(
                     &progress.phase
                 };
                 let current = metrics_totals(raw, totals);
-                y = score_panel(
-                    &mut frame,
-                    y,
-                    &action_score_breakdown(baseline, weights, settings),
-                    &action_score_breakdown(&current, weights, settings),
-                    None,
-                    term.decimals(),
-                );
-                if snapshot.has_best {
-                    frame.text(
-                        0,
-                        y,
-                        &format!(
-                            "Search objective: {} ({}, training mixture)",
-                            number(snapshot.best.score, term.decimals()),
-                            settings.mode,
-                        ),
-                        CYAN,
-                    );
-                    y += 2;
-                }
                 if settings.mode == "simple" {
                     y = simple_metric_table(&mut frame, y, baseline, &current, term.decimals()) + 1;
                     frame.text(
@@ -1506,6 +1498,27 @@ fn action_optimizer_search(
                         term.decimals(),
                     );
                     y = finger_table(&mut frame, y + 1, baseline, &current, term.decimals());
+                }
+                y = score_panel(
+                    &mut frame,
+                    y + 1,
+                    &action_score_breakdown(baseline, weights, settings),
+                    &action_score_breakdown(&current, weights, settings),
+                    None,
+                    term.decimals(),
+                );
+                if snapshot.has_best {
+                    frame.text(
+                        0,
+                        y,
+                        &format!(
+                            "Search objective: {} ({}, training mixture)",
+                            number(snapshot.best.score, term.decimals()),
+                            settings.mode,
+                        ),
+                        CYAN,
+                    );
+                    y += 2;
                 }
                 frame.text(
                     0,
@@ -1583,27 +1596,6 @@ fn action_result_frame(
         "r setup | Space refine | b compare | [ ] | s save | S batch | q back",
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
-    y = score_panel(
-        &mut frame,
-        y,
-        &action_score_breakdown(&before.metrics, weights, settings),
-        &action_score_breakdown(&after.metrics, weights, settings),
-        None,
-        term.decimals(),
-    );
-    frame.text(
-        0,
-        y,
-        &format!(
-            "Search objective: {} ({}, training mixture) · {}-gram estimate",
-            number(objective, term.decimals()),
-            settings.mode,
-            after.counts.order,
-        ),
-        CYAN,
-    );
-    y += 2;
-
     if settings.mode == "simple" {
         y = simple_metric_table(
             &mut frame,
@@ -1643,6 +1635,26 @@ fn action_result_frame(
             term.decimals(),
         );
     }
+    y = score_panel(
+        &mut frame,
+        y + 1,
+        &action_score_breakdown(&before.metrics, weights, settings),
+        &action_score_breakdown(&after.metrics, weights, settings),
+        None,
+        term.decimals(),
+    );
+    frame.text(
+        0,
+        y,
+        &format!(
+            "Search objective: {} ({}, training mixture) · {}-gram estimate",
+            number(objective, term.decimals()),
+            settings.mode,
+            after.counts.order,
+        ),
+        CYAN,
+    );
+    y += 2;
     frame.text(0, y, &short(status, frame.w), CYAN);
     frame.h = y + 2;
     frame

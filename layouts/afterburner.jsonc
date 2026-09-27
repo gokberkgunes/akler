@@ -17,7 +17,7 @@
   ],
   "board": {
     "isRowStaggered": false,
-    "rowOrColumnStagger": [0, 0.25, 0.75]
+    "rowOrColumnStagger": [0, 0, 0]
   },
   "magic": {
     "keys": "#$",
