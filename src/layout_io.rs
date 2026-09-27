@@ -522,10 +522,6 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             let mut grouped: BTreeMap<String, BTreeMap<Vec<u8>, RuleOutput>> = BTreeMap::new();
             if let Some(key) = &explicit_key {
                 grouped.entry(key.clone()).or_default();
-            } else {
-                for label in labels.iter().filter(|label| dedicated_magic_label(label)) {
-                    grouped.entry(label.clone()).or_default();
-                }
             }
             if let Some(value) = magic
                 .get("rules")
@@ -871,7 +867,11 @@ mod tests {
         assert!(is_json_layout(&format!(
             "\u{feff}// heading\n/* block */ {text}"
         )));
-        assert!(Layout::parse(&text, Path::new("looks-like-dat.dat"))
+        assert!(!Layout::parse(&text, Path::new("looks-like-dat.dat"))
+            .unwrap()
+            .extended());
+        let declared = text.replacen("\"magicKeys\": []", "\"key\": \"@\"", 1);
+        assert!(Layout::parse(&declared, Path::new("declared.jsonc"))
             .unwrap()
             .extended());
         assert!(!is_json_layout(

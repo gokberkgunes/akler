@@ -61,9 +61,10 @@ same complete plain-text report to a new file:
 ```
 
 An existing output file is not overwritten. Reports contain no terminal
-colors or screen-width truncation. Frequencies and percentages are displayed
-with six digits after the decimal; matching and sorting use the original
-unrounded values.
+colors or screen-width truncation. The aligned result table shows physical
+keys, fingers, rows, and `%`; it omits per-row frequency. Summary frequencies
+show six decimal places, while percentages show at most two. Matching and
+sorting use the original unrounded values.
 
 ## Frequencies and denominators
 

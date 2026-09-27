@@ -32,6 +32,7 @@ struct AtomicView {
     report: AtomicReport,
     selected: Population,
     query: Option<String>,
+    table_header: String,
     row_lines: Vec<String>,
     scroll: usize,
     error: Option<String>,
@@ -51,7 +52,7 @@ impl AtomicView {
             .ok_or("no atomic pattern population is available in this corpus")?;
         let report = prepared.report(population, None)?;
         let selected = report.population;
-        let row_lines = Self::lines(&report);
+        let (table_header, row_lines) = atomic_report::table_lines(&report);
         Ok(Self {
             prepared,
             drawing,
@@ -59,6 +60,7 @@ impl AtomicView {
             report,
             selected,
             query: None,
+            table_header,
             row_lines,
             scroll: 0,
             error: None,
@@ -130,7 +132,7 @@ impl AtomicView {
             prepared: std::mem::replace(&mut self.prepared, next_prepared),
         };
         self.undo.push(old);
-        self.row_lines = Self::lines(&next_report);
+        (self.table_header, self.row_lines) = atomic_report::table_lines(&next_report);
         self.report = next_report;
         self.scroll = 0;
         self.error = None;
@@ -149,7 +151,7 @@ impl AtomicView {
         let old = self.undo.pop().unwrap();
         self.drawing = old.drawing;
         self.prepared = old.prepared;
-        self.row_lines = Self::lines(&report);
+        (self.table_header, self.row_lines) = atomic_report::table_lines(&report);
         self.report = report;
         self.scroll = 0;
         self.error = None;
@@ -188,20 +190,11 @@ impl AtomicView {
         }
     }
 
-    fn lines(report: &AtomicReport) -> Vec<String> {
-        atomic_report::render_text(report)
-            .lines()
-            .skip_while(|line| !line.starts_with("Physical keys |"))
-            .skip(1)
-            .map(str::to_owned)
-            .collect()
-    }
-
     fn apply(&mut self, population: Population, query: Option<String>) {
         match self.prepared.report(population, query.as_deref()) {
             Ok(report) => {
                 self.selected = population;
-                self.row_lines = Self::lines(&report);
+                (self.table_header, self.row_lines) = atomic_report::table_lines(&report);
                 self.report = report;
                 self.query = query;
                 self.scroll = 0;
@@ -329,14 +322,10 @@ impl AtomicView {
             ),
         };
         let mut y = keyboard_end.max(5);
-        let pct = if self.report.population_frequency == 0.0 {
-            "n/a".to_owned()
-        } else {
-            format!(
-                "{:.6}%",
-                100.0 * self.report.matching_frequency / self.report.population_frequency
-            )
-        };
+        let pct = atomic_report::percent(
+            self.report.matching_frequency,
+            self.report.population_frequency,
+        );
         canvas.text(
             0,
             y,
@@ -404,15 +393,7 @@ impl AtomicView {
             MUTED,
         );
         y += 2;
-        canvas.text(
-            0,
-            y,
-            &short(
-                "Physical keys | Fingers | Rows | Frequency | % of population",
-                canvas.w,
-            ),
-            FG,
-        );
+        canvas.text(0, y, &short(&self.table_header, canvas.w), FG);
         y += 1;
         if self.row_lines.is_empty() {
             canvas.text(

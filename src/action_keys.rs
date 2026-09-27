@@ -804,8 +804,8 @@ fn install_compact_tables(
     tables: BTreeMap<String, CompactTable>,
 ) -> Result<()> {
     for (key, table) in tables {
-        // @ alone installs the historical implicit repeat action. It may be
-        // refined by a compact table, but explicit definitions must not be lost.
+        // A declared @ repeat action may be refined by a compact table;
+        // other explicit definitions must not be lost.
         if actions.contains_key(&key)
             && !(key == "@" && matches!(actions.get(&key), Some(Action::RepeatOutput)))
         {
@@ -925,9 +925,6 @@ fn compact_action_text(name: &str, action: &Action) -> Option<String> {
         || name.as_bytes()[0].is_ascii_alphanumeric()
     {
         return None;
-    }
-    if name == "@" && matches!(action, Action::RepeatOutput) {
-        return Some(String::new());
     }
     let Action::Rules {
         basis: Basis::Text,
@@ -1166,9 +1163,12 @@ impl Layout {
                 return err(format!("duplicate compact mapping for {}", marker as char));
             }
         }
-        if slots
-            .iter()
-            .any(|s| s.binding == Binding::Text(vec![b'@']) && s.label != "char:@")
+        // A bare @ is text unless an action or a compact mapping explicitly
+        // declares it. The symbol alone never opts a layout into magic mode.
+        if definitions.iter().any(|name| name == "@")
+            && slots
+                .iter()
+                .any(|s| s.binding == Binding::Text(vec![b'@']) && s.label != "char:@")
         {
             compact_rules.entry(b'@').or_default();
         }

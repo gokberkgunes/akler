@@ -80,6 +80,10 @@ used by its fallback rules. `*@` with output `**` makes `@` repeat the previous
 output when no explicit text rule matches. For example, the wildcard makes
 `a@` emit `aa`. Put the wildcard rule first; following rules such as `h@`
 override it and emit their specific output, `hr` in this example.
+An `@` in `layout.fingers` is an ordinary `@` key unless `magic.keys`,
+`magic.key`, or a legacy rule ending in `@` explicitly declares it. An empty
+legacy `magic` block, including `"magicKeys": []` and `"rules": []`, declares no
+magic keys.
 
 An underscore means exactly one intervening physical press. `*_$` with output
 `*_*` gives `$` its skip fallback: repeat the output from two physical presses
@@ -199,7 +203,9 @@ Each two-character token is previous **text character + new output**. After h,
 pressing this key emits r. Apostrophes are literal characters, not quotes.
 Compact contexts/outputs are lowercased; use explicit rules for uppercase output.
 
-`@`, `*`, and `◇` default to repeating remembered output when no rule matches.
+Bare `@` is an ordinary output key. A compact text-magic rule for `@`, `*`, or
+`◇` makes unmatched presses repeat remembered output. Explicit actions use
+their declared fallback.
 `magic @ ...`, `magic * ...`, and `magic ◇ ...` are equivalent spellings.
 Other ASCII symbol keys can use `magic ! ay hr` if `!` occupies a slot.
 Diamond is an action label, not Unicode output. Listed rules take priority,

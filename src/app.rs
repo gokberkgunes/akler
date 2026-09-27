@@ -779,9 +779,40 @@ mod layout_dispatch_tests {
     fn jsonc_dispatch_uses_contents_with_any_filename() {
         for path in [Path::new("seconds"), Path::new("misleading.dat")] {
             assert!(matches!(parse_open_layout(PLAIN_JSON, path).unwrap(), OpenLayout::Plain(_)));
-            let magic = PLAIN_JSON.replace("l ;", "l @");
+            let literal_at = PLAIN_JSON.replace("l ;", "l @");
+            assert!(matches!(parse_open_layout(&literal_at, path).unwrap(), OpenLayout::Plain(_)));
+            let magic = literal_at.replacen("    }", "    }, \"magic\": {\"key\": \"@\", \"rules\": []}", 1);
             assert!(matches!(parse_open_layout(&magic, path).unwrap(), OpenLayout::Action(_)));
         }
+    }
+
+    #[test]
+    fn empty_legacy_magic_settings_do_not_turn_xanthor_at_into_an_action() {
+        let jsonc = r#"{
+            "layout": {"fingers": [
+                "f m l p v x @ u o y",
+                "s t r d g . n e a i",
+                "z k q c w b h ; ' ,"
+            ], "thumbs": ["", ""]},
+            "magic": {"magicKeys": [], "rules": []}
+        }"#;
+        let path = Path::new("xanthor.jsonc");
+        let OpenLayout::Plain(board) = parse_open_layout(jsonc, path).unwrap() else {
+            panic!("empty magic settings must leave @ literal");
+        };
+        assert!(board.symbols.contains(&b'@'));
+
+        let dat = ROWS.replace("l ;", "l @");
+        assert!(matches!(parse_open_layout(&dat, Path::new("literal.dat")).unwrap(), OpenLayout::Plain(_)));
+        let declared = format!("{dat}action @ = repeat-output\n");
+        let OpenLayout::Action(magic) = parse_open_layout(&declared, Path::new("magic.dat")).unwrap() else {
+            panic!("declared @ action must use the action evaluator");
+        };
+        assert!(magic.slots.iter().any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
+        let saved = magic.text();
+        assert!(saved.contains("action @ = repeat-output"));
+        let round = crate::action_keys::Layout::parse(&saved, Path::new("round.dat")).unwrap();
+        assert!(round.slots.iter().any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
     }
 
     #[test]

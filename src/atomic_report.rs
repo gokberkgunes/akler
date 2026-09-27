@@ -326,16 +326,102 @@ fn finger_name(finger: Finger) -> &'static str {
     }
 }
 
-fn percent(value: f64, denominator: f64) -> String {
+pub(crate) fn percent(value: f64, denominator: f64) -> String {
     if denominator == 0.0 {
         "n/a".into()
     } else {
-        format!("{:.6}%", 100.0 * value / denominator)
+        let value = 100.0 * value / denominator;
+        if value > 0.0 && value < 0.005 {
+            return "<0.01%".into();
+        }
+        let rounded = format!("{value:.2}");
+        format!("{}%", rounded.trim_end_matches('0').trim_end_matches('.'))
     }
 }
 
-/// Full, width-independent text export. Frequencies and percentages display
-/// six decimals; all calculations and sorting use unrounded f64 values.
+fn pad_right(text: &str, width: usize) -> String {
+    format!(
+        "{text}{}",
+        " ".repeat(width.saturating_sub(text.chars().count()))
+    )
+}
+
+fn pad_left(text: &str, width: usize) -> String {
+    format!(
+        "{}{text}",
+        " ".repeat(width.saturating_sub(text.chars().count()))
+    )
+}
+
+/// The CLI, editor, and export use the same aligned four-column table.
+/// Display rounding never changes frequencies, matching, or row order.
+pub(crate) fn table_lines(report: &AtomicReport) -> (String, Vec<String>) {
+    let labels: Vec<_> = report
+        .keys
+        .iter()
+        .map(|key| sanitized_label(key.label.as_deref().unwrap_or("")))
+        .collect();
+    let mut multiplicity = BTreeMap::<&str, usize>::new();
+    for label in &labels {
+        *multiplicity.entry(label.as_str()).or_default() += 1;
+    }
+    let separator = if report.population == Population::Skip1 {
+        " _ "
+    } else {
+        " → "
+    };
+    let mut cells = Vec::with_capacity(report.rows.len());
+    let mut widths = [
+        "Physical keys".chars().count(),
+        "Fingers".len(),
+        "Rows".len(),
+        1,
+    ];
+    for row in &report.rows {
+        let mut key_names = Vec::new();
+        let mut fingers = Vec::new();
+        let mut rows = Vec::new();
+        for &slot in &row.slots {
+            let key = &report.keys[slot as usize];
+            let label = &labels[slot as usize];
+            key_names.push(if label.is_empty() || multiplicity[label.as_str()] > 1 {
+                format!("{}[#{slot}]", if label.is_empty() { "key" } else { label })
+            } else {
+                label.clone()
+            });
+            fingers.push(finger_name(key.finger).to_string());
+            rows.push(key.row.to_string());
+        }
+        let values = [
+            key_names.join(separator),
+            fingers.join(separator),
+            rows.join(separator),
+            percent(row.frequency, report.population_frequency),
+        ];
+        for (width, value) in widths.iter_mut().zip(&values) {
+            *width = (*width).max(value.chars().count());
+        }
+        cells.push(values);
+    }
+    let line = |values: [&str; 4]| {
+        format!(
+            "{} | {} | {} | {}",
+            pad_right(values[0], widths[0]),
+            pad_right(values[1], widths[1]),
+            pad_right(values[2], widths[2]),
+            pad_left(values[3], widths[3]),
+        )
+    };
+    let header = line(["Physical keys", "Fingers", "Rows", "%"]);
+    let rows = cells
+        .iter()
+        .map(|values| line(values.each_ref().map(String::as_str)))
+        .collect();
+    (header, rows)
+}
+
+/// Full, width-independent text export. Summary frequencies display six
+/// decimals; percentages display up to two. Calculations use unrounded f64.
 pub(crate) fn render_text(report: &AtomicReport) -> String {
     let mut out =
         format!(
@@ -357,44 +443,11 @@ pub(crate) fn render_text(report: &AtomicReport) -> String {
         report.matching_frequency,
         percent(report.matching_frequency, report.population_frequency)
     ));
-    out.push_str("\nPhysical keys | Fingers | Rows | Frequency | % of population\n");
-    let labels: Vec<_> = report
-        .keys
-        .iter()
-        .map(|key| sanitized_label(key.label.as_deref().unwrap_or("")))
-        .collect();
-    let mut multiplicity = BTreeMap::<&str, usize>::new();
-    for label in &labels {
-        *multiplicity.entry(label).or_default() += 1;
-    }
-    let separator = if report.population == Population::Skip1 {
-        " _ "
-    } else {
-        " → "
-    };
-    for row in &report.rows {
-        let mut key_names = Vec::new();
-        let mut fingers = Vec::new();
-        let mut rows = Vec::new();
-        for &slot in &row.slots {
-            let key = &report.keys[slot as usize];
-            let label = &labels[slot as usize];
-            key_names.push(if label.is_empty() || multiplicity[label.as_str()] > 1 {
-                format!("{}[#{slot}]", if label.is_empty() { "key" } else { label })
-            } else {
-                label.clone()
-            });
-            fingers.push(finger_name(key.finger).to_string());
-            rows.push(key.row.to_string());
-        }
-        out.push_str(&format!(
-            "{} | {} | {} | {:.6} | {}\n",
-            key_names.join(separator),
-            fingers.join(separator),
-            rows.join(separator),
-            row.frequency,
-            percent(row.frequency, report.population_frequency)
-        ));
+    let (header, rows) = table_lines(report);
+    out.push_str(&format!("\n{header}\n"));
+    for row in rows {
+        out.push_str(&row);
+        out.push('\n');
     }
     out
 }
@@ -756,14 +809,32 @@ mod tests {
         assert!(text.contains("duplicate[#1] → duplicate[#0]"));
         assert_eq!(
             text.lines()
-                .filter(|line| line.contains(" | ") && line.ends_with('%'))
+                .filter(|line| line.contains('→') && line.ends_with('%'))
                 .count(),
             3
         );
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("\\u{001b}"));
         assert!(text.contains("Population frequency: 0.625000"));
-        assert!(text.contains("Match percentage: 100.000000%"));
+        assert!(text.contains("Match percentage: 100%"));
+        let (header, rows) = table_lines(&report);
+        assert_eq!(header.split(" | ").count(), 4);
+        assert!(header.ends_with('%'));
+        assert!(!header.contains("Frequency"));
+        let widths = header
+            .split(" | ")
+            .map(|cell| cell.chars().count())
+            .collect::<Vec<_>>();
+        for row in &rows {
+            assert_eq!(
+                row.split(" | ")
+                    .map(|cell| cell.chars().count())
+                    .collect::<Vec<_>>(),
+                widths
+            );
+        }
+        assert!(rows.iter().any(|row| row.ends_with("40%")));
+        assert!(rows.iter().any(|row| row.ends_with("20%")));
         let output_path = std::env::temp_dir().join(format!(
             "akler-atomic-report-{}-{}",
             std::process::id(),
@@ -790,7 +861,16 @@ mod tests {
         assert_eq!(none.population_frequency, 0.25);
         assert_eq!(none.matching_frequency, 0.0);
         assert!(none.rows.is_empty());
-        assert!(render_text(&none).contains("Match percentage: 0.000000%"));
+        assert!(render_text(&none).contains("Match percentage: 0%"));
+    }
+
+    #[test]
+    fn percentage_display_has_at_most_two_decimals() {
+        assert_eq!(percent(1.0, 1.0), "100%");
+        assert_eq!(percent(1.0, 8.0), "12.5%");
+        assert_eq!(percent(1.0, 3.0), "33.33%");
+        assert_eq!(percent(0.000001, 1.0), "<0.01%");
+        assert_eq!(percent(0.0, 0.0), "n/a");
     }
 
     #[test]
