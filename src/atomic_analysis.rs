@@ -3,11 +3,43 @@
 
 use crate::action_keys;
 use crate::atomic_metrics::{Finger, Hand, PairClassifications, PairGeometry, PhysicalKey};
-use crate::{bit, display_symbol, pair_flags, Board, Key, DSB, FSB, HSB, LSB};
+use crate::{
+    bit, display_symbol, pair_flags, tri_flags_with_settings, Board, Key, RollSettings, DSB, FSB,
+    HSB, LSB,
+};
 
 pub(crate) struct AtomicKeyboard {
     pub(crate) keys: Vec<PhysicalKey>,
     pub(crate) pairs: PairClassifications,
+    metric_keys: Vec<Key>,
+}
+
+impl AtomicKeyboard {
+    /// Reuse the evaluator's exact flags for the selected physical slots.
+    pub(crate) fn metric_bits(
+        &self,
+        slots: &[u32],
+        skip: bool,
+        rolls: RollSettings,
+    ) -> Result<u64, String> {
+        let keys = slots
+            .iter()
+            .map(|&slot| {
+                self.metric_keys
+                    .get(slot as usize)
+                    .copied()
+                    .ok_or_else(|| format!("unknown physical slot {slot}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        match keys.as_slice() {
+            [a, b] => {
+                let flags = pair_flags(*a, *b, slots[0] == slots[1]);
+                Ok(if skip { flags.sk } else { flags.bi })
+            }
+            [a, b, c] if !skip => Ok(tri_flags_with_settings(*a, *b, *c, rolls).bits),
+            _ => Err("atomic stats require an adjacent pair, skip pair, or triple".into()),
+        }
+    }
 }
 
 fn finger(id: usize) -> Result<Finger, String> {
@@ -87,6 +119,7 @@ fn adapt(keys: &[Key], labels: impl IntoIterator<Item = String>) -> Result<Atomi
     Ok(AtomicKeyboard {
         keys: physical,
         pairs,
+        metric_keys: keys.to_vec(),
     })
 }
 

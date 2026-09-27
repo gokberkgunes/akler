@@ -72,6 +72,7 @@ impl Population {
 pub(crate) struct ReportRow {
     pub(crate) slots: Vec<SlotId>,
     pub(crate) frequency: f64,
+    pub(crate) stats: Vec<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -99,6 +100,7 @@ fn analyze(
     source: &str,
     warnings: &[String],
     counts: &PhysicalTable,
+    rolls: RollSettings,
 ) -> AppResult<AtomicReport> {
     let query = query_text.map(Query::parse).transpose()?;
     let population_frequency: f64 = counts.values().copied().sum();
@@ -127,9 +129,17 @@ fn analyze(
         };
         if matches {
             matching_frequency += frequency;
+            let bits = keyboard.metric_bits(slots, population == Population::Skip1, rolls)?;
+            let stats = METRIC_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| bits & bit(*index) != 0)
+                .map(|(_, &name)| name)
+                .collect();
             rows.push(ReportRow {
                 slots: slots.clone(),
                 frequency,
+                stats,
             });
         }
     }
@@ -164,6 +174,7 @@ pub(crate) struct PreparedAtomic {
     source: [String; 3],
     warnings: Vec<String>,
     tables: [Option<PhysicalTable>; 3],
+    rolls: RollSettings,
 }
 
 impl PreparedAtomic {
@@ -197,6 +208,7 @@ impl PreparedAtomic {
             &self.source[index],
             &self.warnings,
             counts,
+            self.rolls,
         )
     }
 }
@@ -205,6 +217,7 @@ pub(crate) fn prepare_ordinary(board: Board, source: Source) -> AppResult<Prepar
     let keyboard = atomic_analysis::from_board(&board)?;
     let layout_name = board.name.clone();
     let model = Model::new(board);
+    let rolls = load_weights(Path::new(WEIGHTS_FILE))?.rolls();
     let corpus = model.corpus(&source)?;
     let physical_positions = positions(&model.original);
     let mut tables: [Option<PhysicalTable>; 3] = std::array::from_fn(|index| {
@@ -233,7 +246,7 @@ pub(crate) fn prepare_ordinary(board: Board, source: Source) -> AppResult<Prepar
             "Ordinary evaluator: supported stored n-grams mapped to physical slots.".into(),
             "Ordinary evaluator: stored skip endpoints, or source-derived trigram endpoints when noted below; the middle press is not retained in this table.".into(),
         ],
-        warnings: corpus.warnings, tables,
+        warnings: corpus.warnings, tables, rolls,
     })
 }
 
@@ -271,6 +284,7 @@ pub(crate) fn prepare_action(
         source: std::array::from_fn(|_| source_note.clone()),
         warnings: corpus.warnings,
         tables,
+        rolls: weights.rolls(),
     })
 }
 
@@ -353,7 +367,7 @@ fn pad_left(text: &str, width: usize) -> String {
     )
 }
 
-/// The CLI, editor, and export use the same aligned four-column table.
+/// The CLI, editor, and export use the same aligned five-column table.
 /// Display rounding never changes frequencies, matching, or row order.
 pub(crate) fn table_lines(report: &AtomicReport) -> (String, Vec<String>) {
     let labels: Vec<_> = report
@@ -376,6 +390,7 @@ pub(crate) fn table_lines(report: &AtomicReport) -> (String, Vec<String>) {
         "Fingers".len(),
         "Rows".len(),
         1,
+        "Stats".len(),
     ];
     for row in &report.rows {
         let mut key_names = Vec::new();
@@ -390,29 +405,35 @@ pub(crate) fn table_lines(report: &AtomicReport) -> (String, Vec<String>) {
                 label.clone()
             });
             fingers.push(finger_name(key.finger).to_string());
-            rows.push(key.row.to_string());
+            rows.push((i64::from(key.row) + 1).to_string());
         }
         let values = [
             key_names.join(separator),
             fingers.join(separator),
             rows.join(separator),
             percent(row.frequency, report.population_frequency),
+            if row.stats.is_empty() {
+                "—".into()
+            } else {
+                row.stats.join(", ")
+            },
         ];
         for (width, value) in widths.iter_mut().zip(&values) {
             *width = (*width).max(value.chars().count());
         }
         cells.push(values);
     }
-    let line = |values: [&str; 4]| {
+    let line = |values: [&str; 5]| {
         format!(
-            "{} | {} | {} | {}",
+            "{} | {} | {} | {} | {}",
             pad_right(values[0], widths[0]),
             pad_right(values[1], widths[1]),
             pad_right(values[2], widths[2]),
             pad_left(values[3], widths[3]),
+            pad_right(values[4], widths[4]),
         )
     };
-    let header = line(["Physical keys", "Fingers", "Rows", "%"]);
+    let header = line(["Physical keys", "Fingers", "Rows", "%", "Stats"]);
     let rows = cells
         .iter()
         .map(|values| line(values.each_ref().map(String::as_str)))
@@ -567,6 +588,57 @@ mod tests {
     }
 
     #[test]
+    fn stats_column_uses_existing_pair_skip_and_triple_flags() {
+        let keyboard = atomic_analysis::from_board(&plain_board()).unwrap();
+        let report_for = |population, slots: Vec<SlotId>| {
+            analyze(
+                &keyboard,
+                "board",
+                "corpus",
+                population,
+                None,
+                "inline",
+                &[],
+                &BTreeMap::from([(slots, 0.5)]),
+                RollSettings::default(),
+            )
+            .unwrap()
+        };
+        let stats = |population, slots| report_for(population, slots).rows[0].stats.clone();
+        assert!(stats(Population::Bigrams, vec![0, 10]).contains(&"SFB"));
+        assert!(stats(Population::Bigrams, vec![0, 0]).contains(&"SKB"));
+        for (slots, full, directional) in
+            [(vec![0, 21], "FSB", "DFSB"), (vec![1, 20], "FSB", "CFSB")]
+        {
+            let names = stats(Population::Bigrams, slots.clone());
+            assert!(
+                names.contains(&full) && names.contains(&directional),
+                "{names:?}"
+            );
+            let names = stats(Population::Skip1, slots);
+            assert!(names.contains(&"FSS"));
+            assert!(names.contains(&if directional == "DFSB" {
+                "DFSS"
+            } else {
+                "CFSS"
+            }));
+        }
+        assert!(stats(Population::Skip1, vec![0, 10]).contains(&"SFS"));
+        assert!(stats(Population::Skip1, vec![0, 0]).contains(&"SKS"));
+        let weak = stats(Population::Trigrams, vec![0, 2, 1]);
+        assert!(weak.contains(&"RED") && weak.contains(&"WRED"), "{weak:?}");
+        let wish = stats(Population::Trigrams, vec![0, 3, 1]);
+        assert!(wish.contains(&"RED") && wish.contains(&"WISH"), "{wish:?}");
+        let text = render_text(&report_for(Population::Bigrams, vec![0, 21]));
+        assert!(text.contains("% | Stats"));
+        assert!(text.contains("FSB") && text.contains("DFSB"));
+        let top_to_bottom = report_for(Population::Bigrams, vec![0, 21]);
+        let (_, lines) = table_lines(&top_to_bottom);
+        assert_eq!(lines[0].split(" | ").nth(2).unwrap().trim(), "1 → 3");
+        assert_eq!(top_to_bottom.keys[0].row, 0);
+    }
+
+    #[test]
     fn ordinary_populations_use_separate_weighted_tables_and_fixed_denominators() {
         let source = source(b"qswq", 0.5);
         let board = plain_board();
@@ -642,9 +714,18 @@ mod tests {
         assert!(moved.rows.iter().any(|row| row.slots.contains(&9)));
         assert_eq!(moved.keys[9].label.as_deref(), Some("@magic"));
         assert_eq!(moved.keys[9].finger, Finger::RightPinky);
+        let physical = atomic_analysis::from_action_layout(&layout).unwrap();
+        let weights = load_weights(Path::new(WEIGHTS_FILE)).unwrap();
+        for row in &moved.rows {
+            let expected = physical
+                .metric_bits(&row.slots, false, weights.rolls())
+                .unwrap();
+            for (index, &name) in METRIC_NAMES.iter().enumerate() {
+                assert_eq!(row.stats.contains(&name), expected & bit(index) != 0);
+            }
+        }
         // The same evaluator with the same policy still produces the table
         // used by this report, without the report changing evaluator state.
-        let weights = load_weights(Path::new(WEIGHTS_FILE)).unwrap();
         let effort = action_ui::LocalEffort::new(&layout, &weights);
         let direct = corpus
             .evaluate(
@@ -755,6 +836,7 @@ mod tests {
             "source",
             &[],
             &counts,
+            RollSettings::default(),
         )
         .unwrap_err()
         .to_string();
@@ -770,6 +852,7 @@ mod tests {
             "source",
             &[],
             &counts,
+            RollSettings::default(),
         )
         .unwrap_err()
         .to_string();
@@ -797,6 +880,7 @@ mod tests {
             "retained source",
             &["capped".into()],
             &counts,
+            RollSettings::default(),
         )
         .unwrap();
         assert_eq!(report.population_frequency, 0.625);
@@ -809,7 +893,7 @@ mod tests {
         assert!(text.contains("duplicate[#1] → duplicate[#0]"));
         assert_eq!(
             text.lines()
-                .filter(|line| line.contains('→') && line.ends_with('%'))
+                .filter(|line| line.contains('→') && line.contains(" | "))
                 .count(),
             3
         );
@@ -818,8 +902,8 @@ mod tests {
         assert!(text.contains("Population frequency: 0.625000"));
         assert!(text.contains("Match percentage: 100%"));
         let (header, rows) = table_lines(&report);
-        assert_eq!(header.split(" | ").count(), 4);
-        assert!(header.ends_with('%'));
+        assert_eq!(header.split(" | ").count(), 5);
+        assert!(header.ends_with("Stats"));
         assert!(!header.contains("Frequency"));
         let widths = header
             .split(" | ")
@@ -833,8 +917,12 @@ mod tests {
                 widths
             );
         }
-        assert!(rows.iter().any(|row| row.ends_with("40%")));
-        assert!(rows.iter().any(|row| row.ends_with("20%")));
+        assert!(rows
+            .iter()
+            .any(|row| row.split(" | ").nth(3).unwrap().trim() == "40%"));
+        assert!(rows
+            .iter()
+            .any(|row| row.split(" | ").nth(3).unwrap().trim() == "20%"));
         let output_path = std::env::temp_dir().join(format!(
             "akler-atomic-report-{}-{}",
             std::process::id(),
@@ -856,6 +944,7 @@ mod tests {
             "source",
             &[],
             &BTreeMap::from([(vec![0, 1], 0.25)]),
+            RollSettings::default(),
         )
         .unwrap();
         assert_eq!(none.population_frequency, 0.25);

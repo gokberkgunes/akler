@@ -62,9 +62,17 @@ same complete plain-text report to a new file:
 
 An existing output file is not overwritten. Reports contain no terminal
 colors or screen-width truncation. The aligned result table shows physical
-keys, fingers, rows, and `%`; it omits per-row frequency. Summary frequencies
-show six decimal places, while percentages show at most two. Matching and
-sorting use the original unrounded values.
+keys, fingers, rows, `%`, and `Stats`; it omits per-row frequency. Rows display
+from 1 (top = 1, home = 2, bottom = 3); Atomic queries still use their existing
+logical row values and names.
+
+`Stats` lists the applicable existing akler metric names for each physical pattern, including
+overlapping totals and subsets such as `FSB, DFSB` or `RED, WRED`. Bigrams use
+bigram flags, skip1 uses skip flags, and trigrams use triple flags. A row with
+no applicable flag shows `—`. These names follow the existing metric rules and
+configured roll settings; they are separate from Atomic query attributes.
+Summary frequencies show six decimal places, while percentages show at most
+two. Matching and sorting use the original unrounded values.
 
 ## Frequencies and denominators
 
