@@ -34,6 +34,7 @@
    },
    "layers": null,
    "magic": {
+     "keys": "*",
      "magicKeys": null,
      "rules": [
        {

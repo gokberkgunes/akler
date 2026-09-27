@@ -16,7 +16,7 @@
     "0 1 2 3 3 6 6 7 8 9 0"
   ],
   "board": {
-    "isRowStaggered": true,
+    "isRowStaggered": false,
     "rowOrColumnStagger": [0, 0.25, 0.75]
   },
   "magic": {
