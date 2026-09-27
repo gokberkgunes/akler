@@ -27,6 +27,7 @@ columns,
 
 ## Documentation
 
+- [Atomic physical-pattern queries and reports](doc/ATOMIC.md)
 - [DAT/JSONC layouts, magic/adaptive rules, and geometry](doc/LAYOUTS.md)
 - [Every metric, weight, unit, and overlap](doc/METRICS.md)
 - [Corpora, ranker controls, search settings, and profiling](doc/USAGE.md)

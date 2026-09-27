@@ -146,6 +146,7 @@ fn evaluate_counts(
         name: c.name.clone(),
         path: PathBuf::new(),
         tables,
+        available: [true; 4],
         masses,
         warnings: std::iter::once(format!("{}-gram bounded-context magic estimate", c.order))
             .chain(c.warnings.iter().cloned())
@@ -252,7 +253,7 @@ fn evaluate_tui(
     )
 }
 
-fn action_keyboard(
+pub(crate) fn action_keyboard(
     c: &mut Canvas,
     y: usize,
     l: &ak::Layout,
@@ -2324,15 +2325,25 @@ mod ngram_integration_tests {
             &[],
         );
         for row in [0, 2] {
-            let prior = layout.slots.iter().position(|s| s.main && s.row == row && s.col == 9).unwrap();
-            let empty = layout.slots.iter().position(|s| s.main && s.row == row && s.col == 10).unwrap();
+            let prior = layout
+                .slots
+                .iter()
+                .position(|s| s.main && s.row == row && s.col == 9)
+                .unwrap();
+            let empty = layout
+                .slots
+                .iter()
+                .position(|s| s.main && s.row == row && s.col == 10)
+                .unwrap();
             assert_eq!(layout.slots[empty].hand, 0);
             assert_eq!(layout.slots[prior].hand, 1);
             let actual = action_canvas.hits[empty].0;
             let before = action_canvas.hits[prior].0;
             assert!(actual.x >= before.x + before.w);
             assert_eq!(actual.x, plain_canvas.hits[empty].0.x);
-            assert!(matches!(action_canvas.action(actual.x + 1, actual.y + 1), Some(Action::Key(i)) if i == empty));
+            assert!(
+                matches!(action_canvas.action(actual.x + 1, actual.y + 1), Some(Action::Key(i)) if i == empty)
+            );
         }
     }
 

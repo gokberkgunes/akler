@@ -1012,11 +1012,8 @@ struct TestDir(PathBuf);
 
 impl TestDir {
     fn new() -> Self {
-        let p = std::env::temp_dir().join(format!(
-            "akler-test-{}-{}",
-            std::process::id(),
-            timestamp()
-        ));
+        let p =
+            std::env::temp_dir().join(format!("akler-test-{}-{}", std::process::id(), timestamp()));
         fs::create_dir_all(&p).unwrap();
         Self(p)
     }
@@ -1039,7 +1036,9 @@ fn cache_metadata_and_higher_orders() {
     let header = format!("{{\"source\":{{\"engine\":\"akler-rust\",\"cache_version\":{},\"raw_size\":{},\"raw_mtime_ns\":{},\"config_fingerprint\":\"{:016x}\",\"max_order\":5}},\n\"letters\":{{}}}}\n", CORPUS_VERSION, meta.len(), json_quote(&mtime_ns(&meta)), 7u64);
     fs::write(&cache, header).unwrap();
     assert!(cache_current(&raw, &cache, &cfg, 7).unwrap());
-    let legacy = fs::read_to_string(&cache).unwrap().replace("akler-rust", "layouter-rust");
+    let legacy = fs::read_to_string(&cache)
+        .unwrap()
+        .replace("akler-rust", "layouter-rust");
     fs::write(&cache, legacy).unwrap();
     assert!(cache_current(&raw, &cache, &cfg, 7).unwrap());
     assert!(cache_current_at_least(&raw, &cache, 7, 3).unwrap());
@@ -1053,7 +1052,10 @@ fn cache_metadata_and_higher_orders() {
 fn ordered_text_sidecars_accept_both_names() {
     let dir = TestDir::new();
     let seq = dir.0.join("sample.seq");
-    for header in [b"AKLER-SEQUENCES-1\n".as_slice(), b"LAYOUTER-SEQUENCES-1\n".as_slice()] {
+    for header in [
+        b"AKLER-SEQUENCES-1\n".as_slice(),
+        b"LAYOUTER-SEQUENCES-1\n".as_slice(),
+    ] {
         fs::write(&seq, [header, b"abc\n"].concat()).unwrap();
         let corpus = action_keys::TextCorpus::load(&seq).unwrap();
         assert_eq!(corpus.sequences, vec![(b"abc".to_vec(), 1)]);

@@ -244,6 +244,7 @@ fn load_frequency_source_with_limits(text: &str, path: &Path, limits: NgramLimit
                 *skip.entry(format!("{}{}", cs[0], cs[2])).or_insert(0.0) += v;
             }
             tables[2] = skip.into_iter().collect();
+            got[2] = true;
             warnings.push("Skipgrams derived from stored trigrams; pruning in the source file limits skip evidence.".into());
         } else {
             warnings.push("No skipgrams or trigrams in source.".into());
@@ -283,6 +284,7 @@ fn load_frequency_source_with_limits(text: &str, path: &Path, limits: NgramLimit
         name: corpus_name(path),
         path: path.to_owned(),
         tables,
+        available: got,
         masses,
         warnings,
         fingerprint: fingerprint_bytes(text.as_bytes())

@@ -828,7 +828,8 @@ pub(crate) fn run(
 ) -> ak::Result<Snapshot> {
     let level = match std::env::var("AKLER_PROFILE")
         .or_else(|_| std::env::var("LAYOUTER_PROFILE"))
-        .as_deref() {
+        .as_deref()
+    {
         Ok("1") => 1,
         Ok("2") => 2,
         _ => 0,

@@ -53,3 +53,11 @@ mod session;
 mod layout_io;
 
 mod layout_export;
+
+mod atomic_metrics;
+
+mod atomic_analysis;
+
+mod atomic_report;
+
+mod atomic_ui;

@@ -1514,6 +1514,9 @@ struct Source {
     name: String,
     path: PathBuf,
     tables: [Vec<(String, f64)>; 4],
+    // Which populations were present (or derived from stored trigrams).
+    // This is metadata only; existing frequency arithmetic is unchanged.
+    available: [bool; 4],
     masses: [f64; 4],
     warnings: Vec<String>,
     fingerprint: u64,

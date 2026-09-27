@@ -621,10 +621,11 @@ fn run() -> AppResult<()> {
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
             "--help"|"-h"|"help" => {
-                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler atomic LAYOUT CORPUS --patterns bigrams|trigrams|skip1 [--query QUERY] [--output PATH]\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(());
             },
             "corpus" => return corpus_command(&args[1..]),
+            "atomic" => return crate::atomic_report::command(&args[1..]),
             "import" => {
                 let mut rest = vec!["add".to_string()];
                 rest.extend_from_slice(&args[1..]);
@@ -667,16 +668,16 @@ fn run() -> AppResult<()> {
         }
     }
     let mut term = Terminal::open()?;
-    let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into()];
+    let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into(), "Atomic editor".into()];
     while !term.quitting {
         let choice = match menu(&mut term, "akler", &items)? {
             Some(i) => i,
             None => break
         };
-        let result = if choice == 3 {
-            corpus_tui(&mut term)
-        } else {
-            tui_mode(&mut term, ["editor", "ranker", "optimizer"][choice], None, None)
+        let result = match choice {
+            3 => corpus_tui(&mut term),
+            4 => crate::atomic_ui::open(&mut term),
+            _ => tui_mode(&mut term, ["editor", "ranker", "optimizer"][choice], None, None),
         };
         if let Err(e) = result {
             if !term.quitting {
