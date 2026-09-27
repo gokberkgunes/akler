@@ -582,6 +582,7 @@ pub(crate) struct Mapper<'a> {
     memories: [Memory; 6],
     starts: [usize; 6],
     keys: [Option<usize>; 5],
+    may_look_ahead: [bool; 5],
     stack: [usize; 32],
 }
 
@@ -590,7 +591,7 @@ impl<'a> Mapper<'a> {
         let Key::Action(id) = self.program.keys[self.state.ids[key]] else {
             return None;
         };
-        let prior = match &self.program.actions[id] {
+        let skip = match &self.program.actions[id] {
             Code::PressRules {
                 basis: Basis::SkipPress,
                 ..
@@ -599,16 +600,25 @@ impl<'a> Mapper<'a> {
                 basis: Basis::SkipOutput,
                 ..
             }
-            | Code::RepeatPreviousOutput => memory.previous,
+            | Code::RepeatPreviousOutput => true,
             Code::TextOne { .. }
             | Code::TextRules(_)
             | Code::PressRules { .. }
             | Code::OutputRules { .. }
             | Code::RepeatOutput
-            | Code::RepeatAction => memory.last,
+            | Code::RepeatAction => false,
             Code::Byte(_) | Code::Inactive => return None,
         };
-        Some(prior.is_none_or(|old| self.program.fingers[old] != self.program.fingers[key]))
+        let finger = self.program.fingers[key];
+        let prior = if skip { memory.previous } else { memory.last };
+        if prior.is_some_and(|old| self.program.fingers[old] == finger) {
+            return Some(false);
+        }
+        let other = if skip { memory.last } else { memory.previous };
+        if other.is_some_and(|old| self.program.fingers[old] == finger) {
+            return None;
+        }
+        Some(true)
     }
 
     pub(crate) fn new(program: &'a Program, state: &'a KeyState) -> Self {
@@ -620,6 +630,7 @@ impl<'a> Mapper<'a> {
             memories: [Memory::default(); 6],
             starts: [0; 6],
             keys: [None; 5],
+            may_look_ahead: [false; 5],
             stack: [0; 32],
         }
     }
@@ -661,6 +672,14 @@ impl<'a> Mapper<'a> {
             .zip(&self.previous[..self.previous_len])
             .take_while(|(a, b)| a == b)
             .count();
+        let common = if common > 0
+            && (common < text.len() || common < self.previous_len)
+            && self.may_look_ahead[common - 1]
+        {
+            common - 1
+        } else {
+            common
+        };
         if PROFILE {
             ops.positions_reused += common as u64;
         }
@@ -671,6 +690,7 @@ impl<'a> Mapper<'a> {
             let m = self.memories[at];
             let start = self.starts[at];
             let mut best: Option<(usize, Output, f64)> = None;
+            let mut may_look_ahead = false;
             // Literal-first and ascending physical-key order exactly match WindowMapper.
             for mut mask in [self.state.literals[text[at] as usize], self.state.actions] {
                 while mask != 0 {
@@ -814,12 +834,57 @@ impl<'a> Mapper<'a> {
                     if PROFILE && best.is_some() {
                         ops.effort_comparisons += 1;
                     }
+                    let mut nonfinite_next = false;
                     let loses = best.as_ref().is_some_and(|(old_key, _, old_cost)| {
                         let literal =
                             matches!(self.program.keys[self.state.ids[*old_key]], Key::Byte(_));
                         let priority = literal.then(|| self.action_priority(key, m)).flatten();
-                        priority == Some(false) || (priority != Some(true) && cost >= *old_cost)
+                        may_look_ahead |= literal && priority != Some(false);
+                        let projected = if literal && priority != Some(false) && at + 1 < text.len()
+                        {
+                            let next = self.state.literals[text[at + 1] as usize];
+                            if next != 0
+                                && (0..self.program.fingers.len()).all(|n| {
+                                    next & (1u64 << n) == 0
+                                        || self.program.fingers[n] == self.program.fingers[key]
+                                })
+                            {
+                                let mut next_cost = |current| {
+                                    let mut mask = next;
+                                    let mut minimum = f64::INFINITY;
+                                    while mask != 0 {
+                                        let n = mask.trailing_zeros() as usize;
+                                        mask &= mask - 1;
+                                        let value = effort(m.last, Some(current), n);
+                                        nonfinite_next |= !value.is_finite();
+                                        minimum = minimum.min(value);
+                                    }
+                                    minimum
+                                };
+                                let action_total = cost + next_cost(key);
+                                let literal_total = *old_cost + next_cost(*old_key);
+                                nonfinite_next |=
+                                    !action_total.is_finite() || !literal_total.is_finite();
+                                Some(
+                                    action_total < literal_total
+                                        || (priority == Some(true)
+                                            && action_total == literal_total),
+                                )
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+                        priority == Some(false)
+                            || match projected {
+                                Some(wins) => !wins,
+                                None => priority != Some(true) && cost >= *old_cost,
+                            }
                     });
+                    if nonfinite_next {
+                        return Err("non-finite typing effort".into());
+                    }
                     if loses {
                         if action {
                             ops.action_effort_losses += 1;
@@ -857,6 +922,7 @@ impl<'a> Mapper<'a> {
                 self.memories[at + 1] = Memory::default();
                 self.starts[at + 1] = at + 1;
             }
+            self.may_look_ahead[at] = may_look_ahead;
         }
         self.previous[..text.len()].copy_from_slice(text);
         self.previous_len = text.len();

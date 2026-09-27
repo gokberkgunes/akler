@@ -2762,13 +2762,20 @@ mod ngram_integration_tests {
         assert!(effort.get(None, Some(a), a) < effort.get(None, Some(a), action));
 
         let stop = AtomicBool::new(false);
-        let detailed = evaluate(&l, &history_corpus(b"aan"), &weights, &stop).unwrap();
-        let n = history_key(&l, "n");
+        let detailed = evaluate(&l, &history_corpus(b"aah"), &weights, &stop).unwrap();
+        let h = history_key(&l, "h");
         assert_eq!(
-            detailed.counts.tables[2].get(&vec![a, action, n]),
+            detailed.counts.tables[2].get(&vec![a, action, h]),
             Some(&1.0)
         );
         assert_eq!(detailed.counts.action_presses, 1.0);
+
+        let following_collision = evaluate(&l, &history_corpus(b"aan"), &weights, &stop).unwrap();
+        let n = history_key(&l, "n");
+        assert_eq!(
+            following_collision.counts.tables[2].get(&vec![a, a, n]),
+            Some(&1.0)
+        );
     }
 
     #[test]

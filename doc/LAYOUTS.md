@@ -292,9 +292,12 @@ dynamic cycles/depth limits are guarded at resolution.
 
 Cached evaluation supports one output byte per press and rejects multi-character
 macros. When a literal and magic key produce the same character, it prefers the
-magic key unless that key repeats the previous finger. Skip magic checks the
-finger used two presses back instead. Other choices use the lowest immediate
-effort, based on current weights. Evaluation is a bounded-context estimate;
+magic key unless that key repeats the previous finger. Skip magic is rejected
+when it repeats the finger used two presses back. When either action instead
+shares the other recent finger, it competes with the literal by lowest
+immediate effort, based on current weights. If all direct literal keys for the
+next character are on the action's finger, the choice also considers the cost
+of that next press. Evaluation is a bounded-context estimate;
 optional n-gram limits additionally reduce its available history. See
 [corpora and limits](USAGE.md#corpora).
 DAT saving supports every action above. JSONC saving reports an error when the

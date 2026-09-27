@@ -1911,9 +1911,12 @@ struct Node {
 
 /// Fast, bounded-context mapping for cached n-gram statistics. Each output
 /// character uses one physical key. Prefer a magic/repeat action over a literal
-/// unless it would reuse the relevant finger: the previous press for ordinary
-/// actions, or the press two back for skip actions. Otherwise choose the
-/// smallest immediate effort. This is not whole-text pathfinding.
+/// when its relevant finger is safe: the previous press for ordinary actions,
+/// or the press two back for skip actions. If an action shares the other
+/// recent finger, compare its local effort with the literal instead of forcing
+/// the action. When every direct literal for the next character uses the
+/// action's finger, compare the local cost through that press as well. This is
+/// not whole-text pathfinding.
 pub(crate) struct WindowMapper<'a> {
     layout: &'a Layout,
     literals: [Vec<usize>; 256],
@@ -1923,6 +1926,7 @@ pub(crate) struct WindowMapper<'a> {
     memories: [Memory; 6],
     starts: [usize; 6],
     keys: [Option<usize>; 5],
+    may_look_ahead: [bool; 5],
 }
 
 impl<'a> WindowMapper<'a> {
@@ -1933,16 +1937,25 @@ impl<'a> WindowMapper<'a> {
         let Some(action) = self.layout.actions.get(name) else {
             return None;
         };
-        let prior = match action {
+        let skip = match action {
             Action::Rules {
                 basis: Basis::SkipPress | Basis::SkipOutput,
                 ..
             }
-            | Action::RepeatPreviousOutput => memory.previous,
-            Action::Rules { .. } | Action::RepeatOutput | Action::RepeatAction => memory.last,
+            | Action::RepeatPreviousOutput => true,
+            Action::Rules { .. } | Action::RepeatOutput | Action::RepeatAction => false,
             Action::Text(_) | Action::Inactive => return None,
         };
-        Some(prior.is_none_or(|old| self.layout.slots[old].finger != self.layout.slots[key].finger))
+        let finger = self.layout.slots[key].finger;
+        let prior = if skip { memory.previous } else { memory.last };
+        if prior.is_some_and(|old| self.layout.slots[old].finger == finger) {
+            return Some(false);
+        }
+        let other = if skip { memory.last } else { memory.previous };
+        if other.is_some_and(|old| self.layout.slots[old].finger == finger) {
+            return None;
+        }
+        Some(true)
     }
 
     pub(crate) fn new(layout: &'a Layout, order: usize) -> Result<Self> {
@@ -2028,6 +2041,7 @@ impl<'a> WindowMapper<'a> {
             memories: std::array::from_fn(|_| Memory::default()),
             starts: [0; 6],
             keys: [None; 5],
+            may_look_ahead: [false; 5],
         }
     }
 
@@ -2043,10 +2057,19 @@ impl<'a> WindowMapper<'a> {
             .zip(&self.previous[..self.previous_len])
             .take_while(|(a, b)| a == b)
             .count();
+        let common = if common > 0
+            && (common < text.len() || common < self.previous_len)
+            && self.may_look_ahead[common - 1]
+        {
+            common - 1
+        } else {
+            common
+        };
         for at in common..text.len() {
             let mem = &self.memories[at];
             let start = self.starts[at];
             let mut best: Option<(usize, Resolved, f64)> = None;
+            let mut may_look_ahead = false;
             for &key in self.literals[text[at] as usize]
                 .iter()
                 .chain(self.actions.iter())
@@ -2066,7 +2089,46 @@ impl<'a> WindowMapper<'a> {
                 if let Some((old_key, _, old_cost)) = &best {
                     let literal = matches!(self.layout.slots[*old_key].binding, Binding::Text(_));
                     let priority = literal.then(|| self.action_priority(key, mem)).flatten();
-                    if priority == Some(false) || (priority != Some(true) && cost >= *old_cost) {
+                    may_look_ahead |= literal && priority != Some(false);
+                    let projected = if literal && priority != Some(false) && at + 1 < text.len() {
+                        let next = &self.literals[text[at + 1] as usize];
+                        if next
+                            .iter()
+                            .all(|&n| self.layout.slots[n].finger == self.layout.slots[key].finger)
+                            && !next.is_empty()
+                        {
+                            let mut nonfinite = false;
+                            let mut next_cost = |current| {
+                                next.iter()
+                                    .map(|&n| {
+                                        let value = effort(mem.last, Some(current), n);
+                                        nonfinite |= !value.is_finite();
+                                        value
+                                    })
+                                    .fold(f64::INFINITY, f64::min)
+                            };
+                            let action_total = cost + next_cost(key);
+                            let literal_total = *old_cost + next_cost(*old_key);
+                            if nonfinite || !action_total.is_finite() || !literal_total.is_finite()
+                            {
+                                return err("non-finite typing effort");
+                            }
+                            Some(
+                                action_total < literal_total
+                                    || (priority == Some(true) && action_total == literal_total),
+                            )
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if priority == Some(false)
+                        || match projected {
+                            Some(wins) => !wins,
+                            None => priority != Some(true) && cost >= *old_cost,
+                        }
+                    {
                         continue;
                     }
                 }
@@ -2082,6 +2144,7 @@ impl<'a> WindowMapper<'a> {
                 self.memories[at + 1] = Memory::default();
                 self.starts[at + 1] = at + 1;
             }
+            self.may_look_ahead[at] = may_look_ahead;
         }
         self.previous[..text.len()].copy_from_slice(text);
         self.previous_len = text.len();

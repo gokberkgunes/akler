@@ -34,7 +34,7 @@ impl Counts {
     }
 
     fn report_json(&self, layout: &ak::Layout) -> String {
-        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"safe magic before literal, then greedy local effort within each cached context\",\n  \"keys\": [", self.order);
+        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"safe magic before literal; action collisions with the other recent finger use local effort; following same-finger literals use two-press local effort; then greedy local effort within each cached context\",\n  \"keys\": [", self.order);
         for (i, slot) in layout.slots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -1788,6 +1788,175 @@ mod tests {
                 key(&same_finger, "a"),
             ]),
             Some(&1.0)
+        );
+    }
+
+    #[test]
+    fn adjacent_skip_action_sfb_uses_local_effort_instead_of_forced_priority() {
+        let layout = ak::Layout::parse(
+            "q w @sk r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
+            Path::new("adjacent-skip-action.dat"),
+        )
+        .unwrap();
+        let corpus = corpus(b"aca", 3);
+        let a = key(&layout, "a");
+        let c = key(&layout, "c");
+        let action = action_key(&layout, "sk");
+        assert_eq!(layout.slots[c].finger, layout.slots[action].finger);
+        assert_ne!(layout.slots[a].finger, layout.slots[action].finger);
+
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SFB] = 12.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        let literal = corpus
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(literal.tables[2].get(&vec![a, c, a]), Some(&1.0));
+        assert_eq!(literal.action_presses, 0.0);
+        let mut reference = ak::WindowMapper::new(&layout, 3).unwrap();
+        assert_eq!(
+            reference
+                .map(b"aca", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[2],
+            Some(a)
+        );
+
+        weights.0[SFB] = 0.0;
+        weights.0[SKS] = 12.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        let action_wins = corpus
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(action_wins.tables[2].get(&vec![a, c, action]), Some(&1.0));
+        assert_eq!(action_wins.action_presses, 1.0);
+        let mut reference = ak::WindowMapper::new(&layout, 3).unwrap();
+        assert_eq!(
+            reference
+                .map(b"aca", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[2],
+            Some(action)
+        );
+    }
+
+    #[test]
+    fn following_literal_sfb_can_override_skip_action_priority() {
+        let layout = ak::Layout::parse(
+            "q w e r @sk | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
+            Path::new("following-skip-action.dat"),
+        )
+        .unwrap();
+        let corpus = corpus(b"acav", 4);
+        let a = key(&layout, "a");
+        let v = key(&layout, "v");
+        let action = action_key(&layout, "sk");
+        assert_eq!(layout.slots[action].finger, layout.slots[v].finger);
+        assert_ne!(layout.slots[a].finger, layout.slots[v].finger);
+
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SFB] = 12.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        let counts = corpus
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(
+            counts.tables[2].get(&vec![key(&layout, "c"), a, v]),
+            Some(&1.0)
+        );
+        let mut reference = ak::WindowMapper::new(&layout, 4).unwrap();
+        assert_eq!(
+            reference
+                .map(b"acav", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[2],
+            Some(a)
+        );
+        let reused = reference
+            .map(b"acaq", &|a, b, key| effort.get(a, b, key))
+            .unwrap();
+        let mut fresh = ak::WindowMapper::new(&layout, 4).unwrap();
+        assert_eq!(
+            &reused[..4],
+            &fresh
+                .map(b"acaq", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[..4]
+        );
+        assert_eq!(reused[2], Some(action));
+
+        let mut reference = ak::WindowMapper::new(&layout, 4).unwrap();
+        assert_eq!(
+            reference.map(b"acav", &|_, _, _| 0.0).unwrap()[2],
+            Some(action)
+        );
+    }
+
+    #[test]
+    fn ordinary_action_skip_finger_collision_uses_local_effort() {
+        let layout = ak::Layout::parse(
+            "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction m = magic\nfallback m = repeat-output\n",
+            Path::new("ordinary-action-skip-collision.dat"),
+        )
+        .unwrap();
+        let corpus = corpus(b"abb", 3);
+        let a = key(&layout, "a");
+        let b = key(&layout, "b");
+        let action = action_key(&layout, "m");
+        assert_eq!(layout.slots[a].finger, layout.slots[action].finger);
+        assert_ne!(layout.slots[b].finger, layout.slots[action].finger);
+
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SFS] = 12.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        let literal = corpus
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(literal.tables[2].get(&vec![a, b, b]), Some(&1.0));
+        assert_eq!(literal.action_presses, 0.0);
+        let mut reference = ak::WindowMapper::new(&layout, 3).unwrap();
+        assert_eq!(
+            reference
+                .map(b"abb", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[2],
+            Some(b)
+        );
+
+        weights.0[SFS] = 0.0;
+        weights.0[SKB] = 12.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        let action_wins = corpus
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(action_wins.tables[2].get(&vec![a, b, action]), Some(&1.0));
+        assert_eq!(action_wins.action_presses, 1.0);
+        let mut reference = ak::WindowMapper::new(&layout, 3).unwrap();
+        assert_eq!(
+            reference
+                .map(b"abb", &|a, b, key| effort.get(a, b, key))
+                .unwrap()[2],
+            Some(action)
         );
     }
     #[test]
