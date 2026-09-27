@@ -275,6 +275,10 @@ fn action_keyboard(
         .max()
         .unwrap_or(9);
     let cols = (max - min + 1) as usize;
+    let physical = physical_keys(l);
+    let right_col = right_main_column(&physical, |i| {
+        original.slots[i].binding != ak::Binding::Empty
+    });
     let min_offset = l
         .slots
         .iter()
@@ -336,7 +340,7 @@ fn action_keyboard(
             (
                 x + (s.col - min) as usize * step
                     + stagger_cells(s.row_offset, min_offset, step)
-                    + usize::from(s.hand == 1) * gap,
+                    + usize::from(s.col >= right_col) * gap,
                 y + s.row as usize * 3 + stagger_cells(s.column_offset, min_column_offset, 3),
             )
         } else {
@@ -2294,6 +2298,42 @@ mod ngram_integration_tests {
         let physical = physical_keys(&layout);
         assert_eq!(physical[0].column_offset, -500);
         assert_eq!(physical[9].column_offset, 500);
+    }
+
+    #[test]
+    fn rightmost_empty_slots_keep_their_physical_column_and_hitbox() {
+        let source = ", u o c z | k d g b j ~\n\
+                      i e a $ # | m t s n h q\n\
+                      . ; / w ' | x v f p y ~\n\
+                      thumbs: space\n\
+                      fingermap: LP LR LM LI LI RI RI RM RR RP LP / LP LR LM LI LI RI RI RM RR RP RP / LP LR LM LI LI RI RI RM RR RP LP\n\
+                      col-layout: absolute\n";
+        let layout = ak::Layout::parse(source, Path::new("empty-right.dat")).unwrap();
+        let model = Model::new(board_from_text(source, Path::new("empty-right.dat")).unwrap());
+        let mut action_canvas = Canvas::new(120, 25);
+        let mut plain_canvas = Canvas::new(120, 25);
+        action_keyboard(&mut action_canvas, 2, &layout, &layout, None, None);
+        keyboard(
+            &mut plain_canvas,
+            2,
+            &model,
+            &model.original,
+            &model.original,
+            None,
+            None,
+            &[],
+        );
+        for row in [0, 2] {
+            let prior = layout.slots.iter().position(|s| s.main && s.row == row && s.col == 9).unwrap();
+            let empty = layout.slots.iter().position(|s| s.main && s.row == row && s.col == 10).unwrap();
+            assert_eq!(layout.slots[empty].hand, 0);
+            assert_eq!(layout.slots[prior].hand, 1);
+            let actual = action_canvas.hits[empty].0;
+            let before = action_canvas.hits[prior].0;
+            assert!(actual.x >= before.x + before.w);
+            assert_eq!(actual.x, plain_canvas.hits[empty].0.x);
+            assert!(matches!(action_canvas.action(actual.x + 1, actual.y + 1), Some(Action::Key(i)) if i == empty));
+        }
     }
 
     #[test]

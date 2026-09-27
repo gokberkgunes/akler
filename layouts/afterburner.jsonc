@@ -1,35 +1,35 @@
 {
   "layout": {
     "fingers": [
-      "j b g d k z c o u ,",
-      "q h n s t m @ $ a e i -",
-      "y p f v x ' w / ; ."
+      ", u o c z k d g b j skip",
+      "i e a $ # m t s n h q",
+      ". ; / w ' x v f p y skip"
     ],
     "thumbs": [
-      "r l",
-      "space"
+      "",
+      "l r",
     ]
   },
   "fingermap": [
-    "0 1 2 3 3 6 6 7 8 9",
-    "0 0 1 2 3 3 6 6 7 8 9 9",
-    "0 1 2 3 3 6 6 7 8 9"
+    "0 1 2 3 3 6 6 7 8 9 0",
+    "0 1 2 3 3 6 6 7 8 9 9",
+    "0 1 2 3 3 6 6 7 8 9 0"
   ],
   "board": {
     "isRowStaggered": true,
     "rowOrColumnStagger": [0, 0.25, 0.75]
   },
   "magic": {
-    "keys": "@$",
+    "keys": "#$",
     "wildcards": "*",
     "rules": [
-      {"inputs": "*@", "output": "**"},
-      {"inputs": "a@", "output": "ao"},
-      {"inputs": "g@", "output": "gs"},
-      {"inputs": "h@", "output": "hy"},
-      {"inputs": "u@", "output": "ue"},
-      {"inputs": "x@", "output": "xt"},
-      {"inputs": "y@", "output": "yh"},
+      {"inputs": "*#", "output": "**"},
+      {"inputs": "a#", "output": "ao"},
+      {"inputs": "g#", "output": "gs"},
+      {"inputs": "h#", "output": "hy"},
+      {"inputs": "u#", "output": "ue"},
+      {"inputs": "x#", "output": "xt"},
+      {"inputs": "y#", "output": "yh"},
 
       {"inputs": "*_$", "output": "*_*"},
       {"inputs": "a_$", "output": "a_o"},
@@ -52,10 +52,9 @@
       {"inputs": "y_$", "output": "y_h"},
       {"inputs": ",_$", "output": ",_i"},
       {"inputs": "._$", "output": "._i"},
-      {"inputs": "-_$", "output": "-_i"},
       {"inputs": "/_$", "output": "/_a"},
       {"inputs": ";_$", "output": ";_e"},
-      {"inputs": "@_$", "call": "@"}
+      {"inputs": "#_$", "call": "#"}
     ]
   }
 }

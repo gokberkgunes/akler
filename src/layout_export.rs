@@ -559,6 +559,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let mut finger_rows = Vec::new();
     let mut row_offsets = Vec::new();
     let mut columns = BTreeMap::new();
+    let mut row_width = None;
     // Internal finger IDs are left fingers 0..3, right fingers 4..7,
     // thumbs 8..9. Mana places the two thumbs between the hands.
     const MANA_FINGERS: [usize; 10] = [0, 1, 2, 3, 6, 7, 8, 9, 4, 5];
@@ -574,6 +575,13 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
                 "JSONC export needs 10, 11, or 12 physical slots in row {}",
                 row + 1
             ));
+        }
+        if let Some(width) = row_width {
+            if slots.len() != width {
+                return Err("JSONC export needs equally wide rows; add empty physical slots for missing positions".into());
+            }
+        } else {
+            row_width = Some(slots.len());
         }
         let origin = slots[0].col;
         if origin != 0
@@ -727,6 +735,14 @@ mod tests {
     }
 
     #[test]
+    fn unequal_dat_rows_need_explicit_empty_slots_for_jsonc() {
+        let source = GRID.replace("a s d f g | h j k l ;", "a s d f g | h j k l ; ?");
+        let layout = Layout::parse(&source, Path::new("unequal.dat")).unwrap();
+        let error = jsonc_text(&layout).unwrap_err();
+        assert!(error.contains("equally wide rows"), "{error}");
+    }
+
+    #[test]
     fn jsonc_uses_handwritten_field_order_and_one_keyboard_row_per_line() {
         let source = format!("{GRID}thumbs: space\nrow-offsets: 0 0.25 0.75\n");
         let layout = Layout::parse(&source, Path::new("inline")).unwrap();
@@ -761,8 +777,8 @@ mod tests {
         )
         .unwrap();
         let text = jsonc_text(&original).unwrap();
-        let wildcard = text.find("\"inputs\": \"*@\"").unwrap();
-        let explicit = text.find("\"inputs\": \"a@\"").unwrap();
+        let wildcard = text.find("\"inputs\": \"*#\"").unwrap();
+        let explicit = text.find("\"inputs\": \"a#\"").unwrap();
         assert!(wildcard < explicit, "{text}");
         assert!(text.contains("\"output\": \"**\""), "{text}");
     }
@@ -907,21 +923,21 @@ mod tests {
         )
         .unwrap();
         let jsonc = jsonc_text(&original).unwrap();
-        assert!(jsonc.contains("q h n s t m @ $ a e i -\""), "{jsonc}");
+        assert!(jsonc.contains("i e a $ # m t s n h q\""), "{jsonc}");
+        assert!(jsonc.contains("\"thumbs\": [\"\", \"l r\"]"), "{jsonc}");
         assert!(
-            jsonc.contains("\"thumbs\": [\"r l\", \"space\"]"),
+            jsonc.contains("\"keys\": \"#$\"") || jsonc.contains("\"keys\": \"$#\""),
             "{jsonc}"
         );
-        assert!(jsonc.contains("\"keys\": \"@$\""), "{jsonc}");
         assert!(jsonc.contains("\"wildcards\": \"*\""), "{jsonc}");
-        assert!(jsonc.contains("\"inputs\": \"*@\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"*#\""), "{jsonc}");
         assert!(jsonc.contains("\"output\": \"**\""), "{jsonc}");
-        assert!(jsonc.contains("\"inputs\": \"a@\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"a#\""), "{jsonc}");
         assert!(jsonc.contains("\"output\": \"ao\""), "{jsonc}");
         assert!(jsonc.contains("\"inputs\": \"*_$\""), "{jsonc}");
         assert!(jsonc.contains("\"output\": \"*_*\""), "{jsonc}");
-        assert!(jsonc.contains("\"inputs\": \"@_$\""), "{jsonc}");
-        assert!(jsonc.contains("\"call\": \"@\""), "{jsonc}");
+        assert!(jsonc.contains("\"inputs\": \"#_$\""), "{jsonc}");
+        assert!(jsonc.contains("\"call\": \"#\""), "{jsonc}");
         assert!(!jsonc.contains("\"skip\":"), "{jsonc}");
 
         let restored = Layout::parse(&jsonc, Path::new("round.jsonc")).unwrap();

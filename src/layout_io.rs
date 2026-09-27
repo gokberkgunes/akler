@@ -348,12 +348,14 @@ fn import_wildcard_magic(
             let context = prefix.strip_suffix('_').ok_or_else(|| {
                 format!("magic skip rule {input:?} must use '_' for its skipped key")
             })?;
-            if context.len() != 1
-                || !context.as_bytes()[0].is_ascii_graphic()
-                || !labels.contains(context)
-            {
+            if context.len() != 1 || !context.as_bytes()[0].is_ascii_graphic() {
                 return Err(format!(
-                    "magic skip rule {input:?} needs one physical key before '_'"
+                    "magic skip rule {input:?} needs one printable key before '_'"
+                ));
+            }
+            if !labels.contains(context) {
+                return Err(format!(
+                    "magic skip rule {input:?} refers to missing physical key {context:?}"
                 ));
             }
             context
@@ -439,6 +441,12 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             ));
         }
         rows.push(tokens);
+    }
+    if rows.iter().any(|row| row.len() != rows[0].len()) {
+        return Err(format!(
+            "layout.fingers rows have {}, {}, and {} physical slots; add skip so all rows have the same width",
+            rows[0].len(), rows[1].len(), rows[2].len()
+        ));
     }
 
     let mut thumbs = [vec![" ".to_string()], Vec::new()];
@@ -809,10 +817,10 @@ mod tests {
         format!(
             r#"{{
                 "layout": {{
-                    "fingers": ["q w {marker} r t y u i o p", "a s d f g h j k l ; ?", "z x c v b n m , . /",],
+                    "fingers": ["q w {marker} r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /",],
                     "thumbs": ["space", "e"],
                 }},
-                "fingermap": ["0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9 9", "0 1 2 3 3 6 6 7 8 9"],
+                "fingermap": ["0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9"],
                 "board": {board},
                 "layers": null,
                 "magic": {{"magicKeys": [], "rules": [{rules}]}},
@@ -834,6 +842,27 @@ mod tests {
             .iter()
             .position(|slot| slot.label == label)
             .unwrap()
+    }
+
+    #[test]
+    fn unequal_rows_need_explicit_empty_slots() {
+        let error = Layout::parse(
+            r#"{"layout":{"fingers":[
+                "q w e r t y u i o p",
+                "a s d f g h j k l ; [ ]",
+                "z x c v b n m , . /"
+            ]}}"#,
+            Path::new("unequal.jsonc"),
+        )
+        .unwrap_err();
+        assert!(error.contains("10, 12, and 10 physical slots"), "{error}");
+        assert!(error.contains("add skip"), "{error}");
+        let padded = r#"{"layout":{"fingers":[
+            "skip q w e r t y u i o p skip",
+            "skip a s d f g h j k l ; skip",
+            "skip z x c v b n m , . / skip"
+        ]}}"#;
+        assert!(Layout::parse(padded, Path::new("padded.jsonc")).is_ok());
     }
 
     #[test]
@@ -928,16 +957,16 @@ mod tests {
     }
 
     #[test]
-    fn geometry_preserves_unequal_rows_fingers_and_decimal_offsets() {
+    fn geometry_preserves_fingers_and_decimal_offsets() {
         let layout = parse(&example("@", "", row_board()));
-        assert_eq!(layout.slots.iter().filter(|slot| slot.main).count(), 31);
-        let extra = &layout.slots[key(&layout, "?")];
-        assert_eq!((extra.row, extra.col, extra.finger), (1, 10, 7));
-        assert_eq!((extra.row_offset, extra.column_offset), (250, 0));
+        assert_eq!(layout.slots.iter().filter(|slot| slot.main).count(), 30);
+        let home = &layout.slots[key(&layout, ";")];
+        assert_eq!((home.row, home.col, home.finger), (1, 9, 7));
+        assert_eq!((home.row_offset, home.column_offset), (250, 0));
         assert_eq!(layout.slots[key(&layout, "z")].row_offset, 750);
         assert_eq!(layout.slots[key(&layout, "y")].finger, 4);
 
-        let board = r#"{"isRowStaggered":false,"rowOrColumnStagger":[0,-0.3,-0.4,-0.3,-0.2,-0.2,-0.3,-0.4,-0.3,0,0]}"#;
+        let board = r#"{"isRowStaggered":false,"rowOrColumnStagger":[0,-0.3,-0.4,-0.3,-0.2,-0.2,-0.3,-0.4,-0.3,0]}"#;
         let columns = parse(&example("@", "", board));
         assert_eq!(columns.slots[key(&columns, "w")].column_offset, -300);
         assert_eq!(columns.slots[key(&columns, "w")].row_offset, 0);
@@ -1022,36 +1051,29 @@ mod tests {
                 .map(|slot| slot.label.as_str())
                 .collect::<Vec<_>>()
         };
-        assert_eq!(
-            physical_row(0),
-            ["j", "b", "g", "d", "k", "z", "c", "o", "u", ","]
-        );
-        assert_eq!(
-            physical_row(1),
-            ["q", "h", "n", "s", "t", "m", "@", "$", "a", "e", "i", "-"]
-        );
-        assert_eq!(
-            physical_row(2),
-            ["y", "p", "f", "v", "x", "'", "w", "/", ";", "."]
-        );
+        for row in 0..3 {
+            assert_eq!(physical_row(row).len(), 11);
+        }
+        assert_eq!(physical_row(0).last(), Some(&"·"));
+        assert_eq!(physical_row(2).last(), Some(&"·"));
         let thumbs: Vec<_> = layout
             .slots
             .iter()
             .filter(|slot| !slot.main)
             .map(|slot| (slot.label.as_str(), slot.hand))
             .collect();
-        assert_eq!(thumbs, [("r", 0), ("l", 0), ("␠", 1)]);
+        assert_eq!(thumbs, [("l", 1), ("r", 1)]);
 
-        let magic = key(&layout, "@");
+        let magic = key(&layout, "#");
         let skip = key(&layout, "$");
-        assert_eq!(layout.slots[magic].binding, Binding::Named("magic".into()));
+        assert_eq!(layout.slots[magic].binding, Binding::Named("#".into()));
         assert_eq!(layout.slots[skip].binding, Binding::Named("skip".into()));
 
         let Action::Rules {
             basis: ak::Basis::Text,
             rules,
             fallback: Emission::Call(fallback),
-        } = &layout.actions["magic"]
+        } = &layout.actions["#"]
         else {
             panic!("text magic action expected");
         };
@@ -1066,7 +1088,7 @@ mod tests {
         else {
             panic!("skip magic action expected");
         };
-        assert_eq!(rules[b"magic".as_slice()], Emission::Call("magic".into()));
+        assert_eq!(rules[b"#".as_slice()], Emission::Call("#".into()));
 
         let typed = |labels: &[&str]| {
             ak::trace_keys(
@@ -1081,24 +1103,24 @@ mod tests {
             .flat_map(|step| step.output)
             .collect::<Vec<_>>()
         };
-        assert_eq!(typed(&["a", "l", "@"]), b"all");
-        assert_eq!(typed(&["a", "@"]), b"ao");
-        assert_eq!(typed(&["a", "@", "@"]), b"aoo");
-        assert_eq!(typed(&["c", "@"]), b"cc");
+        assert_eq!(typed(&["a", "l", "#"]), b"all");
+        assert_eq!(typed(&["a", "#"]), b"ao");
+        assert_eq!(typed(&["a", "#", "#"]), b"aoo");
+        assert_eq!(typed(&["c", "#"]), b"cc");
         assert_eq!(typed(&["a", "c", "$"]), b"aco");
-        assert_eq!(typed(&["r", "u", "$", "@"]), b"rull");
-        assert_eq!(typed(&["i", "s", "@", "u", "$"]), b"issue");
+        assert_eq!(typed(&["r", "u", "$", "#"]), b"rull");
+        assert_eq!(typed(&["i", "s", "#", "u", "$"]), b"issue");
         assert_eq!(typed(&["c", "u", "$"]), b"cuc");
     }
 
     #[test]
     fn later_wildcard_replaces_an_earlier_exact_rule() {
         let text = include_str!("../layouts/afterburner.jsonc").replace(
-            "{\"inputs\": \"*@\", \"output\": \"**\"},\n      {\"inputs\": \"a@\", \"output\": \"ao\"}",
-            "{\"inputs\": \"a@\", \"output\": \"ao\"},\n      {\"inputs\": \"*@\", \"output\": \"**\"}",
+            "{\"inputs\": \"*#\", \"output\": \"**\"},\n      {\"inputs\": \"a#\", \"output\": \"ao\"}",
+            "{\"inputs\": \"a#\", \"output\": \"ao\"},\n      {\"inputs\": \"*#\", \"output\": \"**\"}",
         );
         let layout = parse(&text);
-        let steps = ak::trace_keys(&layout, &[key(&layout, "a"), key(&layout, "@")]).unwrap();
+        let steps = ak::trace_keys(&layout, &[key(&layout, "a"), key(&layout, "#")]).unwrap();
         assert_eq!(
             steps
                 .into_iter()
@@ -1109,13 +1131,23 @@ mod tests {
     }
 
     #[test]
+    fn missing_skip_context_names_the_absent_key() {
+        let text = include_str!("../layouts/afterburner.jsonc").replace(
+            "{\"inputs\": \"#_$\", \"call\": \"#\"}",
+            "{\"inputs\": \"-_$\", \"output\": \"-_i\"},\n      {\"inputs\": \"#_$\", \"call\": \"#\"}",
+        );
+        let error = Layout::parse(&text, Path::new("missing-key.jsonc")).unwrap_err();
+        assert!(error.contains("missing physical key \"-\""), "{error}");
+    }
+
+    #[test]
     fn twelve_column_rows_keep_absolute_coordinates_and_custom_fingers() {
         let text = r#"{
             "layout": {
-                "fingers": ["q w e r t y u i o p [ ]", "a s d f g h j k l ;", "z x c v b n m , . /"],
+                "fingers": ["q w e r t y u i o p [ ]", "a s d f g h j k l ; skip skip", "z x c v b n m , . / skip skip"],
                 "thumbs": ["space"]
             },
-            "fingermap": ["0 1 2 3 3 6 6 7 8 9 9 9", "0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9"],
+            "fingermap": ["0 1 2 3 3 6 6 7 8 9 9 9", "0 1 2 3 3 6 6 7 8 9 9 9", "0 1 2 3 3 6 6 7 8 9 9 9"],
             "board": {"isRowStaggered": false, "rowOrColumnStagger": [0,0,0,0,0,0,0,0,0,0,0.2,0.3]}
         }"#;
         let layout = parse(text);

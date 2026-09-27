@@ -27,7 +27,8 @@ fallbacks and `call` rules described below.
 ### Mana JSON/JSONC import
 
 The supported base layout uses three `layout.fingers` strings, each containing
-10, 11, or 12 whitespace-separated keys. Row widths may differ. Optional
+10, 11, or 12 whitespace-separated slots. All three rows must have the same
+width; use `skip` to mark empty positions. Optional
 `layout.thumbs` contains up to two strings, left then right. Each string can contain
 multiple whitespace-separated keys; an empty string omits that hand. For
 example, `["", "l r"]` places both l and r on the right thumb. Omitting

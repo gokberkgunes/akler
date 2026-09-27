@@ -1,16 +1,16 @@
 {
     "layout": {
         "fingers": [
-            "b f ◇ p j ' , u o y",
+            "b f ◇ p j ' , u o y skip",
             "n s t d w k r i a h ?",
-            "q v c g x m l . ; z",
+            "q v c g x m l . ; z skip",
         ],
         "thumbs": ["space", "e"],
     },
     "fingermap": [
-        "0 1 2 2 3 6 6 7 8 9",
+        "0 1 2 2 3 6 6 7 8 9 9",
         "0 1 2 3 3 6 6 7 8 9 9",
-        "0 1 3 3 3 6 6 7 8 9",
+        "0 1 3 3 3 6 6 7 8 9 9",
     ],
     "board": {
         "isRowStaggered": true,

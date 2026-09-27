@@ -118,6 +118,8 @@ Travel uses **key units per 100 events** (`u/100`), not percent. TRAVEL/VTRAVEL/
 LTRAVEL measure distance from home, not a reconstructed hand trajectory. Thumb
 presses add no travel here. SFTRAVEL's same-key repeats have zero distance.
 The off-home weight combines the left and right finger of each type.
+Each main finger's home position comes from the home-row finger map. JSONC rows
+must list the same number of slots; use `skip` to show empty positions.
 
 Finger labels are LP/LR/LM/LI (left pinky/ring/middle/index), RI/RM/RR/RP
 (right index/middle/ring/pinky), and LT/RT (thumbs). Keyboard gray tints identify

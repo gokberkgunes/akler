@@ -591,8 +591,9 @@ impl TailContributions {
         let unary: Vec<u64> = g
             .keys
             .iter()
-            .map(|key| {
-                let off = if key.main && !key.home() {
+            .enumerate()
+            .map(|(index, key)| {
+                let off = if key.main && !g.is_home[index] {
                     bit(OFF + key.finger)
                 } else {
                     0

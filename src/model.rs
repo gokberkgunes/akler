@@ -673,28 +673,89 @@ fn home_travel(k: Key) -> [f64; 3] {
     [x.hypot(y), y, x]
 }
 
+const HOME_COLUMNS: [i8; 8] = [0, 1, 2, 3, 6, 7, 8, 9];
+
+#[derive(Clone, Copy)]
+struct HomeAnchors {
+    slots: [Option<Key>; 8],
+    columns: [i8; 8],
+}
+
+impl HomeAnchors {
+    fn new(keys: &[Key]) -> Self {
+        let shift: [i8; 2] = std::array::from_fn(|hand| {
+            let mut counts = BTreeMap::new();
+            let mut seen = BTreeSet::new();
+            for key in keys.iter().filter(|key| {
+                key.main && key.row == 1 && key.hand == hand as i8
+            }) {
+                if seen.insert((key.finger, key.col)) {
+                    *counts.entry(key.col - HOME_COLUMNS[key.finger]).or_insert(0usize) += 1;
+                }
+            }
+            let mut best = (0i8, 0usize);
+            for (candidate, count) in counts {
+                if count > best.1
+                    || count == best.1
+                        && (candidate.abs(), candidate) < (best.0.abs(), best.0)
+                {
+                    best = (candidate, count);
+                }
+            }
+            best.0
+        });
+        let columns = std::array::from_fn(|finger| {
+            HOME_COLUMNS[finger] + shift[usize::from(finger >= 4)]
+        });
+        let slots = std::array::from_fn(|finger| {
+            let target = columns[finger];
+            keys.iter()
+                .copied()
+                .filter(|key| key.main && key.row == 1 && key.finger == finger)
+                .min_by_key(|key| ((key.col - target).abs(), key.col))
+        });
+        Self { slots, columns }
+    }
+
+    fn anchor(self, k: Key, keys: &[Key]) -> Key {
+        if let Some(home) = self.slots[k.finger] {
+            return home;
+        }
+        let column = self.columns[k.finger];
+        let row_offset = keys
+            .iter()
+            .find(|key| key.main && key.row == 1)
+            .map_or(0, |key| key.row_offset);
+        let column_offset = keys
+            .iter()
+            .find(|key| key.main && key.row == 1 && key.col == column)
+            .map_or(0, |key| key.column_offset);
+        Key {
+            row: 1,
+            col: column,
+            row_offset,
+            column_offset,
+            ..k
+        }
+    }
+
+    fn contains(self, k: Key) -> bool {
+        k.main
+            && self.slots[k.finger]
+                .is_some_and(|home| home.row == k.row && home.col == k.col)
+    }
+}
+
+fn home_slot_mask(keys: &[Key]) -> Vec<bool> {
+    let anchors = HomeAnchors::new(keys);
+    keys.iter().copied().map(|key| anchors.contains(key)).collect()
+}
+
 fn home_travel_for(k: Key, keys: &[Key]) -> [f64; 3] {
     if !k.main {
         return [0.0; 3];
     }
-    let column = [0, 1, 2, 3, 6, 7, 8, 9][k.finger];
-    let home = keys.iter().find(|home| {
-        home.main && home.row == 1 && home.finger == k.finger && home.col == column
-    }).or_else(|| keys.iter().find(|home| {
-        home.main && home.row == 1 && home.finger == k.finger
-    })).or_else(|| keys.iter().find(|home| {
-        home.main && home.row == 1 && home.col == column
-    }));
-    // If the canonical home slot is also absent, reconstruct its coordinate
-    // from the row/column offsets. Uniform translations must still cancel.
-    let fallback = Key {
-        row: 1,
-        col: column,
-        row_offset: keys.iter().find(|key| key.main && key.row == 1).map_or(0, |key| key.row_offset),
-        column_offset: keys.iter().find(|key| key.main && key.col == column).map_or(0, |key| key.column_offset),
-        ..k
-    };
-    let home = home.copied().unwrap_or(fallback);
+    let home = HomeAnchors::new(keys).anchor(k, keys);
     let x = k.horizontal_delta(home).abs();
     let y = k.vertical_delta(home).abs();
     [x.hypot(y), y, x]
@@ -708,6 +769,7 @@ struct Geometry {
     tri: Vec<TriFlags>,
     n: usize,
     home: Vec<[f64; 3]>,
+    is_home: Vec<bool>,
     sf_distance: Vec<f64>
 }
 
@@ -728,7 +790,17 @@ impl Geometry {
                 }
             }
         }
-        let home = keys.iter().copied().map(|key| home_travel_for(key, &keys)).collect();
+        let anchors = HomeAnchors::new(&keys);
+        let home = keys.iter().copied().map(|key| {
+            if !key.main {
+                return [0.0; 3];
+            }
+            let anchor = anchors.anchor(key, &keys);
+            let x = key.horizontal_delta(anchor).abs();
+            let y = key.vertical_delta(anchor).abs();
+            [x.hypot(y), y, x]
+        }).collect();
+        let is_home = keys.iter().copied().map(|key| anchors.contains(key)).collect();
         let mut sf_distance = vec![0.0; n*n];
         for a in 0..n {
             for b in 0..n {
@@ -745,6 +817,7 @@ impl Geometry {
             tri,
             n,
             home,
+            is_home,
             sf_distance
         }
     }
@@ -1143,7 +1216,8 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
 }
 
 fn default_locks(board: &Board) -> Vec<bool> {
-    board.keys.iter().map(|k| k.home() || !k.main).collect()
+    let homes = home_slot_mask(&board.keys);
+    board.keys.iter().zip(homes).map(|(key, home)| home || !key.main).collect()
 }
 
 fn timestamp() -> u128 {
@@ -1624,7 +1698,7 @@ fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f
         0 => {
             let key = geometry.keys[a];
             raw.0[USAGE + key.finger] += f;
-            if key.main && !key.home() {
+            if key.main && !geometry.is_home[a] {
                 raw.0[OFF + key.finger] += f;
             }
             raw.0[TRAVEL] += geometry.home[a][0]*f;
@@ -2080,6 +2154,63 @@ mod numeric_geometry_tests {
         for (a, b) in first.pair.iter().zip(&shifted.pair) {
             assert_eq!((a.bi, a.sk), (b.bi, b.sk));
         }
+    }
+
+    #[test]
+    fn home_anchors_follow_translated_ten_eleven_and_twelve_column_fingermaps() {
+        let cases = [
+            (
+                "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n",
+                "LP LR LM LI LI RI RI RM RR RP",
+            ),
+            (
+                "~ q w e r t | y u i o p\n~ a s d f g | h j k l ;\n~ z x c v b | n m , . /\n",
+                "LP LP LR LM LI LI RI RI RM RR RP",
+            ),
+            (
+                "~ q w e r t | y u i o p ~\n~ a s d f g | h j k l ; ~\n~ z x c v b | n m , . / ~\n",
+                "LP LP LR LM LI LI RI RI RM RR RP RP",
+            ),
+        ];
+        for (rows, fingers) in cases {
+            let source = format!(
+                "{rows}fingermap: {fingers} / {fingers} / {fingers}\n"
+            );
+            let standard = board_from_text(&source, Path::new("standard.dat")).unwrap();
+            let absolute = board_from_text(
+                &format!("{source}col-layout: absolute\n"),
+                Path::new("absolute.dat"),
+            )
+            .unwrap();
+            let first = Geometry::new(standard.keys);
+            let shifted = Geometry::new(absolute.keys);
+            assert_eq!(first.home.len(), shifted.home.len());
+            for (a, b) in first.home.iter().flatten().zip(shifted.home.iter().flatten()) {
+                assert_eq!(a.to_bits(), b.to_bits());
+            }
+            assert_eq!(first.is_home, shifted.is_home);
+        }
+
+        let (rows, fingers) = cases[2];
+        let absolute = board_from_text(
+            &format!(
+                "{rows}fingermap: {fingers} / {fingers} / {fingers}\ncol-layout: absolute\n"
+            ),
+            Path::new("absolute.dat"),
+        )
+        .unwrap();
+        let homes = home_slot_mask(&absolute.keys);
+        let at = |finger, col| {
+            absolute
+                .keys
+                .iter()
+                .position(|key| key.main && key.row == 1 && key.finger == finger && key.col == col)
+                .unwrap()
+        };
+        assert!(!homes[at(0, 0)]);
+        assert!(homes[at(0, 1)]);
+        assert!(!homes[at(4, 6)]);
+        assert!(homes[at(4, 7)]);
     }
 
     #[test]

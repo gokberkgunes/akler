@@ -678,6 +678,38 @@ fn header(c: &mut Canvas, title: &str, corpus: &str, layout: &str, controls: &st
     c.text(0, 1, &short(controls, c.w), MUTED);
 }
 
+fn right_main_column(keys: &[Key], occupied: impl Fn(usize) -> bool) -> i8 {
+    let min = keys
+        .iter()
+        .filter(|key| key.main)
+        .map(|key| key.col)
+        .min()
+        .unwrap_or(0);
+    let max = keys
+        .iter()
+        .filter(|key| key.main)
+        .map(|key| key.col)
+        .max()
+        .unwrap_or(9);
+    let default = min + if max - min + 1 == 12 { 6 } else { 5 };
+    let left = keys
+        .iter()
+        .enumerate()
+        .filter(|(i, key)| key.main && key.hand == 0 && occupied(*i))
+        .map(|(_, key)| key.col)
+        .max();
+    let right = keys
+        .iter()
+        .enumerate()
+        .filter(|(i, key)| key.main && key.hand == 1 && occupied(*i))
+        .map(|(_, key)| key.col)
+        .min();
+    match (left, right) {
+        (Some(left), Some(right)) if left < right => right,
+        _ => default,
+    }
+}
+
 fn keyboard(
     c: &mut Canvas,
     y: usize,
@@ -691,6 +723,7 @@ fn keyboard(
     let min = model.board.keys.iter().filter(|k| k.main).map(|k| k.col).min().unwrap_or(0);
     let max = model.board.keys.iter().filter(|k| k.main).map(|k| k.col).max().unwrap_or(9);
     let cols = (max - min + 1) as usize;
+    let right_col = right_main_column(&model.board.keys, |i| !blank(model.board.symbols[i]));
     let min_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.row_offset).min().unwrap_or(0).min(0);
     let max_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.row_offset).max().unwrap_or(0).max(0);
     let min_column_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.column_offset).min().unwrap_or(0).min(0);
@@ -718,7 +751,7 @@ fn keyboard(
             (
                 x + (key.col - min) as usize * step
                     + stagger_cells(key.row_offset, min_offset, step)
-                    + usize::from(key.hand == 1) * gap,
+                    + usize::from(key.col >= right_col) * gap,
                 y + key.row as usize * 3 + stagger_cells(key.column_offset, min_column_offset, 3),
             )
         } else {
