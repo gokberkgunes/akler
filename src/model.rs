@@ -8,7 +8,7 @@ const WEIGHTS_FILE: &str = "optimizer-weights.conf";
 
 const SEARCH_FILE: &str = "optimizer-search.conf";
 
-const MODEL_VERSION: &str = "ortholinear-custom-8-finger-usage";
+const MODEL_VERSION: &str = "ortholinear-custom-14-jump-label-case";
 
 const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 
@@ -16,7 +16,7 @@ const DEFAULT_CORPUS: &str = "corpus-reddit.json";
 // This is a modeling assumption, not a universal anatomical measurement.
 const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
-const N_METRICS: usize = 40;
+const N_METRICS: usize = 44;
 
 const N_WEIGHTS: usize = N_METRICS + 8;
 
@@ -42,9 +42,9 @@ const LSB: usize = 8;
 
 const LSS: usize = 9;
 
-const DSB: usize = 10;
+const DNFJB: usize = 10;
 
-const DSS: usize = 11;
+const DNFJS: usize = 11;
 
 const REDIR: usize = 12;
 
@@ -56,19 +56,19 @@ const SRAF: usize = 15;
 
 const ROLL: usize = 16;
 
-const DFJB: usize = 17;
+const DAFJB: usize = 17;
 
-const CFJB: usize = 18;
+const CAFJB: usize = 18;
 
-const DFJS: usize = 19;
+const DAFJS: usize = 19;
 
-const CFJS: usize = 20;
+const CAFJS: usize = 20;
 
 const ALT: usize = 21;
 
-const CSB: usize = 22;
+const CNFJB: usize = 22;
 
-const CSS: usize = 23;
+const CNFJS: usize = 23;
 
 const TRAVEL: usize = 24;
 
@@ -95,13 +95,21 @@ const INSRAF: usize = 34;
 
 const OUTSRAF: usize = 35;
 
-const DHJB: usize = 36;
+const DAHJB: usize = 36;
 
-const CHJB: usize = 37;
+const CAHJB: usize = 37;
 
-const DHJS: usize = 38;
+const DAHJS: usize = 38;
 
-const CHJS: usize = 39;
+const CAHJS: usize = 39;
+
+const DNHJB: usize = 40;
+
+const CNHJB: usize = 41;
+
+const DNHJS: usize = 42;
+
+const CNHJS: usize = 43;
 
 const USAGE: usize = N_METRICS;
 
@@ -137,24 +145,36 @@ const DEFAULT_SIMPLE: [f64; 9] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25, 0.25, 0
 
 const METRIC_NAMES: [&str; N_METRICS] = [
     "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
-    "DSB", "DSS", "RED", "WRED", "WISH", "SRAF", "ROLL",
-    "DFJB", "CFJB", "DFJS", "CFJS", "ALT", "CSB", "CSS",
+    "dnFJB", "dnFJS", "RED", "WRED", "WISH", "SRAF", "ROLL",
+    "daFJB", "caFJB", "daFJS", "caFJS", "ALT", "cnFJB", "cnFJS",
     "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL",
     "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL", "INSRAF", "OUTSRAF",
-    "DHJB", "CHJB", "DHJS", "CHJS",
+    "daHJB", "caHJB", "daHJS", "caHJS", "dnHJB", "cnHJB", "dnHJS", "cnHJS",
 ];
 
 // Adjacent discordant jump subsets and combined rhythm totals are display-only.
 const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
-    "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dsb", "dss",
+    "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dnfjb", "dnfjs",
     "red", "wred", "wish", "sraf_reward", "roll_reward",
-    "dfjb", "cfjb", "dfjs", "cfjs", "alt_reward", "csb", "css",
+    "dafjb", "cafjb", "dafjs", "cafjs", "alt_reward", "cnfjb", "cnfjs",
     "travel", "vtravel", "ltravel", "sftravel",
     "in2", "out2", "in3", "out3", "inroll", "outroll", "insraf_reward", "outsraf_reward",
-    "dhjb", "chjb", "dhjs", "chjs",
+    "dahjb", "cahjb", "dahjs", "cahjs", "dnhjb", "cnhjb", "dnhjs", "cnhjs",
     "off_pinky", "off_ring", "off_middle", "off_index",
     "usage_pinky", "usage_ring", "usage_middle", "usage_index",
 ];
+
+fn weight_display_name(i: usize) -> &'static str {
+    if matches!(
+        i,
+        DAFJB | CAFJB | DAFJS | CAFJS | DNFJB | CNFJB | DNFJS | CNFJS
+            | DAHJB | CAHJB | DAHJS | CAHJS | DNHJB | CNHJB | DNHJS | CNHJS
+    ) {
+        METRIC_NAMES[i]
+    } else {
+        WEIGHT_NAMES[i]
+    }
+}
 
 const FINGER_NAMES: [&str; 10] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP", "LT", "RT"];
 
@@ -163,26 +183,26 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Different keys on the same finger with one intervening press.",
     "Same physical key twice in a row.",
     "Same physical key at both skipgram endpoints.",
-    "Adjacent-finger discordant two-row jump. Display subset of DFJB; not an extra penalty.",
-    "Adjacent-finger discordant one-row jump. Display subset of DHJB; not an extra penalty.",
-    "Adjacent-finger discordant two-row skipgram. Display subset of DFJS; not an extra penalty.",
-    "Adjacent-finger discordant one-row skipgram. Display subset of DHJS; not an extra penalty.",
+    "Adjacent-finger discordant two-row jump. Display-only alias of daFJB; not an extra penalty.",
+    "Adjacent-finger discordant one-row jump. Display-only alias of daHJB; not an extra penalty.",
+    "Adjacent-finger discordant two-row skipgram. Display-only alias of daFJS; not an extra penalty.",
+    "Adjacent-finger discordant one-row skipgram. Display-only alias of daHJS; not an extra penalty.",
     "Same hand, different fingers; horizontal span exceeds finger separation.",
     "Lateral-stretch rule applied to skipgram endpoints.",
-    "Discordant two-row change between non-adjacent fingers. Additional subset penalty of DFJB.",
-    "Discordant two-row skipgram between non-adjacent fingers. Additional subset penalty of DFJS.",
+    "Discordant two-row change between non-adjacent fingers, disjoint from daFJB.",
+    "Discordant two-row skipgram between non-adjacent fingers, disjoint from daFJS.",
     "Same-hand, no-thumb trigram whose finger direction reverses.",
     "Redirect with no index finger. Subset of RED, with an extra penalty.",
     "Redirect with an index and a ring/pinky. Subset of RED.",
     "Clean same-row adjacent-finger bigram. Display total of INSRAF + OUTSRAF; same hand, no thumbs, and no blocked movement.",
     "Display total of INROLL + OUTROLL. No repeated fingers. Thumb inclusion and movement filters follow [rolls] in akler.conf.",
-    "Discordant full jump bigram: same-hand fingers two rows apart, shorter above longer.",
-    "Concordant full jump bigram: same-hand fingers two rows apart, longer above shorter.",
-    "Discordant full jump skipgram; the same endpoint geometry as DFJB.",
-    "Concordant full jump skipgram; the same endpoint geometry as CFJB.",
+    "Discordant full jump bigram between adjacent fingers.",
+    "Concordant full jump bigram between adjacent fingers.",
+    "Discordant full jump skipgram between adjacent fingers.",
+    "Concordant full jump skipgram between adjacent fingers.",
     "Clean hand alternation: LRL or RLR. The returning AC pair must use different fingers without a scissor, stretch or two-row change. No thumbs.",
-    "Concordant two-row change between non-adjacent fingers. Additional subset penalty of CFJB.",
-    "Concordant two-row skipgram between non-adjacent fingers. Additional subset penalty of CFJS.",
+    "Concordant two-row change between non-adjacent fingers, disjoint from caFJB.",
+    "Concordant two-row skipgram between non-adjacent fingers, disjoint from caFJS.",
     "Main-finger distance from home, key units per 100 supported presses. Not a physical trajectory.",
     "Vertical distance from home, key units per 100 supported presses.",
     "Lateral distance from home, key units per 100 supported presses.",
@@ -195,10 +215,14 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "All outward rolls: OUT2 + OUT3. Percentage of eligible trigrams under [rolls]; independently rewarded.",
     "Clean inward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
     "Clean outward same-row adjacent-finger bigram. Subset of SRAF; independently rewarded.",
-    "Discordant half jump bigram: same-hand fingers, one row apart; includes adjacent and non-adjacent fingers.",
-    "Concordant half jump bigram: same-hand fingers, one row apart; includes adjacent and non-adjacent fingers.",
-    "Discordant half jump skipgram; same endpoint geometry as DHJB.",
-    "Concordant half jump skipgram; same endpoint geometry as CHJB.",
+    "Discordant one-row jump bigram between adjacent fingers.",
+    "Concordant one-row jump bigram between adjacent fingers.",
+    "Discordant one-row jump skipgram between adjacent fingers.",
+    "Concordant one-row jump skipgram between adjacent fingers.",
+    "Discordant one-row jump bigram between nonadjacent fingers.",
+    "Concordant one-row jump bigram between nonadjacent fingers.",
+    "Discordant one-row jump skipgram between nonadjacent fingers.",
+    "Concordant one-row jump skipgram between nonadjacent fingers.",
 ];
 
 fn physical_metric(m: usize) -> bool {
@@ -218,7 +242,7 @@ fn bit(m: usize) -> u128 {
 }
 
 fn is_skip(m: usize) -> bool {
-    matches!(m, SFS|SKS|FSS|HSS|LSS|DSS|DFJS|CFJS|CSS|DHJS|CHJS)
+    matches!(m, SFS|SKS|FSS|HSS|LSS|DNFJS|DAFJS|CAFJS|CNFJS|DAHJS|CAHJS|DNHJS|CNHJS)
 }
 
 fn is_rhythm(m: usize) -> bool {
@@ -517,9 +541,9 @@ struct PairFlags {
 
 // Local movement events veto SRAF and ALT credit, but not basic rolls.
 // Finger load is an aggregate penalty, not a local movement veto.
-const BAD_BI: u128 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DFJB)|(1<<CFJB)|(1<<HSB)|(1<<DHJB)|(1<<CHJB)|(1<<LSB)|(1<<DSB)|(1<<CSB);
+const BAD_BI: u128 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DAFJB)|(1<<CAFJB)|(1<<HSB)|(1<<DAHJB)|(1<<CAHJB)|(1<<LSB)|(1<<DNFJB)|(1<<CNFJB)|(1<<DNHJB)|(1<<CNHJB);
 
-const BAD_SK: u128 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DFJS)|(1<<CFJS)|(1<<HSS)|(1<<DHJS)|(1<<CHJS)|(1<<LSS)|(1<<DSS)|(1<<CSS);
+const BAD_SK: u128 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DAFJS)|(1<<CAFJS)|(1<<HSS)|(1<<DAHJS)|(1<<CAHJS)|(1<<LSS)|(1<<DNFJS)|(1<<CNFJS)|(1<<DNHJS)|(1<<CNHJS);
 
 const BAD_TRI: u128 = (1<<REDIR)|(1<<WRED)|(1<<WISH);
 
@@ -548,21 +572,29 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         },
     }
     match ((a.row - b.row).abs(), row_motion(a, b)) {
-        (2, RowMotion::Discordant) => {
-            f.bi|=bit(DFJB);
-            f.sk|=bit(DFJS);
+        (2, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi|=bit(DAFJB);
+            f.sk|=bit(DAFJS);
         },
-        (2, RowMotion::Concordant) => {
-            f.bi|=bit(CFJB);
-            f.sk|=bit(CFJS);
+        (2, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi|=bit(CAFJB);
+            f.sk|=bit(CAFJS);
+        },
+        (1, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi|=bit(DAHJB);
+            f.sk|=bit(DAHJS);
+        },
+        (1, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi|=bit(CAHJB);
+            f.sk|=bit(CAHJS);
         },
         (1, RowMotion::Discordant) => {
-            f.bi|=bit(DHJB);
-            f.sk|=bit(DHJS);
+            f.bi|=bit(DNHJB);
+            f.sk|=bit(DNHJS);
         },
         (1, RowMotion::Concordant) => {
-            f.bi|=bit(CHJB);
-            f.sk|=bit(CHJS);
+            f.bi|=bit(CNHJB);
+            f.sk|=bit(CNHJS);
         },
         _ => {},
     }
@@ -571,12 +603,12 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         f.sk|=bit(LSS);
     }
     if is_diagonal_stretch(a, b) {
-        f.bi|=bit(DSB);
-        f.sk|=bit(DSS);
+        f.bi|=bit(DNFJB);
+        f.sk|=bit(DNFJS);
     }
     if is_concordant_jump(a, b) {
-        f.bi|=bit(CSB);
-        f.sk|=bit(CSS);
+        f.bi|=bit(CNFJB);
+        f.sk|=bit(CNFJS);
     }
     if same_hand(a, b) && a.finger != b.finger {
         match (a.row - b.row).abs() {
@@ -1853,7 +1885,7 @@ impl Default for Weights {
                 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15,
                 0.02, 0.0, 0.0, 0.10,
                 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25,
-                1.0, 0.5, 0.4, 0.2,
+                1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2,
                 0.60, 0.20, 0.05, 0.0,
                 0.06, 0.02, 0.005, 0.0,
             ])
@@ -1936,10 +1968,26 @@ fn config_lines(text: &str) -> AppResult<Vec<(String, String)>> {
 
 fn canonical_weight_key(key: &str) -> &str {
     match key {
-        "dfsb" => "dfjb",
-        "cfsb" => "cfjb",
-        "dfss" => "dfjs",
-        "cfss" => "cfjs",
+        "dfsb" => "dafjb",
+        "cfsb" => "cafjb",
+        "dfss" => "dafjs",
+        "cfss" => "cafjs",
+        "dfjb" => "dafjb",
+        "cfjb" => "cafjb",
+        "dfjs" => "dafjs",
+        "cfjs" => "cafjs",
+        "dfab" => "dafjb",
+        "cfab" => "cafjb",
+        "dfas" => "dafjs",
+        "cfas" => "cafjs",
+        "dsb" => "dnfjb",
+        "dss" => "dnfjs",
+        "csb" => "cnfjb",
+        "css" => "cnfjs",
+        "dfnb" => "dnfjb",
+        "dfns" => "dnfjs",
+        "cfnb" => "cnfjb",
+        "cfns" => "cnfjs",
         _ => key,
     }
 }
@@ -1948,6 +1996,10 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
     let entries: BTreeMap<String, String> = config_lines(text)?.into_iter().collect();
     let mut w = Weights::default();
     for (k, v) in &entries {
+        if matches!(k.as_str(), "dhjb" | "chjb" | "dhjs" | "chjs") {
+            finite_nonnegative(v)?;
+            continue;
+        }
         let name = canonical_weight_key(k);
         let i = WEIGHT_NAMES.iter().position(|s|*s == name).ok_or_else(|| format!("unknown weight {k}"))?;
         let value = finite_nonnegative(v)?;
@@ -1957,7 +2009,7 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
     }
     // Legacy aggregate keys seed directional jump weights. Explicit direction
     // keys win regardless of line order; display subsets are never weighted.
-    for (legacy, d, c) in [("fsb", DFJB, CFJB),("fss", DFJS, CFJS)] {
+    for (legacy, d, c) in [("fsb", DAFJB, CAFJB),("fss", DAFJS, CAFJS)] {
         if let Some(v) = entries.get(legacy) {
             let value = finite_nonnegative(v)?;
             if !entries.keys().any(|key| canonical_weight_key(key) == WEIGHT_NAMES[d]) {
@@ -1968,14 +2020,38 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
             }
         }
     }
-    for (legacy, d, c) in [("hsb", DHJB, CHJB), ("hss", DHJS, CHJS)] {
+    // A saved broad half-jump weight applies to both finger distances.
+    for (legacy, adjacent, nonadjacent) in [
+        ("dhjb", DAHJB, DNHJB),
+        ("chjb", CAHJB, CNHJB),
+        ("dhjs", DAHJS, DNHJS),
+        ("chjs", CAHJS, CNHJS),
+    ] {
         if let Some(v) = entries.get(legacy) {
             let value = finite_nonnegative(v)?;
-            if !entries.contains_key(WEIGHT_NAMES[d]) {
-                w.0[d] = value;
+            for metric in [adjacent, nonadjacent] {
+                if !entries.contains_key(WEIGHT_NAMES[metric]) {
+                    w.0[metric] = value;
+                }
             }
-            if !entries.contains_key(WEIGHT_NAMES[c]) {
-                w.0[c] = value * 0.5;
+        }
+    }
+    // The old HSB/HSS settings seeded broad directional half-jump weights.
+    for (legacy, d_adj, d_nonadj, c_adj, c_nonadj, old_d, old_c) in [
+        ("hsb", DAHJB, DNHJB, CAHJB, CNHJB, "dhjb", "chjb"),
+        ("hss", DAHJS, DNHJS, CAHJS, CNHJS, "dhjs", "chjs"),
+    ] {
+        if let Some(v) = entries.get(legacy) {
+            let value = finite_nonnegative(v)?;
+            for metric in [d_adj, d_nonadj] {
+                if !entries.contains_key(WEIGHT_NAMES[metric]) && !entries.contains_key(old_d) {
+                    w.0[metric] = value;
+                }
+            }
+            for metric in [c_adj, c_nonadj] {
+                if !entries.contains_key(WEIGHT_NAMES[metric]) && !entries.contains_key(old_c) {
+                    w.0[metric] = value * 0.5;
+                }
             }
         }
     }
@@ -2009,10 +2085,10 @@ fn load_weights(path: &Path) -> AppResult<Weights> {
 }
 
 fn weights_text(w: &Weights) -> String {
-    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS/HSB/HSS display adjacent discordant subsets. DSB/CSB are extra non-adjacent jump penalties.\n");
+    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS and HSB/HSS duplicate adjacent discordant jumps. A and N jump weights score disjoint finger distances.\n");
     for i in 0..N_WEIGHTS {
         if !aggregate(i) {
-            s.push_str(&format!("{} = {}\n", WEIGHT_NAMES[i], w.0[i]));
+            s.push_str(&format!("{} = {}\n", weight_display_name(i), w.0[i]));
         }
     }
     s
@@ -2057,7 +2133,7 @@ fn contribution_mass(m: usize, raw: &Raw, view: CreditView) -> f64 {
 fn blocker_names(bits: u128) -> String {
     let mut names = Vec::new();
     // Show directional jumps instead of repeating their adjacent display subsets.
-    for m in [SFB, SFS, SKB, SKS, DFJB, CFJB, DFJS, CFJS, DHJB, CHJB, DHJS, CHJS, LSB, LSS, DSB, DSS, CSB, CSS, REDIR, WRED, WISH] {
+    for m in [SFB, SFS, SKB, SKS, DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, LSB, LSS, DNFJB, DNFJS, CNFJB, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, REDIR, WRED, WISH] {
         if bits&bit(m) != 0 {
             names.push(METRIC_NAMES[m]);
         }

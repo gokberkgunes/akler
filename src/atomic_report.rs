@@ -755,7 +755,7 @@ mod tests {
         let outward = stats(Population::Bigrams, vec![1, 0]);
         assert!(outward.contains(&"SRAF") && outward.contains(&"OUTSRAF"));
         for (slots, adjacent_discordant, directional) in
-            [(vec![0, 21], true, "DFJB"), (vec![1, 20], false, "CFJB")]
+            [(vec![0, 21], true, "daFJB"), (vec![1, 20], false, "caFJB")]
         {
             let names = stats(Population::Bigrams, slots.clone());
             assert!(
@@ -764,12 +764,19 @@ mod tests {
             );
             let names = stats(Population::Skip1, slots);
             assert_eq!(names.contains(&"FSS"), adjacent_discordant);
-            assert!(names.contains(&if directional == "DFJB" {
-                "DFJS"
+            assert!(names.contains(&if directional == "daFJB" {
+                "daFJS"
             } else {
-                "CFJS"
+                "caFJS"
             }));
         }
+        let adjacent_half = stats(Population::Bigrams, vec![0, 11]);
+        assert!(adjacent_half.contains(&"daHJB") && adjacent_half.contains(&"HSB"));
+        assert!(!adjacent_half.contains(&"dnHJB"));
+        let nonadjacent_half = stats(Population::Bigrams, vec![0, 12]);
+        assert!(nonadjacent_half.contains(&"dnHJB"));
+        assert!(!nonadjacent_half.contains(&"daHJB"));
+        assert!(stats(Population::Skip1, vec![0, 12]).contains(&"dnHJS"));
         assert!(stats(Population::Skip1, vec![0, 10]).contains(&"SFS"));
         assert!(stats(Population::Skip1, vec![0, 0]).contains(&"SKS"));
         let weak = stats(Population::Trigrams, vec![0, 2, 1]);
@@ -778,7 +785,7 @@ mod tests {
         assert!(wish.contains(&"RED") && wish.contains(&"WISH"), "{wish:?}");
         let text = render_text(&report_for(Population::Bigrams, vec![0, 21]));
         assert!(text.contains("% | Stats"));
-        assert!(text.contains("FSB") && text.contains("DFJB"));
+        assert!(text.contains("FSB") && text.contains("daFJB"));
         let top_to_bottom = report_for(Population::Bigrams, vec![0, 21]);
         let (_, lines) = table_lines(&top_to_bottom);
         assert_eq!(lines[0].split(" | ").nth(2).unwrap().trim(), "1 → 3");

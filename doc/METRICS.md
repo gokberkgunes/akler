@@ -16,9 +16,11 @@ See [corpus behavior](USAGE.md#corpora) for the distinction between evaluators.
 
 ## Pair metrics
 
-`B` denotes consecutive presses; `S` denotes skipgram endpoints. In jump names,
-`F` and `H` mean a full (two-row) or half (one-row) jump. D/C means
-discordant/concordant geometry, not the temporal direction of typing.
+In jump names, the lowercase prefix uses `d`/`c` for discordant/concordant
+geometry and `a`/`n` for adjacent/nonadjacent fingers. The uppercase suffix
+uses `F`/`H` for a full (two-row)/half (one-row) jump, `J` for jump, and `B`/`S`
+for bigram/skipgram. Discordant/concordant describes geometry, not typing
+direction. Config keys accept either case.
 Discordant means the shorter finger is on the higher row; concordant means the
 longer finger is on the higher row. The model's finger-length ordering is
 pinky < ring < index < middle; this is a modeling choice.
@@ -29,15 +31,17 @@ pinky < ring < index < middle; this is a modeling choice.
 | SKB | Same physical key twice in a row. | `skb` | 0 |
 | SFS | Different keys on the same finger at the skipgram endpoints. | `sfs` | 1.5 |
 | SKS | Same physical key at both skipgram endpoints. | `sks` | 0 |
-| FSB / FSS | Adjacent-finger, discordant two-row jumps. Kept as the familiar scissors subset. | Display only; old `fsb` / `fss` migrate | — |
-| HSB / HSS | Adjacent-finger, discordant one-row jumps. Kept as the familiar scissors subset. | Display only; old `hsb` / `hss` migrate | — |
-| DFJB / DFJS | All discordant two-row jumps, including adjacent and non-adjacent fingers. | `dfjb` / `dfjs` | 4 / 1.5 |
-| CFJB / CFJS | All concordant two-row jumps, including adjacent and non-adjacent fingers. | `cfjb` / `cfjs` | 2 / 0.75 |
-| DHJB / DHJS | All discordant one-row jumps, including adjacent and non-adjacent fingers. | `dhjb` / `dhjs` | 1 / 0.4 |
-| CHJB / CHJS | All concordant one-row jumps, including adjacent and non-adjacent fingers. | `chjb` / `chjs` | 0.5 / 0.2 |
+| FSB / FSS | Adjacent-finger, discordant two-row jumps. Display-only aliases of daFJB / daFJS. | Display only; old `fsb` / `fss` migrate | — |
+| HSB / HSS | Adjacent-finger, discordant one-row jumps. Display-only aliases of daHJB / daHJS. | Display only; old `hsb` / `hss` migrate | — |
+| daFJB / daFJS | Discordant two-row jumps between adjacent fingers. | `daFJB` / `daFJS` | 4 / 1.5 |
+| caFJB / caFJS | Concordant two-row jumps between adjacent fingers. | `caFJB` / `caFJS` | 2 / 0.75 |
+| daHJB / daHJS | Discordant one-row jumps between adjacent fingers. | `daHJB` / `daHJS` | 1 / 0.4 |
+| caHJB / caHJS | Concordant one-row jumps between adjacent fingers. | `caHJB` / `caHJS` | 0.5 / 0.2 |
+| dnHJB / dnHJS | Discordant one-row jumps between nonadjacent fingers. | `dnHJB` / `dnHJS` | 1 / 0.4 |
+| cnHJB / cnHJS | Concordant one-row jumps between nonadjacent fingers. | `cnHJB` / `cnHJS` | 0.5 / 0.2 |
 | LSB / LSS | Lateral stretch: same hand, different fingers; horizontal span is at least finger-rank separation + 1 key unit. | `lsb` / `lss` | 3 / 0.75 |
-| DSB / DSS | Non-adjacent subset of DFJB/DFJS. Its weight is an additional penalty. | `dsb` / `dss` | 1 / 0.25 |
-| CSB / CSS | Non-adjacent subset of CFJB/CFJS. Its weight is an additional penalty. | `csb` / `css` | 0.5 / 0.15 |
+| dnFJB / dnFJS | Discordant two-row jumps between nonadjacent fingers. | `dnFJB` / `dnFJS` | 1 / 0.25 |
+| cnFJB / cnFJS | Concordant two-row jumps between nonadjacent fingers. | `cnFJB` / `cnFJS` | 0.5 / 0.15 |
 
 Jump categories require different fingers on the same hand. Jump, scissors,
 stretch, and row-change categories exclude thumbs. SFB/SFS use physical
@@ -49,17 +53,23 @@ rows. Numeric horizontal row offsets and vertical column offsets do not change
 those row categories. Lateral stretch uses physical horizontal coordinates;
 travel uses physical coordinates on both axes, in key units.
 
-**Do not sum every displayed column.** FSB/FSS and HSB/HSS are adjacent,
-discordant subsets of their corresponding D/C jump metrics. DSB/DSS and
-CSB/CSS are non-adjacent subsets. A nonzero subset weight is intentionally
-added to the broad jump penalty. Lateral stretch may overlap a jump.
+**Do not sum every displayed column.** FSB/FSS duplicate daFJB/daFJS, and
+HSB/HSS duplicate daHJB/daHJS. Adjacent and nonadjacent jump categories are
+disjoint and each has its own weight. Lateral stretch may overlap a jump.
 Different metrics also use different denominators.
 
-Old `dfsb`, `cfsb`, `dfss`, and `cfss` weight keys are accepted as aliases
-for the corresponding full-jump keys. Old `fsb`/`fss` values seed the
+Old `dfab`, `cfab`, `dfas`, `cfas`, `dfjb`, `cfjb`, `dfjs`, `cfjs`,
+`dfsb`, `cfsb`, `dfss`, and `cfss` weight keys are accepted as aliases for
+the corresponding adjacent full-jump keys. Old `fsb`/`fss` values seed the
 discordant and concordant full-jump weights using the previous migration rule;
 old `hsb`/`hss` values seed discordant half jumps and half-sized concordant
-half jumps. Explicit new jump keys take precedence.
+half jumps across both finger distances. Old `dhjb`, `chjb`, `dhjs`, and `chjs` values
+seed both adjacent and nonadjacent versions of their half-jump metric. Old
+`dsb`, `dss`, `csb`, `css`, `dfnb`, `dfns`, `cfnb`, and
+`cfns` keys map to the nonadjacent full-jump weights. Explicit new jump keys
+take precedence.
+Old ranker columns `DHJB`, `CHJB`, `DHJS`, and `CHJS` show both corresponding
+adjacent and nonadjacent columns.
 
 ## Triple metrics and preferences
 

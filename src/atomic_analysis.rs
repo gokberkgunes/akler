@@ -4,7 +4,7 @@
 use crate::action_keys;
 use crate::atomic_metrics::{Finger, Hand, PairClassifications, PairGeometry, PhysicalKey};
 use crate::{
-    bit, display_symbol, pair_flags, tri_flags_with_settings, Board, Key, RollSettings, DSB, FSB,
+    bit, display_symbol, pair_flags, tri_flags_with_settings, Board, Key, RollSettings, DNFJB, FSB,
     HSB, LSB,
 };
 
@@ -103,15 +103,15 @@ fn adapt(keys: &[Key], labels: impl IntoIterator<Item = String>) -> Result<Atomi
             let flags = pair_flags(a, b, from == to).bi;
             // The existing pair flags are the source of truth. HSB is its
             // adjacent discordant half jump; FSB is the two-row counterpart.
-            // LSB and DSB are respectively its lateral and discordant
-            // diagonal stretch flags. No threshold is reproduced here.
+            // LSB supplies lateral stretch. DNFJB preserves the existing
+            // diagonal-stretch geometry for Atomic. No threshold is copied here.
             pairs.insert(
                 physical[from].slot_id,
                 physical[to].slot_id,
                 PairGeometry {
                     scissor: Some(flags & (bit(HSB) | bit(FSB)) != 0),
                     lateral_stretch: Some(flags & bit(LSB) != 0),
-                    diagonal_stretch: Some(flags & bit(DSB) != 0),
+                    diagonal_stretch: Some(flags & bit(DNFJB) != 0),
                 },
             );
         }

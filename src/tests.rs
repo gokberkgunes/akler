@@ -280,10 +280,30 @@ fn jump_categories_and_adjacent_discordant_subsets() {
             let row_gap = (a.row - b.row).abs();
             let motion = row_motion(a, b);
             for (metric, expected) in [
-                (DFJB, row_gap == 2 && motion == RowMotion::Discordant),
-                (CFJB, row_gap == 2 && motion == RowMotion::Concordant),
-                (DHJB, row_gap == 1 && motion == RowMotion::Discordant),
-                (CHJB, row_gap == 1 && motion == RowMotion::Concordant),
+                (
+                    DAFJB,
+                    adjacent && row_gap == 2 && motion == RowMotion::Discordant,
+                ),
+                (
+                    CAFJB,
+                    adjacent && row_gap == 2 && motion == RowMotion::Concordant,
+                ),
+                (
+                    DAHJB,
+                    adjacent && row_gap == 1 && motion == RowMotion::Discordant,
+                ),
+                (
+                    CAHJB,
+                    adjacent && row_gap == 1 && motion == RowMotion::Concordant,
+                ),
+                (
+                    DNHJB,
+                    !adjacent && row_gap == 1 && motion == RowMotion::Discordant,
+                ),
+                (
+                    CNHJB,
+                    !adjacent && row_gap == 1 && motion == RowMotion::Concordant,
+                ),
                 (
                     FSB,
                     adjacent && row_gap == 2 && motion == RowMotion::Discordant,
@@ -293,25 +313,27 @@ fn jump_categories_and_adjacent_discordant_subsets() {
                     adjacent && row_gap == 1 && motion == RowMotion::Discordant,
                 ),
                 (
-                    DSB,
+                    DNFJB,
                     !adjacent && row_gap == 2 && motion == RowMotion::Discordant,
                 ),
                 (
-                    CSB,
+                    CNFJB,
                     !adjacent && row_gap == 2 && motion == RowMotion::Concordant,
                 ),
             ] {
                 assert_eq!(f.bi & bit(metric) != 0, expected, "{metric}: {i} -> {j}");
             }
             for (bigram, skipgram) in [
-                (DFJB, DFJS),
-                (CFJB, CFJS),
-                (DHJB, DHJS),
-                (CHJB, CHJS),
+                (DAFJB, DAFJS),
+                (CAFJB, CAFJS),
+                (DAHJB, DAHJS),
+                (CAHJB, CAHJS),
                 (FSB, FSS),
                 (HSB, HSS),
-                (DSB, DSS),
-                (CSB, CSS),
+                (DNFJB, DNFJS),
+                (CNFJB, CNFJS),
+                (DNHJB, DNHJS),
+                (CNHJB, CNHJS),
             ] {
                 assert_eq!(f.bi & bit(bigram) != 0, f.sk & bit(skipgram) != 0);
             }
@@ -329,22 +351,83 @@ fn jump_categories_and_adjacent_discordant_subsets() {
 }
 
 #[test]
+fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
+    let mut raw = Raw::default();
+    for (adjacent, nonadjacent, adjacent_count, nonadjacent_count) in [
+        (DAFJB, DNFJB, 2.0, 1.0),
+        (CAFJB, CNFJB, 2.0, 2.0),
+        (DAFJS, DNFJS, 2.0, 3.0),
+        (CAFJS, CNFJS, 2.0, 4.0),
+    ] {
+        raw.0[adjacent] = adjacent_count;
+        raw.0[nonadjacent] = nonadjacent_count;
+    }
+    let metrics = metrics_totals(&raw, &[100.0, 10.0, 10.0, 0.0]);
+    let mut weights = Weights::new([0.0; N_WEIGHTS]);
+    for (broad, subset, broad_weight, subset_weight) in [
+        (DAFJB, DNFJB, 4.0, 2.0),
+        (CAFJB, CNFJB, 3.0, 1.0),
+        (DAFJS, DNFJS, 5.0, 2.0),
+        (CAFJS, CNFJS, 4.0, 1.0),
+    ] {
+        weights.0[broad] = broad_weight;
+        weights.0[subset] = subset_weight;
+    }
+    let score = breakdown(&metrics, &weights);
+    for (metric, expected) in [
+        (DAFJB, 80.0),
+        (DNFJB, 20.0),
+        (CAFJB, 60.0),
+        (CNFJB, 20.0),
+        (DAFJS, 100.0),
+        (DNFJS, 60.0),
+        (CAFJS, 80.0),
+        (CNFJS, 40.0),
+    ] {
+        close(score.contributions[metric], expected);
+    }
+
+    let layout = action_keys::Layout::parse(PACKET, Path::new("inline.dat")).unwrap();
+    let keys = action_ui::physical_keys(&layout);
+    let adjacent = (0..keys.len())
+        .flat_map(|a| (0..keys.len()).map(move |b| (a, b)))
+        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DAFJB) != 0)
+        .unwrap();
+    let nonadjacent = (0..keys.len())
+        .flat_map(|a| (0..keys.len()).map(move |b| (a, b)))
+        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DNFJB) != 0)
+        .unwrap();
+    let effort = action_ui::LocalEffort::new(&layout, &weights);
+    let neutral = action_ui::LocalEffort::new(&layout, &Weights::new([0.0; N_WEIGHTS]));
+    for ((a, b), bigram, skipgram) in [(adjacent, 4.0, 5.0), (nonadjacent, 2.0, 2.0)] {
+        close(
+            effort.get(None, Some(a), b) - neutral.get(None, Some(a), b),
+            bigram,
+        );
+        close(
+            effort.get(Some(a), None, b) - neutral.get(Some(a), None, b),
+            skipgram,
+        );
+    }
+}
+
+#[test]
 fn concordant_jumps_and_nonadjacent_subsets() {
     let ld = pair_flags(key(0, 2), key(2, 1), false);
-    assert_ne!(ld.bi & bit(CFJB), 0);
+    assert_ne!(ld.bi & bit(CAFJB), 0);
     assert_eq!(ld.bi & bit(FSB), 0);
-    assert_eq!(ld.bi & bit(CSB), 0);
+    assert_eq!(ld.bi & bit(CNFJB), 0);
     let up = pair_flags(key(0, 8), key(2, 7), false);
-    assert_ne!(up.bi & bit(DFJB), 0);
+    assert_ne!(up.bi & bit(DAFJB), 0);
     assert_ne!(up.bi & bit(FSB), 0);
-    assert_eq!(up.bi & bit(DSB), 0);
+    assert_eq!(up.bi & bit(DNFJB), 0);
     assert!(is_lateral_stretch(key(1, 4), key(2, 0)));
     // inner index to pinky
     assert!(!is_lateral_stretch(key(1, 3), key(2, 0)));
     assert_eq!(scissor_kind(key(0, 2), key(1, 3)), 0);
-    // A concordant one-row jump is CHJB but not the discordant HSB subset.
+    // A concordant one-row jump is CAHJB but not the discordant HSB subset.
     assert!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(ROW1_BI) != 0);
-    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CHJB), 0);
+    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CAHJB), 0);
     assert_eq!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(HSB), 0);
 }
 
@@ -896,14 +979,41 @@ fn relative_guardrails_in_all_design_modes() {
 #[test]
 fn config_round_trips_and_presets() {
     let weights = weights_from_text("sfb = 17\nfsb = 6\ntravel = 0.05\n").unwrap();
-    assert_eq!(weights.0[DFJB], 6.0);
-    assert_eq!(weights.0[CFJB], 3.0);
+    assert_eq!(weights.0[DAFJB], 6.0);
+    assert_eq!(weights.0[CAFJB], 3.0);
     assert_eq!(weights.0[FSB], 0.0);
-    let migrated = weights_from_text("dfsb = 7\ndfjb = 8\nhsb = 3\nchjb = 4\n").unwrap();
-    assert_eq!(migrated.0[DFJB], 8.0);
-    assert_eq!(migrated.0[DHJB], 3.0);
-    assert_eq!(migrated.0[CHJB], 4.0);
+    let migrated =
+        weights_from_text("dfsb = 7\ndfjb = 8\ndfab = 9\ndafjb = 10\nhsb = 3\nchjb = 4\n").unwrap();
+    assert_eq!(migrated.0[DAFJB], 10.0);
+    assert_eq!(weights_from_text("dfjb = 8\n").unwrap().0[DAFJB], 8.0);
+    assert_eq!(weights_from_text("dfab = 9\n").unwrap().0[DAFJB], 9.0);
+    assert_eq!(migrated.0[DAHJB], 3.0);
+    assert_eq!(migrated.0[DNHJB], 3.0);
+    assert_eq!(migrated.0[CAHJB], 4.0);
+    assert_eq!(migrated.0[CNHJB], 4.0);
     assert_eq!(migrated.0[HSB], 0.0);
+    let seeded = weights_from_text("hsb = 3\nhss = 2\n").unwrap();
+    for (adjacent, nonadjacent, expected) in [
+        (DAHJB, DNHJB, 3.0),
+        (CAHJB, CNHJB, 1.5),
+        (DAHJS, DNHJS, 2.0),
+        (CAHJS, CNHJS, 1.0),
+    ] {
+        assert_eq!(seeded.0[adjacent], expected);
+        assert_eq!(seeded.0[nonadjacent], expected);
+    }
+    let half = weights_from_text("dhjb = 3\ndahjb = 4\nchjs = 2\ncnhjs = 1\n").unwrap();
+    assert_eq!(half.0[DAHJB], 4.0);
+    assert_eq!(half.0[DNHJB], 3.0);
+    assert_eq!(half.0[CAHJS], 2.0);
+    assert_eq!(half.0[CNHJS], 1.0);
+    let nonadjacent =
+        weights_from_text("dsb = 7\ndnfjb = 9\ndfnb = 8\ndss = 6\ncsb = 5\ncss = 4\n").unwrap();
+    assert_eq!(nonadjacent.0[DNFJB], 9.0);
+    assert_eq!(nonadjacent.0[DNFJS], 6.0);
+    assert_eq!(nonadjacent.0[CNFJB], 5.0);
+    assert_eq!(nonadjacent.0[CNFJS], 4.0);
+    assert!(weights_text(&nonadjacent).contains("dnFJB = 9"));
     let w = weights_from_text(&weights_text(&weights)).unwrap();
     assert_eq!(w.0, weights.0);
     let mut s = SearchSettings::default();
@@ -1095,7 +1205,7 @@ fn metric_grid_has_room_for_values_and_deltas() {
         .hits
         .iter()
         .any(|(_, action)| matches!(action, Action::Metric(_))));
-    for label in ["SRAF", "ROLL", "DFJB", "CFJB", "DHJB", "CHJB"] {
+    for label in ["SRAF", "ROLL", "daFJB", "caFJB", "daHJB", "caHJB"] {
         assert!(editor_text.contains(label));
     }
     for label in ["INSRAF", "OUTSRAF", "INROLL", "OUTROLL", "IN2", "OUT2"] {

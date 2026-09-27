@@ -859,15 +859,17 @@ fn config_number(value: f64) -> String {
 
 static OPT_GROUP_SAME: [usize; 4] = [SFB, SKB, SFS, SKS];
 
-static OPT_GROUP_FULL: [usize; 4] = [DFJB, CFJB, DFJS, CFJS];
+static OPT_GROUP_FULL: [usize; 4] = [DAFJB, CAFJB, DAFJS, CAFJS];
 
-static OPT_GROUP_HALF: [usize; 4] = [DHJB, CHJB, DHJS, CHJS];
+static OPT_GROUP_HALF: [usize; 4] = [DAHJB, CAHJB, DAHJS, CAHJS];
+
+static OPT_GROUP_HALF_NONADJ: [usize; 4] = [DNHJB, CNHJB, DNHJS, CNHJS];
 
 static OPT_GROUP_ADJACENT: [usize; 4] = [FSB, FSS, HSB, HSS];
 
 static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 
-static OPT_GROUP_ROW: [usize; 4] = [DSB, CSB, DSS, CSS];
+static OPT_GROUP_NONADJ: [usize; 4] = [DNFJB, CNFJB, DNFJS, CNFJS];
 
 static OPT_GROUP_RHYTHM: [usize; 3] = [REDIR, WRED, WISH];
 
@@ -881,13 +883,14 @@ static OPT_GROUP_ROLL_TYPES: [usize; 4] = [IN2, OUT2, IN3, OUT3];
 
 static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
-static OPT_METRIC_GROUPS: [(&str, &[usize]); 12] = [
+static OPT_METRIC_GROUPS: [(&str, &[usize]); 13] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Full jumps", &OPT_GROUP_FULL),
-    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent full", &OPT_GROUP_FULL),
+    ("Adjacent half", &OPT_GROUP_HALF),
+    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
     ("Adjacent D", &OPT_GROUP_ADJACENT),
     ("Stretch", &OPT_GROUP_STRETCH),
-    ("Other 2-row", &OPT_GROUP_ROW),
+    ("Nonadj. full", &OPT_GROUP_NONADJ),
     ("Rhythm", &OPT_GROUP_RHYTHM),
     ("Preferences", &OPT_GROUP_PREF),
     ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
@@ -896,13 +899,14 @@ static OPT_METRIC_GROUPS: [(&str, &[usize]); 12] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-static TABLE_GROUPS: [(&str, &[usize]); 12] = [
+static TABLE_GROUPS: [(&str, &[usize]); 13] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Full jumps", &OPT_GROUP_FULL),
-    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent full", &OPT_GROUP_FULL),
+    ("Adjacent half", &OPT_GROUP_HALF),
+    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
     ("Adjacent D", &OPT_GROUP_ADJACENT),
     ("Stretch", &OPT_GROUP_STRETCH),
-    ("Other 2-row", &OPT_GROUP_ROW),
+    ("Nonadj. full", &OPT_GROUP_NONADJ),
     ("Rhythm", &OPT_GROUP_RHYTHM),
     ("Preferences", &OPT_GROUP_PREF),
     ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
@@ -913,13 +917,14 @@ static TABLE_GROUPS: [(&str, &[usize]); 12] = [
 
 // Editors favor a compact overview. Directional SRAF and roll totals remain
 // available in the detailed reports and optimizer views.
-static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 9] = [
+static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 10] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Full jumps", &OPT_GROUP_FULL),
-    ("Half jumps", &OPT_GROUP_HALF),
+    ("Adjacent full", &OPT_GROUP_FULL),
+    ("Adjacent half", &OPT_GROUP_HALF),
+    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
     ("Adjacent D", &OPT_GROUP_ADJACENT),
     ("Stretch", &OPT_GROUP_STRETCH),
-    ("Other 2-row", &OPT_GROUP_ROW),
+    ("Nonadj. full", &OPT_GROUP_NONADJ),
     ("Rhythm", &OPT_GROUP_RHYTHM),
     ("Preferences", &OPT_GROUP_PREF),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
@@ -1089,10 +1094,10 @@ fn grouped_weight_rows(c: &mut Canvas, mut y: usize, w: &Weights) -> usize {
     y += 1;
     let groups: [(&str, &[usize]); 10] = [
         ("Same finger", &OPT_GROUP_SAME),
-        ("Full jumps", &OPT_GROUP_FULL),
+        ("Adjacent full", &OPT_GROUP_FULL),
         ("Half jumps", &OPT_GROUP_HALF),
         ("Stretch", &OPT_GROUP_STRETCH),
-        ("Other 2-row", &OPT_GROUP_ROW),
+        ("Nonadj. full", &OPT_GROUP_NONADJ),
         ("Rhythm", &OPT_GROUP_RHYTHM),
         ("Preferences", &OPT_GROUP_PREF),
         ("Travel", &OPT_GROUP_TRAVEL),
@@ -1730,7 +1735,7 @@ fn objective_view(
         }
         lines.push(format!(
                 "{:<16} {:8.3}  {:11.4}  {:11.4}  {:11.4}",
-                WEIGHT_NAMES[i],
+                weight_display_name(i),
                 w.0[i],
                 b.contributions[i],
                 a.contributions[i],
@@ -1744,7 +1749,7 @@ fn objective_view(
             format!("Net objective     {:.4} → {:.4}", b.net, a.net),
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
-            "FSB/FSS/HSB/HSS are display subsets. Nonadjacent DSB/CSB penalties add to broad jumps; lateral stretch stays independent.".into(),
+            "FSB/FSS duplicate daFJB/daFJS; HSB/HSS duplicate daHJB/daHJS. Adjacent and nonadjacent jump weights score disjoint finger distances. Lateral stretch stays independent.".into(),
             "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
     info_page(term, "Objective audit — selected corpus", &lines)
@@ -1777,7 +1782,7 @@ fn problem_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
         }
         lines.push(format!(
                 "{:<16} {:11.4}   {:11.4}   {:11.4}",
-                WEIGHT_NAMES[i],
+                weight_display_name(i),
                 old[i],
                 new[i],
                 new[i]-old[i]
@@ -1878,7 +1883,7 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     } else {
         "Extra penalty per percentage point of total use by this finger pair."
     };
-    if let Some(v) = input_box(term, &format!("Weight: {}", WEIGHT_NAMES[i]), hint, &format!("{}", w.0[i]))? {
+    if let Some(v) = input_box(term, &format!("Weight: {}", weight_display_name(i)), hint, &format!("{}", w.0[i]))? {
         w.0[i] = finite_nonnegative(&v)?;
     }
     Ok(())
@@ -2095,7 +2100,7 @@ fn metric_short_name(m: usize) -> &'static str {
 }
 
 const SIMPLE_METRIC_IDS: [usize; 9] = [
-    SFB, SFS, LSB, DSB, DSB, INSRAF, OUTSRAF, INROLL, OUTROLL,
+    SFB, SFS, LSB, DNFJB, DNFJB, INSRAF, OUTSRAF, INROLL, OUTROLL,
 ];
 
 fn simple_denominator(id: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {

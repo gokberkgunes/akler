@@ -11,7 +11,7 @@ const RANK_DATA: usize = 6;
 const RANK_ORDER: [usize; RANK_COUNT] = [
     RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB, LSS, REDIR, WRED, WISH, SRAF, INSRAF, OUTSRAF, ROLL,
     INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
-    DFJB, CFJB, DFJS, CFJS, DHJB, CHJB, DHJS, CHJS, ALT, DSB, CSB, DSS, CSS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
+    DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, ALT, DNFJB, CNFJB, DNFJS, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
 ];
 
 fn rank_name(m: usize) -> &'static str {
@@ -452,11 +452,39 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
     for line in text.lines() {
         let content = line.split('#').next().unwrap_or("");
         for name in content.split_whitespace() {
+            let old_half = match name.to_ascii_uppercase().as_str() {
+                "DHJB" => Some((DAHJB, DNHJB)),
+                "CHJB" => Some((CAHJB, CNHJB)),
+                "DHJS" => Some((DAHJS, DNHJS)),
+                "CHJS" => Some((CAHJS, CNHJS)),
+                _ => None,
+            };
+            if let Some((adjacent, nonadjacent)) = old_half {
+                hidden[adjacent] = false;
+                hidden[nonadjacent] = false;
+                continue;
+            }
             let canonical = match name.to_ascii_uppercase().as_str() {
-                "DFSB" => "DFJB",
-                "CFSB" => "CFJB",
-                "DFSS" => "DFJS",
-                "CFSS" => "CFJS",
+                "DFSB" => "DAFJB",
+                "CFSB" => "CAFJB",
+                "DFSS" => "DAFJS",
+                "CFSS" => "CAFJS",
+                "DFJB" => "DAFJB",
+                "CFJB" => "CAFJB",
+                "DFJS" => "DAFJS",
+                "CFJS" => "CAFJS",
+                "DFAB" => "DAFJB",
+                "CFAB" => "CAFJB",
+                "DFAS" => "DAFJS",
+                "CFAS" => "CAFJS",
+                "DSB" => "DNFJB",
+                "DSS" => "DNFJS",
+                "CSB" => "CNFJB",
+                "CSS" => "CNFJS",
+                "DFNB" => "DNFJB",
+                "DFNS" => "DNFJS",
+                "CFNB" => "CNFJB",
+                "CFNS" => "CNFJS",
                 _ => name,
             };
             let metric = RANK_ORDER.iter().copied()
@@ -1019,7 +1047,7 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
         });
     }
     let mut columns = RankColumns::new();
-    let wanted = [RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, DSB, CSB, SRAF, ROLL];
+    let wanted = [RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, DNFJB, CNFJB, SRAF, ROLL];
     for m in 0..RANK_COUNT {
         columns.hidden[m]=!wanted.contains(&m);
     }
@@ -1104,7 +1132,7 @@ mod ranker_tests {
         }
         assert!(!hidden[FSB]);
         assert!(!hidden[FSS]);
-        for metric in [DFJB, CFJB, DFJS, CFJS, DSB, CSB, DSS, CSS] {
+        for metric in [DAFJB, CAFJB, DAFJS, CAFJS, DNFJB, CNFJB, DNFJS, CNFJS] {
             assert!(hidden[metric]);
         }
         assert_eq!(parse_rank_columns(&rank_columns_text(&hidden)).unwrap(), hidden);
@@ -1113,7 +1141,27 @@ mod ranker_tests {
         assert_eq!(parse_rank_columns(&rank_columns_text(&all)).unwrap(), all);
         assert_eq!(
             parse_rank_columns("DFSB CFSS").unwrap(),
-            parse_rank_columns("DFJB CFJS").unwrap()
+            parse_rank_columns("DAFJB CAFJS").unwrap()
+        );
+        assert_eq!(
+            parse_rank_columns("DFJB CFJS").unwrap(),
+            parse_rank_columns("DAFJB CAFJS").unwrap()
+        );
+        assert_eq!(
+            parse_rank_columns("DFAB CFAS").unwrap(),
+            parse_rank_columns("DAFJB CAFJS").unwrap()
+        );
+        assert_eq!(
+            parse_rank_columns("DSB CSS").unwrap(),
+            parse_rank_columns("DNFJB CNFJS").unwrap()
+        );
+        assert_eq!(
+            parse_rank_columns("DFNB CFNS").unwrap(),
+            parse_rank_columns("DNFJB CNFJS").unwrap()
+        );
+        assert_eq!(
+            parse_rank_columns("DHJB CHJS").unwrap(),
+            parse_rank_columns("DAHJB DNHJB CAHJS CNHJS").unwrap()
         );
 
         let selected = parse_rank_columns("score sfb\n# note\nSFS COVERAGE").unwrap();
