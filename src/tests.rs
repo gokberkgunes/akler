@@ -81,16 +81,15 @@ fn ordinary_skips_keep_endpoints_across_an_unavailable_middle() {
         .grams
         .iter()
         .any(|g| g.kind == 1 && gram_name(g, &model.canonical) == "aq"));
-}
 
-#[test]
-fn ordinary_skip_only_imports_need_no_middle_reconstruction() {
+    // An explicitly supplied skip population also needs no middle press or
+    // trigram table to retain its frequency.
     let source = Source::from_text(
         r#"{"letters":{"a":2,"b":1,"!":1},"bigrams":{"ab":1},"skipgrams":{"ab":7}}"#,
         Path::new("inline.json"),
     )
     .unwrap();
-    assert_eq!(model().corpus(&source).unwrap().totals[2], 7.0);
+    assert_eq!(model.corpus(&source).unwrap().totals[2], 7.0);
 }
 
 #[test]
@@ -115,6 +114,18 @@ fn same_key_bigrams_and_skipgrams_are_separate_metrics() {
     assert_eq!(values.v[SKS], pct(3.0, 4.0));
     assert_eq!(Weights::default().0[SKB], 0.0);
     assert_eq!(Weights::default().0[SKS], 0.0);
+
+    let same = pair_flags(key(0, 0), key(0, 0), true);
+    assert_ne!(same.bi & bit(SKB), 0);
+    assert_ne!(same.sk & bit(SKS), 0);
+    assert_eq!(same.bi & bit(SFB), 0);
+    assert_eq!(same.sk & bit(SFS), 0);
+
+    let different = pair_flags(key(0, 0), key(1, 0), false);
+    assert_ne!(different.bi & bit(SFB), 0);
+    assert_ne!(different.sk & bit(SFS), 0);
+    assert_eq!(different.bi & bit(SKB), 0);
+    assert_eq!(different.sk & bit(SKS), 0);
 }
 
 #[test]
@@ -670,18 +681,6 @@ fn same_key_repeats_and_thumb_denominators() {
     checked_rescore(&mut s, &p).unwrap();
     let thumb = pair_flags(thumb_key(0), thumb_key(1), false);
     assert_eq!(thumb.bi & bit(SFB), 0);
-    let same = pair_flags(key(0, 0), key(0, 0), true);
-    assert_ne!(same.bi & bit(SKB), 0);
-    assert_ne!(same.sk & bit(SKS), 0);
-    assert_eq!(same.bi & bit(SFB), 0);
-    assert_eq!(same.sk & bit(SFS), 0);
-
-    let different = pair_flags(key(0, 0), key(1, 0), false);
-    assert_ne!(different.bi & bit(SFB), 0);
-    assert_ne!(different.sk & bit(SFS), 0);
-    assert_eq!(different.bi & bit(SKB), 0);
-    assert_eq!(different.sk & bit(SKS), 0);
-
     // The same-key skip in a_p_a remains a structural ALT veto.
     let a = key(1, 0);
     let p_key = key(0, 9);

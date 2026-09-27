@@ -770,20 +770,6 @@ mod tests {
     }
 
     #[test]
-    fn unified_magic_writes_wildcard_before_explicit_rules() {
-        let original = Layout::parse(
-            include_str!("../layouts/afterburner.jsonc"),
-            Path::new("afterburner.jsonc"),
-        )
-        .unwrap();
-        let text = jsonc_text(&original).unwrap();
-        let wildcard = text.find("\"inputs\": \"*#\"").unwrap();
-        let explicit = text.find("\"inputs\": \"a#\"").unwrap();
-        assert!(wildcard < explicit, "{text}");
-        assert!(text.contains("\"output\": \"**\""), "{text}");
-    }
-
-    #[test]
     fn simple_rule_round_trip_preserves_physical_mapping_and_metric_bits() {
         use crate::{action_ngrams, action_ui, AtomicBool, AtomicU64, Weights};
 
@@ -933,6 +919,10 @@ mod tests {
         assert!(jsonc.contains("\"inputs\": \"*#\""), "{jsonc}");
         assert!(jsonc.contains("\"output\": \"**\""), "{jsonc}");
         assert!(jsonc.contains("\"inputs\": \"a#\""), "{jsonc}");
+        assert!(
+            jsonc.find("\"inputs\": \"*#\"").unwrap() < jsonc.find("\"inputs\": \"a#\"").unwrap(),
+            "{jsonc}"
+        );
         assert!(jsonc.contains("\"output\": \"ao\""), "{jsonc}");
         assert!(jsonc.contains("\"inputs\": \"*_$\""), "{jsonc}");
         assert!(jsonc.contains("\"output\": \"*_*\""), "{jsonc}");

@@ -2934,22 +2934,28 @@ mod tests {
         assert!(trace_keys(&l, &[key(&l, "q"), key(&l, "m"), key(&l, "again")]).is_err());
     }
     #[test]
-    fn no_empty_macro() {
-        assert!(
-            Layout::parse(&format!("{BASE}action empty = text \"\"\n"), Path::new("x")).is_err()
-        );
-    }
-    #[test]
-    fn unsupported_named_actions_are_not_guessed() {
-        assert!(Layout::parse(&format!("{BASE}outer-left: ~ @layer ~\n"), Path::new("x")).is_err());
-    }
-    #[test]
-    fn multi_character_main_key_is_rejected() {
-        assert!(Layout::parse(
-            &BASE.replace("a s d f g", "capslock s d f g"),
-            Path::new("x")
-        )
-        .is_err());
+    fn invalid_action_and_key_definitions_are_rejected() {
+        let cases = [
+            ("empty macro", format!("{BASE}action empty = text \"\"\n")),
+            (
+                "unknown named action",
+                format!("{BASE}outer-left: ~ @layer ~\n"),
+            ),
+            (
+                "multi-character main key",
+                BASE.replace("a s d f g", "capslock s d f g"),
+            ),
+            (
+                "duplicate rule",
+                format!("{BASE}action m = magic\nmap m \"a\" = \"b\"\nmap m \"a\" = \"c\"\n"),
+            ),
+        ];
+        for (case, source) in cases {
+            assert!(
+                Layout::parse(&source, Path::new("invalid.dat")).is_err(),
+                "accepted {case}"
+            );
+        }
     }
     #[test]
     fn compact_magic_and_repeat_fallback() {
@@ -3003,14 +3009,23 @@ mod tests {
         );
     }
     #[test]
-    fn exact_decoder_state_limit_errors() {
+    fn decoder_honors_state_limit_and_cancellation() {
         let l = make("");
-        assert!(decode(&l, b"abc", 1, &AtomicBool::new(false), |_, _, _| 0.0).is_err());
-    }
-    #[test]
-    fn cancellation() {
-        let l = make("");
-        assert!(decode(&l, b"abc", 1000, &AtomicBool::new(true), |_, _, _| 0.0).is_err());
+        for (case, state_limit, cancelled) in
+            [("state limit", 1, false), ("cancellation", 1000, true)]
+        {
+            assert!(
+                decode(
+                    &l,
+                    b"abc",
+                    state_limit,
+                    &AtomicBool::new(cancelled),
+                    |_, _, _| 0.0
+                )
+                .is_err(),
+                "ignored {case}"
+            );
+        }
     }
     #[test]
     fn keystrokes_and_emitted_characters_are_not_ngrams_of_each_other() {
@@ -3039,14 +3054,6 @@ mod tests {
     fn quoted_equals_context() {
         let l = make("outer-left: ~ @m ~\naction m = magic\nmap m \"a = \" = \"b\"\n");
         assert!(matches!(l.actions.get("m"), Some(Action::Rules { .. })));
-    }
-    #[test]
-    fn exact_duplicate_rules_rejected() {
-        assert!(Layout::parse(
-            &format!("{BASE}action m = magic\nmap m \"a\" = \"b\"\nmap m \"a\" = \"c\"\n"),
-            Path::new("x")
-        )
-        .is_err());
     }
     #[test]
     fn press_rule_distinguishes_magic_key_from_output() {

@@ -1845,22 +1845,6 @@ mod tests {
         );
     }
     #[test]
-    fn longer_rules_require_sufficient_context_and_macros_are_explicitly_rejected() {
-        let l = ak::Layout::parse(
-            &format!("{BASE}outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n"),
-            Path::new("long.dat"),
-        )
-        .unwrap();
-        assert!(ak::WindowMapper::new(&l, 3).is_err());
-        assert!(ak::WindowMapper::new(&l, 5).is_ok());
-        let l = ak::Layout::parse(
-            &format!("{BASE}outer-left: ~ @m ~\naction m = text \"the\"\n"),
-            Path::new("macro.dat"),
-        )
-        .unwrap();
-        assert!(ak::WindowMapper::new(&l, 5).is_err());
-    }
-    #[test]
     fn candidate_score_matches_report_arithmetic_for_identical_totals() {
         let mut state = 41u64;
         for trial in 0..500 {

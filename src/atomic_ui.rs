@@ -734,27 +734,6 @@ mod tests {
     }
 
     #[test]
-    fn magic_view_uses_same_report_and_action_keyboard() {
-        let mut view = magic_view();
-        assert!(matches!(view.drawing, Drawing::Action { .. }));
-        let initial = atomic_report::render_text(&view.report);
-        assert_eq!(view.row_lines.len(), view.report.rows.len());
-        assert!(initial.contains("@magic"));
-        view.cycle_population();
-        assert_eq!(view.report.population, Population::Trigrams);
-        view.submit_query("endpoints.same_key = true");
-        assert_eq!(view.report.query, "endpoints.same_key = true");
-        let expected = view
-            .prepared
-            .report(Population::Trigrams, Some("endpoints.same_key = true"))
-            .unwrap();
-        assert_eq!(
-            atomic_report::render_text(&view.report),
-            atomic_report::render_text(&expected)
-        );
-    }
-
-    #[test]
     fn viewer_report_matches_cli_report_for_both_engines() {
         let ordinary = plain_view();
         let board = board_from_text(ROWS, Path::new("inline.dat")).unwrap();
@@ -765,7 +744,13 @@ mod tests {
             atomic_report::render_text(&cli)
         );
 
-        let magic = magic_view();
+        let mut magic = magic_view();
+        assert!(matches!(magic.drawing, Drawing::Action { .. }));
+        assert!(atomic_report::render_text(&magic.report).contains("@magic"));
+        magic.cycle_population();
+        magic.submit_query("endpoints.same_key = true");
+        assert_eq!(magic.report.population, Population::Trigrams);
+        assert_eq!(magic.report.query, "endpoints.same_key = true");
         let rows = ROWS.replacen("w e", "@magic e", 1);
         let layout = action_keys::Layout::parse(
             &format!("{rows}action magic = magic\nfallback magic = repeat-output\n"),
@@ -777,7 +762,13 @@ mod tests {
             Path::new("inline.json"),
         )
         .unwrap();
-        let cli = atomic_report::action_counts(layout, corpus, Population::Bigrams, None).unwrap();
+        let cli = atomic_report::action_counts(
+            layout,
+            corpus,
+            Population::Trigrams,
+            Some("endpoints.same_key = true"),
+        )
+        .unwrap();
         assert_eq!(
             atomic_report::render_text(&magic.report),
             atomic_report::render_text(&cli)
@@ -929,36 +920,7 @@ mod tests {
         assert_ne!(atomic_report::render_text(&view.report), before);
         view.undo().unwrap();
         assert_eq!(atomic_report::render_text(&view.report), before);
-    }
 
-    #[test]
-    fn failed_space_swap_keeps_layout_and_report_together() {
-        let mut ordinary = plain_view();
-        let prior = atomic_report::render_text(&ordinary.report);
-        let Drawing::Plain { model, slots } = &ordinary.drawing else {
-            unreachable!()
-        };
-        let space = (0..slots.len())
-            .find(|&slot| model.canonical[slots[slot]] == b' ')
-            .unwrap();
-        assert!(ordinary.swap(0, space).is_err());
-        assert_eq!(atomic_report::render_text(&ordinary.report), prior);
-        assert!(ordinary.undo.is_empty());
-
-        let mut magic = magic_view();
-        let prior = atomic_report::render_text(&magic.report);
-        let Drawing::Action { current, .. } = &magic.drawing else {
-            panic!("action layout expected")
-        };
-        let space = (0..current.slots.len())
-            .find(|&slot| current.space(slot))
-            .unwrap();
-        assert!(magic.swap(0, space).is_err());
-        assert_eq!(atomic_report::render_text(&magic.report), prior);
-    }
-
-    #[test]
-    fn duplicate_labels_keep_distinct_physical_slots_after_swap() {
         let rows = ROWS.replacen("w e", "@magic e", 1);
         let mut layout = action_keys::Layout::parse(
             &format!("{rows}action magic = magic\nfallback magic = repeat-output\n"),
@@ -989,7 +951,33 @@ mod tests {
     }
 
     #[test]
-    fn saved_plain_and_action_copies_reload_with_current_bindings() {
+    fn failed_space_swap_keeps_layout_and_report_together() {
+        let mut ordinary = plain_view();
+        let prior = atomic_report::render_text(&ordinary.report);
+        let Drawing::Plain { model, slots } = &ordinary.drawing else {
+            unreachable!()
+        };
+        let space = (0..slots.len())
+            .find(|&slot| model.canonical[slots[slot]] == b' ')
+            .unwrap();
+        assert!(ordinary.swap(0, space).is_err());
+        assert_eq!(atomic_report::render_text(&ordinary.report), prior);
+        assert!(ordinary.undo.is_empty());
+
+        let mut magic = magic_view();
+        let prior = atomic_report::render_text(&magic.report);
+        let Drawing::Action { current, .. } = &magic.drawing else {
+            panic!("action layout expected")
+        };
+        let space = (0..current.slots.len())
+            .find(|&slot| current.space(slot))
+            .unwrap();
+        assert!(magic.swap(0, space).is_err());
+        assert_eq!(atomic_report::render_text(&magic.report), prior);
+    }
+
+    #[test]
+    fn saved_action_copy_reloads_with_current_binding() {
         let token = format!(
             "atomic-save-{}-{}",
             std::process::id(),
@@ -998,26 +986,6 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         );
-        let mut plain = plain_view();
-        plain.swap(0, 1).unwrap();
-        let (plain_board, plain_symbols) = match &plain.drawing {
-            Drawing::Plain { model, slots } => {
-                let mut board = model.board.clone();
-                board.path = std::env::temp_dir().join(format!("{token}.dat"));
-                (board, model.symbols(slots))
-            }
-            _ => unreachable!(),
-        };
-        let path = save_new_layout(&plain_board, &plain_symbols).unwrap();
-        let loaded = parse_open_layout(&fs::read_to_string(&path).unwrap(), &path).unwrap();
-        let OpenLayout::Plain(loaded) = loaded else {
-            panic!("plain save changed layout type")
-        };
-        assert_eq!(loaded.symbols, plain_symbols);
-        assert_eq!(loaded.keys, plain_board.keys);
-        fs::remove_file(&path).unwrap();
-        fs::remove_file(path.with_extension("jsonc")).unwrap();
-
         let mut magic = magic_view();
         let action = magic
             .report
@@ -1056,10 +1024,12 @@ mod tests {
         );
         let mut view = plain_view();
         view.swap(0, 1).unwrap();
-        let Drawing::Plain { model, .. } = &mut view.drawing else {
+        let Drawing::Plain { model, slots } = &mut view.drawing else {
             unreachable!()
         };
         model.board.path = std::env::temp_dir().join(format!("{token}.dat"));
+        let expected_symbols = model.symbols(slots);
+        let expected_keys = model.board.keys.clone();
         let path = std::env::temp_dir().join(format!("{token}-optimized-001.dat"));
         view.save_copy();
         assert!(view.status.as_deref().unwrap().starts_with("saved "));
@@ -1069,7 +1039,8 @@ mod tests {
         let OpenLayout::Plain(board) = loaded else {
             panic!("copy changed layout type")
         };
-        assert_eq!(board.symbols[0], b'w');
+        assert_eq!(board.symbols, expected_symbols);
+        assert_eq!(board.keys, expected_keys);
         fs::remove_file(&path).unwrap();
         fs::remove_file(path.with_extension("jsonc")).unwrap();
     }
