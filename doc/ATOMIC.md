@@ -9,13 +9,16 @@ they do not rename or change akler's existing metrics, scoring, or optimizer.
 Choose **Atomic editor** from the main menu, then a corpus and layout. It
 shows the existing keyboard drawing and the same weighted, sorted physical
 rows as the command-line report. Click two keys or drag one onto another to
-swap bindings. Arrows or `h`/`j`/`k`/`l` move the physical cursor; Space or
-Enter selects and swaps. `u` undoes the last swap. Space stays fixed.
+swap bindings. Arrows move the physical cursor; Space selects and swaps.
+`j`/`k` move through table rows. Enter or `l` opens the selected group,
+and `h` or Esc returns to the group list. Clicking a group row opens it;
+clicking a detail row selects it. `u` undoes the last swap. Space stays fixed.
 
-Use `/` to enter a query, `Tab` to cycle bigrams, trigrams, and skip1, `?` for
-help and examples, `s` to save a new DAT/JSONC layout copy, `x` to export the
-full plain-text report to a separate new file, Page Up/Down or the wheel to
-scroll, and `q` to return. Neither save overwrites an existing file. Opening
+Use `/` to enter a query, `g` to group the matching rows, `Tab` to cycle
+bigrams, trigrams, and skip1, `?` for help and examples, `s` to save a new
+DAT/JSONC layout copy, `x` to export the full plain-text report to a separate
+new file, Page Up/Down or the wheel to scroll, and `q` to return. Neither save
+overwrites an existing file. Opening
 another layout prepares a new physical snapshot; **Change corpus...** and
 **Reload corpus snapshot** in the layout chooser replace cached corpus data.
 
@@ -27,6 +30,20 @@ banner. A field that applies only to triples matches no pairs, even with
 For example, try `roll.direction = inward and row.direction = descending`,
 `redirect = true and endpoints.same_key = false`, or
 `gap[0] = 1 and endpoints.same_finger = true`.
+
+Press `g` to open a checklist. Move with Up/Down or `j`/`k`, toggle fields
+with Space or a click. Enter adds the highlighted field and applies all
+selected fields, including when none were selected. Press `c` to clear;
+`q` cancels. Common row and finger fields appear first. `/` inside the
+checklist adds an advanced field by name. For example,
+`row.direction` groups ascending, descending, level, and mixed movements;
+`start.finger_type, end.finger_type` groups anatomical movements such as
+pinky to ring while folding left/right mirrors together; and
+`start.row, end.row` groups logical row paths. Displayed rows remain 1-based.
+Grouping is presentation only: it preserves the
+active query and the full-population denominator. It also stays active through
+population changes, swaps, and undo. A grouped text export contains both the
+group summary and every matching physical detail row.
 
 ## Command line
 

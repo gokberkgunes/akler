@@ -3,7 +3,7 @@
 
 use crate::action_ngrams as ng;
 use crate::atomic_analysis::{self, AtomicKeyboard};
-use crate::atomic_metrics::{classify, Finger, Query, SelectedPress, SlotId};
+use crate::atomic_metrics::{classify, Attribute, Finger, Pattern, Query, SelectedPress, SlotId};
 use crate::*;
 
 type PhysicalTable = BTreeMap<Vec<SlotId>, f64>;
@@ -73,6 +73,7 @@ pub(crate) struct ReportRow {
     pub(crate) slots: Vec<SlotId>,
     pub(crate) frequency: f64,
     pub(crate) stats: Vec<&'static str>,
+    pub(crate) pattern: Pattern,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +141,7 @@ fn analyze(
                 slots: slots.clone(),
                 frequency,
                 stats,
+                pattern,
             });
         }
     }
@@ -351,6 +353,147 @@ pub(crate) fn percent(value: f64, denominator: f64) -> String {
         let rounded = format!("{value:.2}");
         format!("{}%", rounded.trim_end_matches('0').trim_end_matches('.'))
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Grouping {
+    fields: Vec<Attribute>,
+    text: String,
+}
+
+impl Grouping {
+    pub(crate) fn parse(source: &str) -> AppResult<Self> {
+        let mut fields = Vec::new();
+        let mut offset = 0;
+        for part in source.split(',') {
+            let name = part.trim();
+            if name.is_empty() {
+                return Err(format!("group byte {offset}: expected an attribute").into());
+            }
+            if fields.iter().any(|field: &Attribute| field.name() == name) {
+                return Err(format!("group byte {offset}: duplicate attribute {name}").into());
+            }
+            fields.push(
+                Attribute::parse(name).map_err(|error| format!("group byte {offset}: {error}"))?,
+            );
+            offset += part.len() + 1;
+        }
+        let text = fields
+            .iter()
+            .map(Attribute::name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(Self { fields, text })
+    }
+
+    pub(crate) fn text(&self) -> &str {
+        &self.text
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GroupBucket {
+    pub(crate) values: Vec<String>,
+    pub(crate) frequency: f64,
+    pub(crate) row_indices: Vec<usize>,
+}
+
+/// Buckets contain indices into the query-filtered physical rows. Display and
+/// drilldown therefore use exactly the same groups and physical identities.
+pub(crate) fn group_buckets(
+    report: &AtomicReport,
+    grouping: &Grouping,
+) -> AppResult<Vec<GroupBucket>> {
+    let mut totals = BTreeMap::<Vec<String>, (f64, Vec<usize>)>::new();
+    for (index, row) in report.rows.iter().enumerate() {
+        let values = grouping
+            .fields
+            .iter()
+            .map(|field| {
+                field.value(&row.pattern).map(|value| {
+                    value.map_or_else(|| "n/a".into(), |value| field.display_value(&value))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let group = totals.entry(values).or_default();
+        group.0 += row.frequency;
+        group.1.push(index);
+    }
+    let mut groups: Vec<_> = totals.into_iter().collect();
+    groups.sort_by(|(a_key, (a_frequency, _)), (b_key, (b_frequency, _))| {
+        b_frequency
+            .total_cmp(a_frequency)
+            .then_with(|| a_key.cmp(b_key))
+    });
+
+    Ok(groups
+        .into_iter()
+        .map(|(values, (frequency, row_indices))| GroupBucket {
+            values,
+            frequency,
+            row_indices,
+        })
+        .collect())
+}
+
+/// Group only the rows that passed the query. The denominator remains the
+/// selected population frequency from before query filtering.
+pub(crate) fn grouped_lines(
+    report: &AtomicReport,
+    grouping: &Grouping,
+) -> AppResult<(String, Vec<String>)> {
+    let groups = group_buckets(report, grouping)?;
+    let mut widths: Vec<usize> = grouping
+        .fields
+        .iter()
+        .map(|field| field.name().chars().count())
+        .collect();
+    widths.extend(["Patterns".len(), 1]);
+    let mut rows = Vec::with_capacity(groups.len());
+    for group in groups {
+        let mut cells = group.values;
+        cells.push(group.row_indices.len().to_string());
+        cells.push(percent(group.frequency, report.population_frequency));
+        for (width, cell) in widths.iter_mut().zip(&cells) {
+            *width = (*width).max(cell.chars().count());
+        }
+        rows.push(cells);
+    }
+    let format_line = |cells: &[String]| {
+        cells
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| {
+                if index + 1 == cells.len() {
+                    pad_left(cell, widths[index])
+                } else {
+                    pad_right(cell, widths[index])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+    let mut headings: Vec<String> = grouping
+        .fields
+        .iter()
+        .map(|field| field.name().to_owned())
+        .collect();
+    headings.extend(["Patterns".into(), "%".into()]);
+    Ok((
+        format_line(&headings),
+        rows.iter().map(|row| format_line(row)).collect(),
+    ))
+}
+
+pub(crate) fn render_grouped_text(report: &AtomicReport, grouping: &Grouping) -> AppResult<String> {
+    let mut text = render_text(report);
+    let (header, rows) = grouped_lines(report, grouping)?;
+    text.push_str(&format!("\nGrouped by: {}\n{header}\n", grouping.text()));
+    for row in rows {
+        text.push_str(&row);
+        text.push('\n');
+    }
+    Ok(text)
 }
 
 fn pad_right(text: &str, width: usize) -> String {
@@ -964,6 +1107,99 @@ mod tests {
         assert_eq!(percent(1.0, 3.0), "33.33%");
         assert_eq!(percent(0.000001, 1.0), "<0.01%");
         assert_eq!(percent(0.0, 0.0), "n/a");
+    }
+
+    #[test]
+    fn grouping_combines_mirrored_fingers_and_keeps_the_population_denominator() {
+        let keyboard = atomic_analysis::from_board(&plain_board()).unwrap();
+        let counts = BTreeMap::from([
+            (vec![0, 11], 0.25),  // q → s
+            (vec![9, 18], 0.50),  // p → l
+            (vec![11, 0], 0.125), // s → q
+            (vec![0, 20], 0.125), // q → z
+        ]);
+        let make_report = |query| {
+            analyze(
+                &keyboard,
+                "board",
+                "corpus",
+                Population::Bigrams,
+                query,
+                "inline",
+                &[],
+                &counts,
+                RollSettings::default(),
+            )
+            .unwrap()
+        };
+        let grouping = Grouping::parse(
+            "row.direction, start.finger_type, end.finger_type, start.row, end.row",
+        )
+        .unwrap();
+        let all = make_report(None);
+        assert_eq!(all.population_frequency, 1.0);
+        let (_, lines) = grouped_lines(&all, &grouping).unwrap();
+        assert_eq!(lines.len(), 3);
+        let cells = |line: &str| {
+            line.split(" | ")
+                .map(str::trim)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            cells(&lines[0]),
+            ["descending", "pinky", "ring", "1", "2", "2", "75%"]
+        );
+        assert!(lines.iter().any(|line| {
+            cells(line) == ["descending", "pinky", "pinky", "1", "3", "1", "12.5%"]
+        }));
+
+        let inward = make_report(Some("roll.direction = inward"));
+        assert_eq!(inward.population_frequency, 1.0);
+        assert_eq!(inward.matching_frequency, 0.75);
+        let (_, filtered) = grouped_lines(&inward, &grouping).unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(cells(&filtered[0]), cells(&lines[0]));
+
+        let handed = Grouping::parse("start.finger, end.finger").unwrap();
+        assert_eq!(grouped_lines(&inward, &handed).unwrap().1.len(), 2);
+        let export = render_grouped_text(&all, &grouping).unwrap();
+        assert!(export.contains("Grouped by: row.direction"));
+        assert_eq!(export.matches(" → ").count(), 12);
+    }
+
+    #[test]
+    fn grouping_rejects_invalid_fields_and_unavailable_geometry() {
+        assert!(Grouping::parse("start.row, start.row")
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate"));
+        assert!(Grouping::parse("start.no_such_field")
+            .unwrap_err()
+            .to_string()
+            .contains("UnsupportedAttribute"));
+        let mut keyboard = atomic_analysis::from_board(&plain_board()).unwrap();
+        keyboard.pairs = Default::default();
+        let report = analyze(
+            &keyboard,
+            "board",
+            "corpus",
+            Population::Bigrams,
+            None,
+            "inline",
+            &[],
+            &BTreeMap::from([(vec![0, 1], 1.0)]),
+            RollSettings::default(),
+        )
+        .unwrap();
+        let error = grouped_lines(&report, &Grouping::parse("first.scissor").unwrap())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("UnsupportedAttribute"), "{error}");
+        let (header, lines) =
+            grouped_lines(&report, &Grouping::parse("position[2].row").unwrap()).unwrap();
+        assert!(header.contains("position[2].row"));
+        assert!(lines[0].contains("n/a"));
     }
 
     #[test]

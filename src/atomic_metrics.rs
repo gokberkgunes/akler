@@ -10,9 +10,10 @@
 //! * `length`: integer (2 or 3).
 //! * `start.*`, `end.*`, `position[N].*`: `key` (integer slot ID), `finger`
 //!   (`left_pinky`, `left_ring`, `left_middle`, `left_index`, `left_thumb`,
-//!   and corresponding `right_*`), `hand` (`left`/`right`), `row` (integer or
-//!   `top`/`home`/`bottom`, meaning 0/1/2), `column` (integer), and
-//!   `original` (integer original sequence position). `N` is 0, 1, or 2.
+//!   and corresponding `right_*`), `finger_type` (`pinky`, `ring`, `middle`,
+//!   `index`, or `thumb`), `hand` (`left`/`right`), `row` (integer or
+//!   `top`/`home`/`bottom`, meaning 0/1/2), `column` (integer), and `original`
+//!   (integer original sequence position). `N` is 0, 1, or 2.
 //! * `gap[N]`: integer omitted presses between selected positions; N is 0 or 1.
 //! * `contains.thumb`, `hand.same`, `hand.alternating`, `redirect`, and
 //!   `first.same_key`, `first.same_finger`, `last.same_key`,
@@ -60,6 +61,17 @@ pub enum Finger {
     RightThumb,
 }
 
+/// Hand-independent anatomical finger identity. This is explicit rather than
+/// derived from the declaration or numeric order of [`Finger`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FingerType {
+    Pinky,
+    Ring,
+    Middle,
+    Index,
+    Thumb,
+}
+
 impl Finger {
     pub fn hand(self) -> Hand {
         match self {
@@ -78,6 +90,16 @@ impl Finger {
 
     pub fn is_thumb(self) -> bool {
         matches!(self, Self::LeftThumb | Self::RightThumb)
+    }
+
+    pub fn finger_type(self) -> FingerType {
+        match self {
+            Self::LeftPinky | Self::RightPinky => FingerType::Pinky,
+            Self::LeftRing | Self::RightRing => FingerType::Ring,
+            Self::LeftMiddle | Self::RightMiddle => FingerType::Middle,
+            Self::LeftIndex | Self::RightIndex => FingerType::Index,
+            Self::LeftThumb | Self::RightThumb => FingerType::Thumb,
+        }
     }
 
     // Explicit anatomical order. Enum declaration order is irrelevant.
@@ -155,7 +177,7 @@ impl fmt::Display for ClassifyError {
 
 impl std::error::Error for ClassifyError {}
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum FingerDirection {
     Inward,
     Outward,
@@ -164,14 +186,14 @@ pub enum FingerDirection {
     ThumbInvolving,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RollDirection {
     Inward,
     Outward,
     None,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RowDirection {
     Ascending,
     Descending,
@@ -378,6 +400,7 @@ enum Location {
 enum LocationAttribute {
     Key,
     Finger,
+    FingerType,
     Hand,
     Row,
     Column,
@@ -425,6 +448,7 @@ enum ValueType {
     Integer,
     Boolean,
     Finger,
+    FingerType,
     Hand,
     Row,
     HandPattern,
@@ -448,6 +472,7 @@ impl Field {
             ) => ValueType::Integer,
             Self::Location(_, LocationAttribute::Row) => ValueType::Row,
             Self::Location(_, LocationAttribute::Finger) => ValueType::Finger,
+            Self::Location(_, LocationAttribute::FingerType) => ValueType::FingerType,
             Self::Location(_, LocationAttribute::Hand) => ValueType::Hand,
             Self::HandPattern => ValueType::HandPattern,
             Self::RowDirection => ValueType::RowDirection,
@@ -458,11 +483,12 @@ impl Field {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Value {
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum AttributeValue {
     Integer(i64),
     Boolean(bool),
     Finger(Finger),
+    FingerType(FingerType),
     Hand(Hand),
     Pattern(String),
     RowDirection(RowDirection),
@@ -482,7 +508,15 @@ struct Predicate {
     field_name: String,
     position: usize,
     operator: Operator,
-    value: Value,
+    value: AttributeValue,
+}
+
+/// A compiled classifier field that can be reused for grouping or display.
+/// It delegates to the same field lookup used by [`Query`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Attribute {
+    field: Field,
+    name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -530,6 +564,7 @@ fn parse_field(name: &str, position: usize) -> Result<Field, QueryError> {
                 let attr = match tail {
                     "key" => LocationAttribute::Key,
                     "finger" => LocationAttribute::Finger,
+                    "finger_type" => LocationAttribute::FingerType,
                     "hand" => LocationAttribute::Hand,
                     "row" => LocationAttribute::Row,
                     "column" => LocationAttribute::Column,
@@ -569,7 +604,12 @@ fn unsupported(name: &str, position: usize) -> QueryError {
     }
 }
 
-fn parse_value(field: Field, name: &str, word: &str, position: usize) -> Result<Value, QueryError> {
+fn parse_value(
+    field: Field,
+    name: &str,
+    word: &str,
+    position: usize,
+) -> Result<AttributeValue, QueryError> {
     let bad = || QueryError {
         position,
         kind: QueryErrorKind::InvalidValue {
@@ -583,20 +623,20 @@ fn parse_value(field: Field, name: &str, word: &str, position: usize) -> Result<
             if matches!(field, Field::Length) && !matches!(number, 2 | 3) {
                 return Err(bad());
             }
-            Value::Integer(number)
+            AttributeValue::Integer(number)
         }
-        ValueType::Row => Value::Integer(match word {
+        ValueType::Row => AttributeValue::Integer(match word {
             "top" => 0,
             "home" => 1,
             "bottom" => 2,
             _ => word.parse::<i64>().map_err(|_| bad())?,
         }),
-        ValueType::Boolean => Value::Boolean(match word {
+        ValueType::Boolean => AttributeValue::Boolean(match word {
             "true" => true,
             "false" => false,
             _ => return Err(bad()),
         }),
-        ValueType::Finger => Value::Finger(match word {
+        ValueType::Finger => AttributeValue::Finger(match word {
             "left_pinky" => Finger::LeftPinky,
             "left_ring" => Finger::LeftRing,
             "left_middle" => Finger::LeftMiddle,
@@ -609,7 +649,15 @@ fn parse_value(field: Field, name: &str, word: &str, position: usize) -> Result<
             "right_thumb" => Finger::RightThumb,
             _ => return Err(bad()),
         }),
-        ValueType::Hand => Value::Hand(match word {
+        ValueType::FingerType => AttributeValue::FingerType(match word {
+            "pinky" => FingerType::Pinky,
+            "ring" => FingerType::Ring,
+            "middle" => FingerType::Middle,
+            "index" => FingerType::Index,
+            "thumb" => FingerType::Thumb,
+            _ => return Err(bad()),
+        }),
+        ValueType::Hand => AttributeValue::Hand(match word {
             "left" => Hand::Left,
             "right" => Hand::Right,
             _ => return Err(bad()),
@@ -618,16 +666,16 @@ fn parse_value(field: Field, name: &str, word: &str, position: usize) -> Result<
             if !(2..=3).contains(&word.len()) || !word.bytes().all(|b| matches!(b, b'L' | b'R')) {
                 return Err(bad());
             }
-            Value::Pattern(word.to_owned())
+            AttributeValue::Pattern(word.to_owned())
         }
-        ValueType::RowDirection => Value::RowDirection(match word {
+        ValueType::RowDirection => AttributeValue::RowDirection(match word {
             "ascending" => RowDirection::Ascending,
             "descending" => RowDirection::Descending,
             "level" => RowDirection::Level,
             "mixed" => RowDirection::Mixed,
             _ => return Err(bad()),
         }),
-        ValueType::FingerDirection => Value::FingerDirection(match word {
+        ValueType::FingerDirection => AttributeValue::FingerDirection(match word {
             "inward" => FingerDirection::Inward,
             "outward" => FingerDirection::Outward,
             "same_finger" => FingerDirection::SameFinger,
@@ -635,7 +683,7 @@ fn parse_value(field: Field, name: &str, word: &str, position: usize) -> Result<
             "thumb_involving" => FingerDirection::ThumbInvolving,
             _ => return Err(bad()),
         }),
-        ValueType::RollDirection => Value::RollDirection(match word {
+        ValueType::RollDirection => AttributeValue::RollDirection(match word {
             "inward" => RollDirection::Inward,
             "outward" => RollDirection::Outward,
             "none" => RollDirection::None,
@@ -745,6 +793,88 @@ impl<'a> Parser<'a> {
     }
 }
 
+impl Attribute {
+    /// Compiles one documented query field without an operator or value.
+    pub fn parse(name: &str) -> Result<Self, QueryError> {
+        Ok(Self {
+            field: parse_field(name, 0)?,
+            name: name.to_owned(),
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Projects this field from a classified pattern. `None` means the field
+    /// is supported but does not apply to this sequence length.
+    pub fn value(&self, pattern: &Pattern) -> Result<Option<AttributeValue>, QueryError> {
+        field_value(pattern, self.field, &self.name, 0)
+    }
+
+    /// Formats a projected value using query spelling. Location row values are
+    /// shifted to the viewer's one-based row presentation.
+    pub fn display_value(&self, value: &AttributeValue) -> String {
+        if matches!(self.field, Field::Location(_, LocationAttribute::Row)) {
+            if let AttributeValue::Integer(row) = value {
+                return (row + 1).to_string();
+            }
+        }
+        match value {
+            AttributeValue::Integer(value) => value.to_string(),
+            AttributeValue::Boolean(value) => value.to_string(),
+            AttributeValue::Finger(value) => match value {
+                Finger::LeftPinky => "left_pinky",
+                Finger::LeftRing => "left_ring",
+                Finger::LeftMiddle => "left_middle",
+                Finger::LeftIndex => "left_index",
+                Finger::LeftThumb => "left_thumb",
+                Finger::RightPinky => "right_pinky",
+                Finger::RightRing => "right_ring",
+                Finger::RightMiddle => "right_middle",
+                Finger::RightIndex => "right_index",
+                Finger::RightThumb => "right_thumb",
+            }
+            .to_owned(),
+            AttributeValue::FingerType(value) => match value {
+                FingerType::Pinky => "pinky",
+                FingerType::Ring => "ring",
+                FingerType::Middle => "middle",
+                FingerType::Index => "index",
+                FingerType::Thumb => "thumb",
+            }
+            .to_owned(),
+            AttributeValue::Hand(value) => match value {
+                Hand::Left => "left",
+                Hand::Right => "right",
+            }
+            .to_owned(),
+            AttributeValue::Pattern(value) => value.clone(),
+            AttributeValue::RowDirection(value) => match value {
+                RowDirection::Ascending => "ascending",
+                RowDirection::Descending => "descending",
+                RowDirection::Level => "level",
+                RowDirection::Mixed => "mixed",
+            }
+            .to_owned(),
+            AttributeValue::FingerDirection(value) => match value {
+                FingerDirection::Inward => "inward",
+                FingerDirection::Outward => "outward",
+                FingerDirection::SameFinger => "same_finger",
+                FingerDirection::CrossHand => "cross_hand",
+                FingerDirection::ThumbInvolving => "thumb_involving",
+            }
+            .to_owned(),
+            AttributeValue::RollDirection(value) => match value {
+                RollDirection::Inward => "inward",
+                RollDirection::Outward => "outward",
+                RollDirection::None => "none",
+            }
+            .to_owned(),
+        }
+    }
+}
+
 impl Query {
     pub fn parse(source: &str) -> Result<Self, QueryError> {
         let mut parser = Parser { source, offset: 0 };
@@ -800,9 +930,9 @@ fn field_value(
     field: Field,
     name: &str,
     position: usize,
-) -> Result<Option<Value>, QueryError> {
-    let integer = |n: i64| Some(Value::Integer(n));
-    let boolean = |b: bool| Some(Value::Boolean(b));
+) -> Result<Option<AttributeValue>, QueryError> {
+    let integer = |n: i64| Some(AttributeValue::Integer(n));
+    let boolean = |b: bool| Some(AttributeValue::Boolean(b));
     let value = match field {
         Field::Length => integer(pattern.keys.len() as i64),
         Field::Location(location, attr) => {
@@ -816,14 +946,17 @@ fn field_value(
             };
             match attr {
                 LocationAttribute::Key => integer(i64::from(key.slot_id)),
-                LocationAttribute::Finger => Some(Value::Finger(key.finger)),
-                LocationAttribute::Hand => Some(Value::Hand(key.hand)),
+                LocationAttribute::Finger => Some(AttributeValue::Finger(key.finger)),
+                LocationAttribute::FingerType => {
+                    Some(AttributeValue::FingerType(key.finger.finger_type()))
+                }
+                LocationAttribute::Hand => Some(AttributeValue::Hand(key.hand)),
                 LocationAttribute::Row => integer(i64::from(key.row)),
                 LocationAttribute::Column => integer(i64::from(key.column)),
                 LocationAttribute::Original => {
                     i64::try_from(pattern.presses[index].original_position)
                         .ok()
-                        .map(Value::Integer)
+                        .map(AttributeValue::Integer)
                 }
             }
         }
@@ -835,21 +968,23 @@ fn field_value(
                     .checked_sub(pattern.presses[i].original_position + 1)
             })
             .and_then(|n| i64::try_from(n).ok())
-            .map(Value::Integer),
+            .map(AttributeValue::Integer),
         Field::ContainsThumb => boolean(pattern.contains_thumb),
         Field::HandSame => boolean(pattern.hand_same),
         Field::HandAlternating => boolean(pattern.hand_alternating),
-        Field::HandPattern => Some(Value::Pattern(pattern.hand_pattern.clone())),
-        Field::Redirect => (pattern.keys.len() == 3).then_some(Value::Boolean(pattern.redirect)),
-        Field::RowDirection => Some(Value::RowDirection(pattern.row_direction)),
+        Field::HandPattern => Some(AttributeValue::Pattern(pattern.hand_pattern.clone())),
+        Field::Redirect => {
+            (pattern.keys.len() == 3).then_some(AttributeValue::Boolean(pattern.redirect))
+        }
+        Field::RowDirection => Some(AttributeValue::RowDirection(pattern.row_direction)),
         Field::RowTransitions => integer(i64::from(pattern.row_transitions)),
         Field::RowTotalSteps => integer(i64::from(pattern.row_total_steps)),
         Field::RowNetDelta => integer(i64::from(pattern.row_net_delta)),
         Field::RowDelta(i) => pattern
             .row_deltas
             .get(i)
-            .map(|&n| Value::Integer(i64::from(n))),
-        Field::RollDirection => Some(Value::RollDirection(pattern.roll_direction)),
+            .map(|&n| AttributeValue::Integer(i64::from(n))),
+        Field::RollDirection => Some(AttributeValue::RollDirection(pattern.roll_direction)),
         Field::Pair(which, attr) => {
             let pair = match which {
                 PairLocation::First => Some(pattern.first),
@@ -860,7 +995,7 @@ fn field_value(
             match attr {
                 PairAttribute::SameKey => boolean(pair.same_key),
                 PairAttribute::SameFinger => boolean(pair.same_finger),
-                PairAttribute::Direction => Some(Value::FingerDirection(pair.direction)),
+                PairAttribute::Direction => Some(AttributeValue::FingerDirection(pair.direction)),
                 PairAttribute::Scissor => boolean(
                     pair.geometry
                         .and_then(|g| g.scissor)
@@ -970,6 +1105,75 @@ mod tests {
             .unwrap()
             .matches(&pattern(labels))
             .unwrap()
+    }
+
+    #[test]
+    fn attributes_reuse_query_fields_and_group_mirrored_finger_types() {
+        let start_type = Attribute::parse("start.finger_type").unwrap();
+        let end_type = Attribute::parse("end.finger_type").unwrap();
+        assert_eq!(start_type.name(), "start.finger_type");
+
+        for labels in [["q", "w"], ["p", "o"]] {
+            let p = pattern(&labels);
+            let start = start_type.value(&p).unwrap().unwrap();
+            let end = end_type.value(&p).unwrap().unwrap();
+            assert_eq!(start, AttributeValue::FingerType(FingerType::Pinky));
+            assert_eq!(end, AttributeValue::FingerType(FingerType::Ring));
+            assert_eq!(start_type.display_value(&start), "pinky");
+            assert_eq!(end_type.display_value(&end), "ring");
+            assert!(
+                Query::parse("start.finger_type = pinky and end.finger_type = ring")
+                    .unwrap()
+                    .matches(&p)
+                    .unwrap()
+            );
+        }
+
+        let p = pattern(&["q", "z"]);
+        let start_row = Attribute::parse("start.row").unwrap();
+        let end_row = Attribute::parse("end.row").unwrap();
+        assert_eq!(
+            start_row.display_value(&start_row.value(&p).unwrap().unwrap()),
+            "1"
+        );
+        assert_eq!(
+            end_row.display_value(&end_row.value(&p).unwrap().unwrap()),
+            "3"
+        );
+        let finger = Attribute::parse("start.finger").unwrap();
+        assert_eq!(
+            finger.display_value(&finger.value(&p).unwrap().unwrap()),
+            "left_pinky"
+        );
+        let direction = Attribute::parse("row.direction").unwrap();
+        assert_eq!(
+            direction.display_value(&direction.value(&p).unwrap().unwrap()),
+            "descending"
+        );
+    }
+
+    #[test]
+    fn attribute_errors_preserve_query_applicability_and_geometry_policy() {
+        assert_eq!(
+            Attribute::parse("start.unknown").unwrap_err().kind,
+            QueryErrorKind::UnsupportedAttribute("start.unknown".into())
+        );
+        let pair = pattern(&["q", "w"]);
+        assert_eq!(
+            Attribute::parse("last.direction")
+                .unwrap()
+                .value(&pair)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            Attribute::parse("first.scissor")
+                .unwrap()
+                .value(&pair)
+                .unwrap_err()
+                .kind,
+            QueryErrorKind::UnsupportedAttribute("first.scissor".into())
+        );
     }
 
     #[test]
