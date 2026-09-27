@@ -392,7 +392,7 @@ fn action_controls(optimize: bool) -> &'static str {
     if optimize {
         "Space run | Tab setup/results | U unlock | w weights | s save copy | q back"
     } else {
-        "Click/drag swap | u undo | s save copy | r original | . digits | q back"
+        "Click stat for details | Click/drag swap | u undo | s save copy | r original | . digits | q back"
     }
 }
 
@@ -999,7 +999,7 @@ pub(crate) fn action_editor(
             Event::Char('?') => info_page(
                 term,
                 "Action controls",
-                &[action_controls(false).into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into()]
+                &[action_controls(false).into(), "Click a stat for its contributing patterns.".into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into()]
             )?,
             Event::Char('i') => show_corpus_info(term, &current.corpus)?,
             Event::Char('t') => trace_view(term, &l, &w, false)?,
@@ -1060,6 +1060,9 @@ pub(crate) fn action_editor(
             } => {
                 match term.hit(&c, x, y, scroll) {
                     Some(Action::Key(i)) => drag = Some(i),
+                    Some(Action::Metric(m)) => {
+                        action_contributors(term, m, &l, &original, &baseline, &current)?;
+                    }
                     Some(Action::Weight(i)) => {
                         let mut next_w = w;
                         edit_single_weight(term, &mut next_w, i)?;

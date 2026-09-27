@@ -1091,7 +1091,7 @@ fn metric_grid_has_room_for_values_and_deltas() {
     let editor_text: String = editor.cells.iter().map(|cell| cell.ch).collect();
     assert_eq!(editor.cells[0].ch, ' ');
     assert_ne!(editor.cells[1].ch, ' ');
-    assert!(!editor
+    assert!(editor
         .hits
         .iter()
         .any(|(_, action)| matches!(action, Action::Metric(_))));

@@ -1,0 +1,129 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// adaptive swaps
+//   after g, the next s and x trade places
+//   after c, the next x and c trade places
+//   after y, the next s and l trade places
+//   after g, the next y and d trade places
+//   after s, the next y and r trade places
+//   after e, the next e and u trade places
+//   after l, the next l and w trade places
+//   after r, the next h and l trade places
+//   after t, the next w and g trade places
+//   after f, the next w and f trade places
+//
+{
+  "layout": {
+    "fingers": [
+      "v l y w j q f o , ;",
+      "c r s t m p n a i u",
+      "z x g d k b h ' . /"
+    ],
+    "thumbs": [
+      "",
+      "e"
+    ]
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "splitAngle": 0,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ]
+  },
+  "layers": null,
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "gs",
+        "output": "gx"
+      },
+      {
+        "inputs": "gx",
+        "output": "gs"
+      },
+      {
+        "inputs": "cx",
+        "output": "cc"
+      },
+      {
+        "inputs": "cc",
+        "output": "cx"
+      },
+      {
+        "inputs": "ys",
+        "output": "yl"
+      },
+      {
+        "inputs": "yl",
+        "output": "ys"
+      },
+      {
+        "inputs": "gy",
+        "output": "gd"
+      },
+      {
+        "inputs": "gd",
+        "output": "gy"
+      },
+      {
+        "inputs": "sy",
+        "output": "sr"
+      },
+      {
+        "inputs": "sr",
+        "output": "sy"
+      },
+      {
+        "inputs": "ee",
+        "output": "eu"
+      },
+      {
+        "inputs": "eu",
+        "output": "ee"
+      },
+      {
+        "inputs": "ll",
+        "output": "lw"
+      },
+      {
+        "inputs": "lw",
+        "output": "ll"
+      },
+      {
+        "inputs": "rh",
+        "output": "rl"
+      },
+      {
+        "inputs": "rl",
+        "output": "rh"
+      },
+      {
+        "inputs": "tw",
+        "output": "tg"
+      },
+      {
+        "inputs": "tg",
+        "output": "tw"
+      },
+      {
+        "inputs": "fw",
+        "output": "ff"
+      },
+      {
+        "inputs": "ff",
+        "output": "fw"
+      }
+    ]
+  }
+}

@@ -994,7 +994,7 @@ fn editor_metric_cards(
     corpus: &Corpus,
     decimals: usize
 ) -> usize {
-    grouped_metric_table(c, y, before, after, raw, &corpus.totals, decimals, &EDITOR_TABLE_GROUPS, true, false)
+    grouped_metric_table(c, y, before, after, raw, &corpus.totals, decimals, &EDITOR_TABLE_GROUPS, true, true)
 }
 
 fn grouped_metric_totals(
@@ -1910,7 +1910,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
             "Layout editor"
         } else {
             "Layout editor *"
-        }, "Space swap | u undo | U redo | r reset | s save | . digits | ? help | q back", &model, &arr, &baseline, &c, &w, None, if keyboard_mode {
+        }, "Click stat for details | Space swap | u undo | U redo | r reset | s save | . digits | ? help | q back", &model, &arr, &baseline, &c, &w, None, if keyboard_mode {
             Some(cursor)
         } else {
             None
@@ -1960,6 +1960,9 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                     Some(Action::Key(i)) => {
                         drag = Some(i);
                         cursor = i;
+                    },
+                    Some(Action::Metric(m)) => {
+                        contributor_view(term, m, &model, &baseline, &arr, &c, false)?;
                     },
                     _ => {
                     }
@@ -2050,7 +2053,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
             Event::Char('?') => info_page(
                 term,
                 "Editor controls",
-                &["Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
+                &["Click a stat for its contributing patterns.".into(), "Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
             )?,
             Event::Escape if selected.is_some() || drag.is_some() => {
                 selected = None;
