@@ -1,0 +1,321 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// chiral keys
+//   y   after same-hand key # · after other-hand key y
+//   Y   after same-hand key # · after other-hand key y
+//
+{
+  "layout": {
+    "fingers": [
+      "\\ y l d m v q f u o Y [ ]",
+      "/ n r t s g k b e a i ' skip",
+      "x j z w c skip p h , . ; skip skip"
+    ],
+    "thumbs": [
+      "",
+      ""
+    ]
+  },
+  "fingermap": [
+    "0 0 1 2 2 3 6 6 7 8 9 9 9",
+    "0 0 1 2 3 3 6 6 7 8 9 9 0",
+    "0 1 2 3 3 0 6 6 7 8 9 0 0"
+  ],
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "splitAngle": 0,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ]
+  },
+  "layers": null,
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "yy",
+        "output": "y#"
+      },
+      {
+        "inputs": "ly",
+        "output": "l#"
+      },
+      {
+        "inputs": "dy",
+        "output": "d#"
+      },
+      {
+        "inputs": "gy",
+        "output": "g#"
+      },
+      {
+        "inputs": "vy",
+        "output": "v#"
+      },
+      {
+        "inputs": "qy",
+        "output": "qy"
+      },
+      {
+        "inputs": "fy",
+        "output": "fy"
+      },
+      {
+        "inputs": "uy",
+        "output": "uy"
+      },
+      {
+        "inputs": "oy",
+        "output": "oy"
+      },
+      {
+        "inputs": "ny",
+        "output": "n#"
+      },
+      {
+        "inputs": "ry",
+        "output": "r#"
+      },
+      {
+        "inputs": "ty",
+        "output": "t#"
+      },
+      {
+        "inputs": "sy",
+        "output": "s#"
+      },
+      {
+        "inputs": "wy",
+        "output": "w#"
+      },
+      {
+        "inputs": "ky",
+        "output": "ky"
+      },
+      {
+        "inputs": "hy",
+        "output": "hy"
+      },
+      {
+        "inputs": "ey",
+        "output": "ey"
+      },
+      {
+        "inputs": "ay",
+        "output": "ay"
+      },
+      {
+        "inputs": "iy",
+        "output": "iy"
+      },
+      {
+        "inputs": "jy",
+        "output": "j#"
+      },
+      {
+        "inputs": "my",
+        "output": "m#"
+      },
+      {
+        "inputs": "cy",
+        "output": "c#"
+      },
+      {
+        "inputs": "zy",
+        "output": "z#"
+      },
+      {
+        "inputs": "py",
+        "output": "py"
+      },
+      {
+        "inputs": "by",
+        "output": "by"
+      },
+      {
+        "inputs": ",y",
+        "output": ",y"
+      },
+      {
+        "inputs": ".y",
+        "output": ".y"
+      },
+      {
+        "inputs": "xy",
+        "output": "x#"
+      },
+      {
+        "inputs": "Yy",
+        "output": "Yy"
+      },
+      {
+        "inputs": "/y",
+        "output": "/#"
+      },
+      {
+        "inputs": "'y",
+        "output": "'y"
+      },
+      {
+        "inputs": ";y",
+        "output": ";y"
+      },
+      {
+        "inputs": "\\y",
+        "output": "\\#"
+      },
+      {
+        "inputs": "[y",
+        "output": "[y"
+      },
+      {
+        "inputs": "]y",
+        "output": "]y"
+      },
+      {
+        "inputs": "yY",
+        "output": "yy"
+      },
+      {
+        "inputs": "lY",
+        "output": "ly"
+      },
+      {
+        "inputs": "dY",
+        "output": "dy"
+      },
+      {
+        "inputs": "gY",
+        "output": "gy"
+      },
+      {
+        "inputs": "vY",
+        "output": "vy"
+      },
+      {
+        "inputs": "qY",
+        "output": "q#"
+      },
+      {
+        "inputs": "fY",
+        "output": "f#"
+      },
+      {
+        "inputs": "uY",
+        "output": "u#"
+      },
+      {
+        "inputs": "oY",
+        "output": "o#"
+      },
+      {
+        "inputs": "nY",
+        "output": "ny"
+      },
+      {
+        "inputs": "rY",
+        "output": "ry"
+      },
+      {
+        "inputs": "tY",
+        "output": "ty"
+      },
+      {
+        "inputs": "sY",
+        "output": "sy"
+      },
+      {
+        "inputs": "wY",
+        "output": "wy"
+      },
+      {
+        "inputs": "kY",
+        "output": "k#"
+      },
+      {
+        "inputs": "hY",
+        "output": "h#"
+      },
+      {
+        "inputs": "eY",
+        "output": "e#"
+      },
+      {
+        "inputs": "aY",
+        "output": "a#"
+      },
+      {
+        "inputs": "iY",
+        "output": "i#"
+      },
+      {
+        "inputs": "jY",
+        "output": "jy"
+      },
+      {
+        "inputs": "mY",
+        "output": "my"
+      },
+      {
+        "inputs": "cY",
+        "output": "cy"
+      },
+      {
+        "inputs": "zY",
+        "output": "zy"
+      },
+      {
+        "inputs": "pY",
+        "output": "p#"
+      },
+      {
+        "inputs": "bY",
+        "output": "b#"
+      },
+      {
+        "inputs": ",Y",
+        "output": ",#"
+      },
+      {
+        "inputs": ".Y",
+        "output": ".#"
+      },
+      {
+        "inputs": "xY",
+        "output": "xy"
+      },
+      {
+        "inputs": "YY",
+        "output": "Y#"
+      },
+      {
+        "inputs": "/Y",
+        "output": "/y"
+      },
+      {
+        "inputs": "'Y",
+        "output": "'#"
+      },
+      {
+        "inputs": ";Y",
+        "output": ";#"
+      },
+      {
+        "inputs": "\\Y",
+        "output": "\\y"
+      },
+      {
+        "inputs": "[Y",
+        "output": "[#"
+      },
+      {
+        "inputs": "]Y",
+        "output": "]#"
+      }
+    ]
+  }
+}
