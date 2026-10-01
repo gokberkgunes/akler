@@ -1,4 +1,4 @@
-//! Mana2's built-in stat definitions and default progressive score.
+//! Mana2's built-in stat definitions and configurable progressive score.
 //!
 //! `add_gram` accepts already-mapped physical slot IDs. It intentionally does
 //! not use AKLER's ergonomic flags: Mana2 has its own coordinate comparisons,
@@ -228,18 +228,128 @@ pub(crate) fn stats(raw: &RawStats, totals: [f64; 4]) -> Stats {
     }
 }
 
-/// Mana2's checked-in `weights.toml` score. The result is directly compatible
-/// with `core.Score`; AKLER minimizes the negated score.
-pub(crate) fn score(stats: &Stats) -> f64 {
-    score_contributions(stats).into_iter().sum()
+/// Progressive slope schedules for Mana2's statistics, in [`STAT_IDS`] order.
+/// Each schedule alternates slope and upper boundary, ending with a slope.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Weights([Vec<f64>; N_STATS]);
+
+impl Default for Weights {
+    fn default() -> Self {
+        Self(std::array::from_fn(|index| {
+            weights(STAT_IDS[index]).to_vec()
+        }))
+    }
+}
+
+impl Weights {
+    pub(crate) fn from_text(text: &str) -> crate::AppResult<Self> {
+        let mut result = Self::default();
+        let mut seen = std::collections::BTreeSet::new();
+
+        for (line_index, line) in text.lines().enumerate() {
+            let content = line.split('#').next().unwrap_or("").trim();
+            if content.is_empty() {
+                continue;
+            }
+            let (key, value) = content
+                .split_once('=')
+                .ok_or_else(|| format!("line {}: expected name = value", line_index + 1))?;
+            let key = key.trim().to_ascii_lowercase();
+            if !seen.insert(key.clone()) {
+                return Err(format!("line {}: duplicate setting {key}", line_index + 1).into());
+            }
+            let index = STAT_IDS
+                .iter()
+                .position(|id| id.eq_ignore_ascii_case(&key))
+                .ok_or_else(|| format!("line {}: unknown Mana2 stat {key}", line_index + 1))?;
+            let value = value.trim();
+            let values = if value.starts_with('[') || value.ends_with(']') {
+                let body = value
+                    .strip_prefix('[')
+                    .and_then(|value| value.strip_suffix(']'))
+                    .ok_or_else(|| {
+                        format!(
+                            "line {}: schedule must use matching brackets",
+                            line_index + 1
+                        )
+                    })?;
+                if body.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    body.split(',')
+                        .map(|part| {
+                            part.trim().parse::<f64>().map_err(|_| {
+                                format!(
+                                    "line {}: {key} schedule contains an invalid number",
+                                    line_index + 1
+                                )
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                }
+            } else {
+                vec![value.parse::<f64>().map_err(|_| {
+                    format!(
+                        "line {}: {key} schedule contains an invalid number",
+                        line_index + 1
+                    )
+                })?]
+            };
+            validate_schedule(&key, &values)
+                .map_err(|error| format!("line {}: {error}", line_index + 1))?;
+            result.0[index] = values;
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn config_text(&self) -> String {
+        let mut text = String::new();
+        for (id, schedule) in STAT_IDS.iter().zip(&self.0) {
+            text.push_str(id);
+            text.push_str(" = [");
+            for (index, value) in schedule.iter().enumerate() {
+                if index > 0 {
+                    text.push_str(", ");
+                }
+                text.push_str(&value.to_string());
+            }
+            text.push_str("]\n");
+        }
+        text
+    }
+}
+
+fn validate_schedule(id: &str, schedule: &[f64]) -> Result<(), String> {
+    if schedule.is_empty() || schedule.len() % 2 == 0 {
+        return Err(format!(
+            "{id} schedule must contain an odd number of values (slope, boundary, ..., slope)"
+        ));
+    }
+    for (index, value) in schedule.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(format!("{id} schedule values must be finite"));
+        }
+        if index % 2 == 1 {
+            if *value <= 0.0 {
+                return Err(format!("{id} boundaries must be positive"));
+            }
+            if index >= 3 && *value <= schedule[index - 2] {
+                return Err(format!("{id} boundaries must be strictly ascending"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Mana2's progressive score. The result is directly compatible with
+/// `core.Score`; AKLER minimizes the negated score.
+pub(crate) fn score(stats: &Stats, weights: &Weights) -> f64 {
+    score_contributions(stats, weights).into_iter().sum()
 }
 
 /// Return Mana2's independently weighted contribution for each stat.
-pub(crate) fn score_contributions(stats: &Stats) -> [f64; N_STATS] {
-    std::array::from_fn(|index| {
-        let id = STAT_IDS[index];
-        score_stat(stats.values[index], weights(id))
-    })
+pub(crate) fn score_contributions(stats: &Stats, weights: &Weights) -> [f64; N_STATS] {
+    std::array::from_fn(|index| score_stat(stats.values[index], &weights.0[index]))
 }
 
 fn score_stat(mut frequency: f64, weight: &[f64]) -> f64 {
@@ -659,7 +769,8 @@ mod tests {
 
         assert_eq!(stats.get("inroll2"), Some(100.0));
         assert_eq!(stats.get("inroll2nothumbs"), Some(0.0));
-        let contributions = score_contributions(&stats);
+        let weights = Weights::default();
+        let contributions = score_contributions(&stats, &weights);
         assert_eq!(
             contributions[STAT_IDS.iter().position(|id| *id == "inroll2").unwrap()],
             10.0
@@ -671,6 +782,6 @@ mod tests {
                 .unwrap()],
             0.0
         );
-        assert_eq!(score(&stats), 10.0);
+        assert_eq!(score(&stats, &weights), 10.0);
     }
 }

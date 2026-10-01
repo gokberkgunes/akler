@@ -899,7 +899,7 @@ fn same_key_repeats_and_thumb_denominators() {
 
 #[test]
 fn incremental_swaps_and_cycles_in_both_objectives() {
-    for mode in ["simple", "detailed"] {
+    for mode in ["mana2", "detailed"] {
         let mut p = source_problem();
         p.settings.mode = mode.into();
         let mut s = State::new(p.model.original.clone(), &p);
@@ -1024,8 +1024,10 @@ fn config_round_trips_and_presets() {
     assert_eq!(r.mode, "mana2");
     assert_eq!(r.travel_limit, Some(0.0));
     assert_eq!(r.design, "evolve");
-    assert_eq!(r.simple, s.simple);
     assert_eq!(r.mix, s.mix);
+    assert!(search_from_text("mode = simple").is_err());
+    assert!(search_from_text("mode = basic").is_err());
+    assert!(search_from_text("simple_sfb = 12").is_err());
     assert!(search_from_text("seconds = NaN").is_err());
     assert!(search_from_text("max_sfb_increase = -1").is_err());
 }
@@ -1128,7 +1130,21 @@ fn search_respects_locks_and_relative_limits() {
 fn mana2_ordinary_swap_matches_full_physical_recalculation() {
     let mut problem = source_problem();
     problem.settings.mode = "mana2".into();
+    problem.weights.2 =
+        mana2_metrics::Weights::from_text("sfbw = [-19]\npinkyringcurl = [0]\n").unwrap();
     let before = State::new(problem.model.original.clone(), &problem);
+    let stats = mana2_metrics::stats(
+        before.raws[0].1.as_ref().unwrap(),
+        problem.corpora[0].totals,
+    );
+    close(
+        before.score,
+        -mana2_metrics::score(&stats, &problem.weights.2),
+    );
+    assert_ne!(
+        before.score,
+        -mana2_metrics::score(&stats, &Weights::default().2)
+    );
     let mut trial = before.clone();
     trial_into(&mut trial, &before, Move::pair(0, 1), &problem);
     let rebuilt = State::new(trial.arr.clone(), &problem);

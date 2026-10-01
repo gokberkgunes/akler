@@ -243,7 +243,7 @@ fn evaluate_tui(
 ) -> AppResult<Option<Arc<Evaluated>>> {
     let layout = l.clone();
     let corpus = c.clone();
-    let weights = *w;
+    let weights = w.clone();
     ngram_job(
         term,
         &format!("{}-gram magic estimate", c.order),
@@ -722,33 +722,10 @@ fn action_setup_frame(
     );
     y += 2;
 
-    if settings.mode == "simple" {
-        for (i, name) in SIMPLE_NAMES.iter().enumerate() {
-            let column_width = c.w / 3;
-            let x = i % 3 * column_width;
-            let row = y + i / 3;
-            c.text(x, row, name, FG);
-            c.text(
-                x + name.len() + 1,
-                row,
-                &config_number(settings.simple[i]),
-                CYAN,
-            );
-            c.hit(
-                Rect {
-                    x,
-                    y: row,
-                    w: column_width.saturating_sub(1),
-                    h: 1,
-                },
-                Action::SimpleWeight(i),
-            );
-        }
-        y += 4;
-    } else if settings.mode == "detailed" {
+    if settings.mode == "detailed" {
         y = grouped_weight_rows(&mut c, y, weights) + 1;
     } else {
-        c.text(0, y, "Mana2 stats and bundled progressive weights", MUTED);
+        c.text(0, y, "Mana2 weights: [mana2] in akler.conf", MUTED);
         y += 2;
     }
 
@@ -805,10 +782,6 @@ fn action_setup_frame(
         &format!("{}-gram magic estimate", corpus.order),
         MUTED,
     );
-    if settings.mode == "simple" {
-        y += 1;
-        c.text(0, y, "Typing effort: detailed weights (w to edit)", MUTED);
-    }
     if !corpus.warnings.is_empty() {
         y += 1;
         c.text(
@@ -1137,7 +1110,7 @@ pub(crate) fn action_editor(
                 let ids: Vec<_> = (0..N_WEIGHTS).filter(|&i|!aggregate(i)).collect();
                 let names: Vec<_> = ids.iter().map(|&i | WEIGHT_NAMES[i].to_string()).collect();
                 if let Some(i) = menu(term, "", &names)? {
-                    let mut next_w = w;
+                    let mut next_w = w.clone();
                     edit_single_weight(term, &mut next_w, ids[i])?;
                     if let Some(b) = evaluate_tui(term, &original, &corpus, &next_w)? {
                         if let Some(a) = evaluate_tui(term, &l, &corpus, &next_w)? {
@@ -1161,7 +1134,7 @@ pub(crate) fn action_editor(
                         action_contributors(term, m, &l, &original, &baseline, &current)?;
                     }
                     Some(Action::Weight(i)) => {
-                        let mut next_w = w;
+                        let mut next_w = w.clone();
                         edit_single_weight(term, &mut next_w, i)?;
                         if let Some(b) = evaluate_tui(term, &original, &corpus, &next_w)? {
                             if let Some(a) = evaluate_tui(term, &l, &corpus, &next_w)? {
@@ -1267,75 +1240,6 @@ fn action_simple_rows(
     rows
 }
 
-fn action_simple_contributors(
-    term: &mut Terminal,
-    metric: usize,
-    layout: &ak::Layout,
-    original: &ak::Layout,
-    before: &Evaluated,
-    after: &Evaluated,
-) -> AppResult<()> {
-    let source = action_simple_rows(metric, layout, before, after);
-    // These IDs supply the common percentage unit and improvement colors;
-    // the contributions and totals above are the actual simple metrics.
-    let color_metric = SIMPLE_METRIC_IDS[metric];
-    let mut sort_change = false;
-    let mut all = false;
-    let mut scroll = 0;
-    loop {
-        let mut rows = source.clone();
-        if sort_change {
-            rows.sort_by(|a, b| {
-                (b.2 - b.1)
-                    .abs()
-                    .total_cmp(&(a.2 - a.1).abs())
-                    .then_with(|| a.0.cmp(&b.0))
-            });
-        }
-        let mut frame = action_detail_frame_named(
-            term.width(),
-            color_metric,
-            SIMPLE_NAMES[metric],
-            layout,
-            original,
-            &after.corpus.name,
-            &rows,
-            (before.metrics.simple[metric], after.metrics.simple[metric]),
-            sort_change,
-            all,
-            false,
-        );
-        // Simple contributions combine metric classes, so reversed-pair
-        // aggregation is intentionally not offered on this screen.
-        for x in 0..frame.w {
-            frame.cells[frame.w + x] = Cell { ch: ' ', color: FG };
-        }
-        frame.text(0, 1, "d sort | a all/top | ? help | q back", MUTED);
-        term.present(&frame, scroll)?;
-        let event = term.event()?;
-        if scroll_event(&event, &mut scroll, frame.h, term.size.1) {
-            continue;
-        }
-        match event {
-            Event::Escape | Event::Quit | Event::Char('q') | Event::Enter => return Ok(()),
-            Event::Char('d') => {
-                sort_change = !sort_change;
-                scroll = 0;
-            }
-            Event::Char('a') => {
-                all = !all;
-                scroll = 0;
-            }
-            Event::Char('?') => info_page(term, SIMPLE_NAMES[metric], &[
-                "Keys are actual physical slots, including winning action keys, not emitted text.".into(),
-                "The selected corpus is shown. The optimizer may use a weighted corpus mixture.".into(),
-                "d sorts by absolute change; a switches all/top 16 contributions.".into(),
-            ])?,
-            _ => {}
-        }
-    }
-}
-
 fn action_default_locks(layout: &ak::Layout, generation: bool) -> Vec<bool> {
     (0..layout.slots.len())
         .map(|i| {
@@ -1406,24 +1310,13 @@ fn action_optimizer_setup(
                     }
                     continue;
                 }
-                Action::SimpleWeight(i) => {
-                    if let Some(value) =
-                        input_box(term, SIMPLE_NAMES[i], "", &settings.simple[i].to_string())?
-                    {
-                        match finite_nonnegative(&value) {
-                            Ok(value) => {
-                                settings.simple[i] = value;
-                                settings.preset = "custom".into();
-                            }
-                            Err(error) => *status = error.to_string(),
-                        }
-                    }
-                    continue;
-                }
                 Action::Setting(i) => {
                     let result = match i {
                         14 => action_choose_design(term, layout, settings, locks),
-                        16 => choose_metrics(term, settings),
+                        16 => {
+                            cycle_metrics(settings);
+                            Ok(())
+                        }
                         17 => choose_preset(term, settings),
                         _ => edit_setting(term, settings, i),
                     };
@@ -1449,7 +1342,7 @@ fn action_optimizer_setup(
             Event::Char('o') => *layout = original.clone(),
             Event::Char('n') => settings.seed = new_seed(),
             Event::Char('g') => action_choose_design(term, layout, settings, locks)?,
-            Event::Char('m') => choose_metrics(term, settings)?,
+            Event::Char('m') => cycle_metrics(settings),
             Event::Char('p') => choose_preset(term, settings)?,
             Event::Char('x') => edit_mix(term, settings)?,
             Event::Char('w') => {
@@ -1487,7 +1380,7 @@ fn action_optimizer_setup(
                     "H home/action locks; U unlock all; L lock all. Mouse toggles locks.".into(),
                     "Limits are increases relative to the original on each training corpus.".into(),
                     "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into(),
-                    "Detailed weights also select typing effort, including in simple mode; w edits them.".into(),
+                    "Detailed weights select typing effort; w edits them.".into(),
                 ],
             )?,
             _ => {}
@@ -1507,7 +1400,7 @@ fn action_optimizer_search(
     let original_owned = original.clone();
     let seed_owned = seed.clone();
     let training = corpora.to_vec();
-    let worker_weights = *weights;
+    let worker_weights = weights.clone();
     let worker_settings = settings.clone();
     let worker_locks = locks.to_vec();
     let control = Arc::new(Control::new());
@@ -1569,22 +1462,7 @@ fn action_optimizer_search(
                     &progress.phase
                 };
                 let current = metrics_totals(raw, totals);
-                if settings.mode == "simple" {
-                    y = simple_metric_table(&mut frame, y, baseline, &current, term.decimals()) + 1;
-                    frame.text(
-                        0,
-                        y,
-                        &format!(
-                            "Travel {} → {} u/100   SF {} → {} u/100",
-                            fmt2(baseline.v[TRAVEL]),
-                            fmt2(current.v[TRAVEL]),
-                            fmt2(baseline.v[SFTRAVEL]),
-                            fmt2(current.v[SFTRAVEL]),
-                        ),
-                        MUTED,
-                    );
-                    y += 2;
-                } else if settings.mode == "mana2" {
+                if settings.mode == "mana2" {
                     let stats = mana2_stats(raw, totals);
                     y = mana2_compact_stats(&mut frame, y, None, &stats, term.decimals());
                     if snapshot.has_best {
@@ -1592,7 +1470,7 @@ fn action_optimizer_search(
                             &mut frame,
                             y,
                             None,
-                            mana2_metrics::score(&stats),
+                            mana2_metrics::score(&stats, &weights.2),
                             snapshot.best.score,
                             term.decimals(),
                         );
@@ -1676,13 +1554,9 @@ fn action_optimizer_search(
 fn action_score_breakdown(
     metrics: &Metrics,
     weights: &Weights,
-    settings: &SearchSettings,
+    _settings: &SearchSettings,
 ) -> Breakdown {
-    if settings.mode == "simple" {
-        simple_breakdown(metrics, &settings.simple)
-    } else {
-        breakdown(metrics, weights)
-    }
+    breakdown(metrics, weights)
 }
 
 fn action_result_frame(
@@ -1706,28 +1580,7 @@ fn action_result_frame(
         "r setup | Space refine | b compare | [ ] | s save | S batch | q back",
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
-    if settings.mode == "simple" {
-        y = simple_metric_table(
-            &mut frame,
-            y,
-            &before.metrics,
-            &after.metrics,
-            term.decimals(),
-        ) + 1;
-        frame.text(
-            0,
-            y,
-            &format!(
-                "Travel {} → {} u/100   SF {} → {} u/100",
-                fmt2(before.metrics.v[TRAVEL]),
-                fmt2(after.metrics.v[TRAVEL]),
-                fmt2(before.metrics.v[SFTRAVEL]),
-                fmt2(after.metrics.v[SFTRAVEL]),
-            ),
-            MUTED,
-        );
-        y += 2;
-    } else if settings.mode == "mana2" {
+    if settings.mode == "mana2" {
         let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
         let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
         y = mana2_compact_stats(
@@ -1740,8 +1593,8 @@ fn action_result_frame(
         y = mana2_score_line(
             &mut frame,
             y,
-            Some(mana2_metrics::score(&before_stats)),
-            mana2_metrics::score(&after_stats),
+            Some(mana2_metrics::score(&before_stats, &weights.2)),
+            mana2_metrics::score(&after_stats, &weights.2),
             objective,
             term.decimals(),
         );
@@ -1804,10 +1657,15 @@ fn save_action_result(
     let path = layout
         .save_new()
         .map_err(|error| format!("layout save: {error}"))?;
+    let mana2 = if settings.mode == "mana2" {
+        format!("[mana2]\n{}\n", weights.2.config_text())
+    } else {
+        String::new()
+    };
     let mut report = format!(
-        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
+        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
         progress.seed, progress.evaluations, progress.elapsed, candidate.score,
-        weights_text(weights), rolls_config_text(weights.rolls()), search_settings_text(settings),
+        weights_text(weights), rolls_config_text(weights.rolls()), mana2, search_settings_text(settings),
         original.text(), start.text(), layout.text(),
         locks.iter().enumerate().filter_map(|(i, &locked)| locked.then_some(i)).collect::<Vec<_>>(),
     );
@@ -1924,9 +1782,6 @@ fn action_optimizer(
                 if let Some(action) = action_press(term, &frame, &event, scroll) {
                     match action {
                         Action::Metric(metric) => action_contributors(
-                            term, metric, &layout, &original, baseline, current,
-                        )?,
-                        Action::SimpleMetric(metric) => action_simple_contributors(
                             term, metric, &layout, &original, baseline, current,
                         )?,
                         _ => {}
@@ -2586,37 +2441,6 @@ mod ngram_integration_tests {
         }
     }
     #[test]
-    fn magic_simple_setup_exposes_weights_and_all_shared_controls() {
-        let layout = history_layout();
-        let corpus = history_corpus(b"aan");
-        let weights = Weights::default();
-        let mut settings = SearchSettings::default();
-        settings.mode = "simple".into();
-        settings.hybrid = false;
-        settings.mix.insert("history".into(), 2.0);
-        let locks = action_default_locks(&layout, false);
-        let canvas = action_setup_frame(
-            100, &layout, &layout, &corpus, &weights, &locks, &settings, "ready",
-        );
-        let text = canvas_text(&canvas);
-        assert!(text.contains("sweep"));
-        assert!(text.contains("history:2"));
-        for i in 0..SIMPLE_NAMES.len() {
-            assert!(canvas.hits.iter().any(|(_, action)| matches!(
-                action, Action::SimpleWeight(index) if *index == i
-            )));
-        }
-        assert!(canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::Command('x'))));
-        assert!(!canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::Weight(_))));
-    }
-
-    #[test]
     fn action_default_locks_preserve_refine_safety_and_allow_generation() {
         let layout = history_layout();
         let refine = action_default_locks(&layout, false);
@@ -2630,55 +2454,6 @@ mod ngram_integration_tests {
                 assert!(refine[i]);
             }
         }
-    }
-
-    #[test]
-    fn optimizer_objective_mode_does_not_change_the_typing_effort_policy() {
-        let layout = history_layout();
-        let corpus = history_corpus(b"aanwhnaap");
-        let weights = Weights::default();
-        let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
-        let mut settings = SearchSettings::default();
-        assert_eq!(
-            action_score_breakdown(&evaluation.metrics, &weights, &settings)
-                .net
-                .to_bits(),
-            evaluation.score.to_bits(),
-        );
-        let effort_before = LocalEffort::new(&layout, &weights);
-        settings.mode = "simple".into();
-        settings.simple = [3.0, 7.0, 1.0, 2.0, 5.0, 0.5, 0.6, 0.8, 0.9];
-        assert_eq!(
-            action_score_breakdown(&evaluation.metrics, &weights, &settings)
-                .net
-                .to_bits(),
-            simple_breakdown(&evaluation.metrics, &settings.simple)
-                .net
-                .to_bits(),
-        );
-        let effort_after = LocalEffort::new(&layout, &weights);
-        assert_eq!(effort_before.uni, effort_after.uni);
-        assert_eq!(effort_before.bi, effort_after.bi);
-        assert_eq!(effort_before.sk, effort_after.sk);
-    }
-
-    #[test]
-    fn simple_action_objective_weights_inward_and_outward_rolls_separately() {
-        let layout = history_layout();
-        let corpus = history_corpus(b"fdlfdlldf");
-        let weights = Weights::default();
-        let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
-        assert!(evaluation.metrics.simple[7] > 0.0);
-        assert!(evaluation.metrics.simple[8] > 0.0);
-
-        let mut settings = SearchSettings::default();
-        settings.mode = "simple".into();
-        settings.simple = [0.0; 9];
-        settings.simple[7] = 0.2;
-        settings.simple[8] = 0.8;
-        let score = action_score_breakdown(&evaluation.metrics, &weights, &settings);
-        let expected = -(evaluation.metrics.simple[7] * 0.2 + evaluation.metrics.simple[8] * 0.8);
-        assert!((score.net - expected).abs() < 1e-12);
     }
 
     #[test]

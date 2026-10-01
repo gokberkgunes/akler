@@ -773,10 +773,10 @@ impl Proposal {
         metrics_totals(&self.raw, &self.totals)
     }
 
-    pub(crate) fn mana2_score(&self) -> f64 {
+    pub(crate) fn mana2_score(&self, weights: &mana2_metrics::Weights) -> f64 {
         assert!(self.valid);
         let raw = self.raw.1.as_ref().expect("mana2 totals must be enabled");
-        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals))
+        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals), weights)
     }
 
     #[cfg(test)]
@@ -844,9 +844,9 @@ impl Incremental {
         }
     }
 
-    pub(crate) fn mana2_score(&self) -> f64 {
+    pub(crate) fn mana2_score(&self, weights: &mana2_metrics::Weights) -> f64 {
         let raw = self.raw.1.as_ref().expect("mana2 totals must be enabled");
-        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals))
+        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals), weights)
     }
 
     pub(crate) fn new<F>(
@@ -1475,7 +1475,9 @@ mod tests {
             for (actual, expected) in proposal.metrics().v.iter().zip(fresh.metrics().v) {
                 assert!((actual - expected).abs() < 1e-8);
             }
-            assert!((proposal.mana2_score() - fresh.mana2_score()).abs() < 1e-8);
+            assert!(
+                (proposal.mana2_score(&weights.2) - fresh.mana2_score(&weights.2)).abs() < 1e-8
+            );
             cache.commit(&mut proposal);
             assert_eq!(cache.tails, fresh.tails);
             cache

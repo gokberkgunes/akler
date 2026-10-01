@@ -19,7 +19,8 @@ Edit the commented [akler.conf](../akler.conf) in the current directory:
 | Section | Contents |
 |---|---|
 | `[weights]` | Detailed metric, finger-usage, and off-home weights; see [METRICS.md](METRICS.md). |
-| `[search]` | Search options, scoring mode, simple-mode weights, and `corpus.NAME` mixture shares. |
+| `[mana2]` | Progressive slope schedules for Mana2 stat IDs. |
+| `[search]` | Search options, scoring mode, and `corpus.NAME` mixture shares. |
 | `[rolls]` | Independent `include_thumbs`, `include_scissors`, and `include_stretches` toggles. |
 | `[ranker]` | `columns = SCORE SFB SFS ...`, using displayed metric names. |
 | `[ngrams]` | `include_spacegrams` and independent `trigrams`, `tetragrams`, and `pentagrams` maximum counts. |
@@ -138,15 +139,16 @@ editor and optimizer saves always choose a new stem, skipping any existing
 companion or run record. Optimizer pairs share one `.run.txt` record.
 
 Both optimizer setup screens use Space to run, `s` to save settings, `r` to
-reload settings, `p` for presets, `g` for design, `m` for scoring mode, `n` for
-a new seed, and `x` for corpus shares. `d` restores default settings; `o` restores
+reload settings, `p` for presets, `g` for design, `m` to cycle between detailed
+and Mana2 scoring, `n` for a new seed, and `x` for corpus shares. `d` restores
+default settings; `o` restores
 the original arrangement. Setup reload updates weights/search; corpus n-gram
 limits stay with the loaded corpus until it is reopened. Click keys to toggle
 locks, `H` restores default locks, `U` unlocks all keys including Space, and `L` locks all. Refine defaults
 lock home and thumb keys; magic refinement also locks named actions. Generation
 starts unlocked. Space can move when its physical slot is unlocked. Keyboard drawings label it `SP`.
-Detailed weights also control action typing effort, even when the
-search objective uses simple mode.
+Detailed weights also control action typing effort when Mana2 is the search
+objective.
 
 Magic search results use `r` to return to setup, Space to refine the selected
 candidate with a new seed, `b` to choose a retained candidate, and `[`/`]` to
@@ -154,9 +156,9 @@ navigate candidates. Caps continue to reference the original loaded layout.
 `s` saves the current layout with its run record; `S` saves each retained
 candidate and its record (without the ordinary optimizer's batch CSV). The
 candidate chooser lists objectives; it has no side-by-side comparison grid.
-Detailed metrics are prepared on first viewing each candidate. Simple-mode
-contributors also show physical action labels; `d` sorts and `a` switches
-between top rows and all rows. The labeled search objective uses
+Detailed metrics are prepared on first viewing each candidate. Contributor rows
+show physical action labels; `d` sorts and `a` switches between top rows and all
+rows. The labeled search objective uses
 the configured mode and training mixture; the metric cards describe the selected
 corpus. Live search shows the keyboard, metric and finger-usage panels, and
 progress. See [layout syntax](LAYOUTS.md) for supported rules.
@@ -318,19 +320,17 @@ following settings under `[search]` in the same file.
 | `mode` | Scoring mode; choices listed below. | detailed |
 | `preset` | Name recorded for the selected preset. Choosing a preset applies its mode and caps immediately; loading this value from the file does not reapply it. | custom |
 | `min_distance` | Minimum differing letter positions for candidate diversity, and from the template for generation. | 6 |
-| `simple_*` | Nine simple-mode weights listed in METRICS.md. | See table |
 | `corpus.NAME` | Relative training share; positive shares are normalized to sum to 1. No mixture means selected corpus only. | No mixture |
 
 Scoring modes:
 
 * `detailed`: Score with the weights in `akler.conf`.
-* `mana2`: Score with Mana2 stats and bundled progressive weights.
-* `simple`: Score with the nine `simple_*` weights in `akler.conf`.
+* `mana2`: Score with Mana2 stats and the progressive schedules under `[mana2]`.
 
 `metrics` aliases `mode`; legacy `max_sfb`/`max_sfs` are also baseline-relative
 increase limits, not absolute ceilings. Caps are checked per training corpus,
-not just on the mixture's mean score. Weights and floating settings must be
-finite/nonnegative; cycle probability is at most 1, and hybrid mode requires
+not just on the mixture's mean score. Detailed weights and floating search
+settings must be finite/nonnegative; cycle probability is at most 1, and hybrid mode requires
 0 < end temperature ≤ start temperature. Iteration counts must be positive.
 Legacy combined SRAF/ROLL reward names remain accepted and initialize both
 directions unless the corresponding directional setting is explicit.
@@ -352,8 +352,8 @@ only records the selection and keeps current values.
 | explore | Mana2 mode; SFB/SFS and travel caps disabled. |
 | custom | Keeps current values. |
 
-Magic search now supports the same hybrid/sweep methods, restarts, annealing,
-three-key cycles, time budget, simple/detailed objectives, corpus mixtures, all
+Magic search supports the same hybrid/sweep methods, restarts, annealing,
+three-key cycles, time budget, detailed/Mana2 objectives, corpus mixtures, all
 four caps, generation modes, and candidate archive controls. This intentionally
 changes its search behavior: the unchanged defaults now mean hybrid search with
 a 30-second budget, rather than the old fixed 40-pass greedy search. Neither

@@ -125,8 +125,6 @@ enum Action {
     Weight(usize),
     Setting(usize),
     Item(usize),
-    SimpleMetric(usize),
-    SimpleWeight(usize),
     Command(char)
 }
 
@@ -1817,13 +1815,13 @@ fn mana2_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppR
             "{} (share {:.3}): score {:.4} → {:.4}",
             corpus.name,
             p.shares[i],
-            mana2_metrics::score(&before),
-            mana2_metrics::score(&after)
+            mana2_metrics::score(&before, &p.weights.2),
+            mana2_metrics::score(&after, &p.weights.2)
         ));
-        for (index, value) in mana2_metrics::score_contributions(&before).into_iter().enumerate() {
+        for (index, value) in mana2_metrics::score_contributions(&before, &p.weights.2).into_iter().enumerate() {
             old[index] += p.shares[i] * value;
         }
-        for (index, value) in mana2_metrics::score_contributions(&after).into_iter().enumerate() {
+        for (index, value) in mana2_metrics::score_contributions(&after, &p.weights.2).into_iter().enumerate() {
             new[index] += p.shares[i] * value;
         }
     }
@@ -2137,10 +2135,6 @@ fn metric_short_name(m: usize) -> &'static str {
     }
 }
 
-const SIMPLE_METRIC_IDS: [usize; 9] = [
-    SFB, SFS, LSB, DNFJB, DNFJB, INSRAF, OUTSRAF, INROLL, OUTROLL,
-];
-
 fn simple_denominator(id: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
     match id {
         0 => totals[1],
@@ -2163,74 +2157,6 @@ fn simple_mass(id: usize, raw: &Raw) -> f64 {
         7 => raw.0[INROLL],
         _ => raw.0[OUTROLL],
     }
-}
-
-fn simple_metric_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metrics, dp: usize) -> usize {
-    let groups: [(&str, &[usize]); 3] = [
-        ("Same finger", &[0, 1]),
-        ("Movement", &[2, 3, 4]),
-        ("Preferences", &[5, 6, 7, 8]),
-    ];
-    let labels = ["SFB", "SFS", "LAT", "ROW1", "ROW2", "IN-SR", "OUT-SR", "IN-RL", "OUT-RL"];
-    let label = 13;
-    let metric_label = labels.iter().map(|name| name.len()).max().unwrap_or(0);
-    let value = (dp + 4).max(after.simple.iter().map(|v| format!("{}%", number( * v, dp)).len()).max().unwrap_or(0));
-    let delta = (dp + 3).max((0..SIMPLE_NAMES.len()).map(|i| delta_text(before.simple[i], after.simple[i], dp).chars().count()).max().unwrap_or(0));
-    let cell = 1 + metric_label + 1 + value + 2 + delta + 1;
-    let cols = ((c.w.saturating_sub(label + 2)) /(cell + 1)).clamp(1, 3);
-    let rows = groups.iter().map(|(_, ids)|(ids.len() + cols - 1) / cols).sum:: <usize>();
-    let width = label + 2 + cols *(cell + 1);
-    let x = c.w.saturating_sub(width) / 2;
-    let h = rows + 2;
-    c.boxed(Rect {
-        x,
-        y,
-        w: width,
-        h
-    }, BORDER);
-    for j in 0..cols {
-        let xx = x + 1 + label + j *(cell + 1);
-        c.put(xx, y, '┬', BORDER);
-        c.put(xx, y + h - 1, '┴', BORDER);
-        for yy in y + 1..y + h - 1 {
-            c.put(xx, yy, '│', BORDER);
-        }
-    }
-    let mut row = 0;
-    for (group_index, (group, items)) in groups.into_iter().enumerate() {
-        let tint = group_tint(group_index);
-        c.text(x + 2, y + 1 + row, group, tint);
-        let mut n = 0;
-        for &id in items {
-            let xx = x + 2 + label +(n % cols) *(cell + 1);
-            let yy = y + 1 + row + n / cols;
-            let m = SIMPLE_METRIC_IDS[id];
-            c.text(xx + 1, yy, labels[id], tint);
-            c.right(
-                xx + 2 + metric_label,
-                yy,
-                value,
-                &format!("{}%", number(after.simple[id], dp)),
-                change_color(m, before.simple[id], after.simple[id])
-            );
-            c.right(
-                xx + 2 + metric_label + value + 2,
-                yy,
-                delta,
-                &delta_text(before.simple[id], after.simple[id], dp),
-                delta_color(m, before.simple[id], after.simple[id])
-            );
-            c.hit(Rect {
-                x: xx,
-                y: yy,
-                w: cell,
-                h: 1
-            }, Action::SimpleMetric(id));
-            n += 1;
-        }
-        row +=(n + cols - 1) / cols;
-    }
-    y + h
 }
 
 fn simple_contributors(
@@ -2266,90 +2192,6 @@ fn simple_contributors(
     }
     out.sort_by(|a, b| b.after.total_cmp(&a.after).then_with(|| a.gram.cmp(&b.gram)));
     out
-}
-
-fn simple_contributor_view(
-    term: &mut Terminal,
-    id: usize,
-    model: &Model,
-    before: &[usize],
-    after: &[usize],
-    co: &Corpus
-) -> AppResult<()> {
-    let mut by_delta = false;
-    let mut scroll = 0;
-    loop {
-        let mut rows = simple_contributors(id, model, before, after, co);
-        if by_delta {
-            rows.sort_by(|a, b|(b.after - b.before).abs().total_cmp(&(a.after - a.before).abs()));
-        }
-        let mut c = Canvas::new(term.width(), 64);
-        header(&mut c, SIMPLE_NAMES[id], &co.name, &model.board.name, "d sort | q back");
-        let mut y = keyboard(&mut c, 2, model, after, before, None, None, &[]) + 1;
-        let total0: f64 = rows.iter().map(|r| r.before).sum();
-        let total1: f64 = rows.iter().map(|r| r.after).sum();
-        c.text(0, y, &format!("{total0:.4}% → {total1:.4}%"), FG);
-        y += 2;
-        for (x, t) in[(0, "Bind"),(10, "Before"),(21, "After"),(32, "Change")] {
-            c.text(x, y, t, MUTED);
-        }
-        y += 1;
-        let max = rows.iter().map(|r| r.before.max(r.after)).fold(1e-12, f64::max);
-        let px = 43;
-        let pw = c.w.saturating_sub(px + 1);
-        for (i, r) in rows.iter().take(16).enumerate() {
-            let yy = y + i;
-            let m = SIMPLE_METRIC_IDS[id];
-            let col = change_color(m, r.before, r.after);
-            c.text(0, yy, &r.gram, FG);
-            c.right(8, yy, 10, &number(r.before, 4), MUTED);
-            c.right(19, yy, 10, &number(r.after, 4), col);
-            c.right(30, yy, 10, &delta_text(r.before, r.after, 4), delta_color(m, r.before, r.after));
-            if pw>0 {
-                c.line(px, yy, pw, BORDER);
-                let a = (r.before / max *(pw - 1) as f64).round() as usize;
-                let b = (r.after / max *(pw - 1) as f64).round() as usize;
-                if r.after>0.0 {
-                    c.line(px, yy, b + 1, col);
-                }
-                if r.before>0.0 {
-                    c.put(px + a, yy, '○', MUTED);
-                }
-                if r.after>0.0 {
-                    c.put(px + b, yy, '●', col);
-                }
-            }
-        }
-        let n = rows.len().min(16);
-        y += n + 1;
-        c.text(0, y, "Other", MUTED);
-        c.right(
-            8,
-            y,
-            10,
-            &number((total0 - rows.iter().take(n).map(|r| r.before).sum:: <f64>()).max(0.0), 4),
-            MUTED
-        );
-        c.right(
-            19,
-            y,
-            10,
-            &number((total1 - rows.iter().take(n).map(|r| r.after).sum:: <f64>()).max(0.0), 4),
-            MUTED
-        );
-        c.h = y + 2;
-        term.present(&c, scroll)?;
-        let e = term.event()?;
-        if scroll_event(&e, &mut scroll, c.h, term.size.1) {
-            continue;
-        }
-        match e {
-            Event::Char('d') => by_delta=!by_delta,
-            Event::Char('q') | Event::Quit | Event::Escape => return Ok(()),
-            _ => {
-            }
-        }
-    }
 }
 
 fn settings_labels(s: &SearchSettings) -> Vec<(String, String)> {
@@ -2429,12 +2271,9 @@ fn choose_design(
     Ok(())
 }
 
-fn choose_metrics(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
-    if let Some(i) = menu(term, "", &["Detailed".into(), "Mana2".into()])? {
-        s.mode = ["detailed", "mana2"][i].into();
-        s.preset = "custom".into();
-    }
-    Ok(())
+fn cycle_metrics(s: &mut SearchSettings) {
+    s.mode = if s.mode == "mana2" { "detailed" } else { "mana2" }.into();
+    s.preset = "custom".into();
 }
 
 fn choose_preset(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
@@ -2484,25 +2323,10 @@ fn optimizer_setup_frame(
         MUTED
     );
     y += 2;
-    if s.mode == "simple" {
-        for (i, name) in SIMPLE_NAMES.iter().enumerate() {
-            let x = (i % 3) *(c.w / 3);
-            let yy = y + i / 3;
-            let v = config_number(s.simple[i]);
-            c.text(x, yy, name, FG);
-            c.text(x + name.len() + 1, yy, &v, CYAN);
-            c.hit(Rect {
-                x,
-                y: yy,
-                w: c.w / 3 - 1,
-                h: 1
-            }, Action::SimpleWeight(i));
-        }
-        y += 4;
-    } else if s.mode == "detailed" {
+    if s.mode == "detailed" {
         y = grouped_weight_rows(&mut c, y, w) + 1;
     } else {
-        c.text(0, y, "Mana2 stats and bundled progressive weights", MUTED);
+        c.text(0, y, "Mana2 weights: [mana2] in akler.conf", MUTED);
         y += 2;
     }
     let labels = settings_labels(s);
@@ -2573,22 +2397,10 @@ fn optimizer_setup(
                     }
                     continue;
                 },
-                Action::SimpleWeight(i) => {
-                    if let Some(v) = input_box(term, SIMPLE_NAMES[i], "", &s.simple[i].to_string())? {
-                        match finite_nonnegative(&v) {
-                            Ok(n) => {
-                                s.simple[i] = n;
-                                s.preset = "custom".into();
-                            },
-                            Err(err) => status = err.to_string()
-                        }
-                    }
-                    continue;
-                },
                 Action::Setting(i) => {
                     let res = match i {
                         14 => choose_design(term, s, model, arr, locks),
-                        16 => choose_metrics(term, s),
+                        16 => { cycle_metrics(s); Ok(()) },
                         17 => choose_preset(term, s),
                         _ => edit_setting(term, s, i)
                     };
@@ -2611,7 +2423,7 @@ fn optimizer_setup(
             Event::Char('o')=>*arr = model.original.clone(),
             Event::Char('n') => s.seed = new_seed(),
             Event::Char('g') => choose_design(term, s, model, arr, locks)?,
-            Event::Char('m') => choose_metrics(term, s)?,
+            Event::Char('m') => cycle_metrics(s),
             Event::Char('p') => choose_preset(term, s)?,
             Event::Char('x') => edit_mix(term, s)?,
             Event::Char('d') => {
@@ -2698,21 +2510,12 @@ fn optimizer_dashboard(
             y += 1;
         }
         y += 1;
-        cv.text(0, y, &short(&format!("Mana2 score {:.2} → {:.2} (higher is better)", mana2_metrics::score(&before), mana2_metrics::score(&after)), cv.w), CYAN);
+        cv.text(0, y, &short(&format!("Mana2 score {:.2} → {:.2} (higher is better)", mana2_metrics::score(&before, &p.weights.2), mana2_metrics::score(&after, &p.weights.2)), cv.w), CYAN);
         y += 1;
         if let Some((old, new)) = mix {
             cv.text(0, y, &short(&format!("Training objective {:.2} → {:.2} (lower is better)", old, new), cv.w), MUTED);
             y += 1;
         }
-    } else if p.settings.mode == "simple" {
-        y = simple_metric_table(&mut cv, y, &a, &b, term.decimals()) + 1;
-        cv.text(
-            0,
-            y,
-            &format!("Travel {} → {} u/100   SF {} → {} u/100", fmt2(a.v[TRAVEL]), fmt2(b.v[TRAVEL]), fmt2(a.v[SFTRAVEL]), fmt2(b.v[SFTRAVEL])),
-            MUTED
-        );
-        y += 2;
     } else {
         y = grouped_metric_cards(&mut cv, y, &a, &b, &r1, co, term.decimals());
         y = finger_table(&mut cv, y + 1, &a, &b, term.decimals());
@@ -2852,14 +2655,20 @@ fn save_result(
         b.path = parent.join(format!("{}-{}.dat", b.name, p.settings.design));
     }
     let path = save_new_layout(&b, &symbols)?;
+    let mana2 = if p.settings.mode == "mana2" {
+        format!("[mana2]\n{}\n", p.weights.2.config_text())
+    } else {
+        String::new()
+    };
 
     let mut report = format!(
-        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\n\n[weights]\n{}\n[rolls]\n{}\n[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
+        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
         progress.seed,
         progress.evaluations,
         progress.elapsed,
         weights_text(&p.weights),
         rolls_config_text(p.weights.rolls()),
+        mana2,
         search_settings_text(&p.settings),
         board_text(&p.model.board, &p.model.board.symbols),
         board_text(&p.model.board, &p.model.symbols(start)),
@@ -2889,7 +2698,7 @@ fn save_result(
         if p.settings.mode == "mana2" {
             let before = mana2_stats_for(&p.model.original, c, &p.model);
             let after = mana2_stats_for(arr, c, &p.model);
-            report.push_str(&format!("mana2_score = {:.9} -> {:.9}\n", mana2_metrics::score(&before), mana2_metrics::score(&after)));
+            report.push_str(&format!("mana2_score = {:.9} -> {:.9}\n", mana2_metrics::score(&before, &p.weights.2), mana2_metrics::score(&after, &p.weights.2)));
             for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
                 report.push_str(&format!("mana2_{id} = {:.9} -> {:.9}\n", before.values[index], after.values[index]));
             }
@@ -2965,44 +2774,11 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
     Err("no unused batch filename".into())
 }
 
-fn simple_objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
+fn objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
     if p.settings.mode == "mana2" {
         return mana2_objective_view(term, p, arr);
     }
-    if p.settings.mode != "simple" {
-        return problem_objective_view(term, p, arr);
-    }
-    let mut lines = vec!["Term                Weight        Before          After".into()];
-    let mut old = [0.0; 9];
-    let mut new = [0.0; 9];
-    for (i, c) in p.corpora.iter().enumerate() {
-        let a = metrics(&full_raw(&p.model.original, c, &p.model.geometry), c);
-        let b = metrics(&full_raw(arr, c, &p.model.geometry), c);
-        for j in 0..SIMPLE_NAMES.len() {
-            let scale = p.shares[i] * p.settings.simple[j] * if j >= 5 {
-                -1.0
-            } else {
-                1.0
-            };
-            old[j] += a.simple[j] * scale;
-            new[j] += b.simple[j] * scale;
-        }
-    }
-    for j in 0..SIMPLE_NAMES.len() {
-        lines.push(format!(
-                "{:<18} {:8.3} {:13.4} {:13.4}",
-                SIMPLE_NAMES[j],
-                p.settings.simple[j],
-                old[j],
-                new[j]
-            ));
-    }
-    lines.push(format!(
-            "Objective                       {:13.4} {:13.4}",
-            old.iter().sum:: <f64>(),
-            new.iter().sum:: <f64>()
-        ));
-    info_page(term, "Objective", &lines)
+    problem_objective_view(term, p, arr)
 }
 
 fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
@@ -3027,7 +2803,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
             model.geometry = Geometry::with_rolls(model.board.keys.clone(), weights.rolls());
         }
         let sources = load_training_sources(term, source, &settings)?;
-        let mut problem = Problem::new(model.clone(), &sources, 0, weights, settings.clone())?;
+        let mut problem = Problem::new(model.clone(), &sources, 0, weights.clone(), settings.clone())?;
         'runs: loop {
             let start = arr.clone();
             let result = match search_live(term, &problem, &arr, &locks)? {
@@ -3080,14 +2856,6 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                             &problem.corpora[0],
                             true
                         )?,
-                        Action::SimpleMetric(m) => simple_contributor_view(
-                            term,
-                            m,
-                            &model,
-                            &model.original,
-                            &arr,
-                            &problem.corpora[0]
-                        )?,
                         _ => {
                         }
                     }
@@ -3115,7 +2883,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                         Ok(p) => format!("saved {} candidates (.dat + .jsonc); {}", result.archive.len(), p.display()),
                         Err(e) => e.to_string()
                     },
-                    Event::Char('a') => simple_objective_audit(term, &problem, &arr)?,
+                    Event::Char('a') => objective_audit(term, &problem, &arr)?,
                     Event::Char('v') => validation_view(term, &model, &model.original, &arr)?,
                     Event::Char('i') => show_corpus_info(term, &problem.corpora[0])?,
                     _ => {
@@ -3189,6 +2957,21 @@ mod saved_layout_identity_tests {
 
     fn board(extra: &str) -> Board {
         board_from_text(&format!("{ROWS}{extra}"), Path::new("inline.dat")).unwrap()
+    }
+
+    #[test]
+    fn optimizer_metrics_cycle_both_directions_and_resets_preset() {
+        let mut settings = SearchSettings::default();
+        settings.mode = "detailed".into();
+        settings.preset = "balanced".into();
+        cycle_metrics(&mut settings);
+        assert_eq!(settings.mode, "mana2");
+        assert_eq!(settings.preset, "custom");
+
+        settings.preset = "strict".into();
+        cycle_metrics(&mut settings);
+        assert_eq!(settings.mode, "detailed");
+        assert_eq!(settings.preset, "custom");
     }
 
     #[test]

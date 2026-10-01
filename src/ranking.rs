@@ -265,10 +265,8 @@ fn plain_rank_row(
     let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, mana2);
     let metrics = metrics(&raw, &corpus);
     let score = if mana2 {
-        -mana2_metrics::score(&mana2_metrics::stats(
-            raw.1.as_ref().unwrap(),
-            corpus.totals,
-        ))
+        let stats = mana2_metrics::stats(raw.1.as_ref().unwrap(), corpus.totals);
+        -mana2_metrics::score(&stats, &weights.2)
     } else {
         breakdown(&metrics, weights).net
     };
@@ -529,7 +527,7 @@ fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> App
         let evaluation = rank_details_with(details, || {
             let snapshot_layout = layout.clone();
             let snapshot_corpus = Arc::clone(corpus);
-            let snapshot_weights = *weights;
+            let snapshot_weights = weights.clone();
             action_ui::ngram_job(
                 term,
                 "Preparing layout details",
@@ -1862,7 +1860,7 @@ mod ranker_tests {
         };
         let original = make_row(ACTION_LAYOUT, CORPUS, NgramLimits::default(), &weights);
         let original_score = original.score().to_bits();
-        let mut changed_weights = weights;
+        let mut changed_weights = weights.clone();
         changed_weights.0[SFB] += 7.0;
         let changed_rule = ACTION_LAYOUT.replace("@ aa", "@ ab");
         let staggered = format!("{ACTION_LAYOUT}row-stagger: anglemod\n");

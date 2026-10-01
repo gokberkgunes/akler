@@ -107,12 +107,8 @@ fn diverse(
     out
 }
 
-fn objective(metrics: &Metrics, weights: &Weights, settings: &SearchSettings) -> f64 {
-    if settings.mode == "simple" {
-        simple_breakdown(metrics, &settings.simple).net
-    } else {
-        breakdown(metrics, weights).net
-    }
+fn objective(metrics: &Metrics, weights: &Weights, _settings: &SearchSettings) -> f64 {
+    breakdown(metrics, weights).net
 }
 
 fn violation(metrics: &Metrics, baseline: &Metrics, settings: &SearchSettings) -> f64 {
@@ -160,7 +156,7 @@ impl Problem<'_> {
         for (i, cache) in self.caches.iter().enumerate() {
             let metrics = cache.metrics();
             let value = if self.settings.mode == "mana2" {
-                cache.mana2_score()
+                cache.mana2_score(&self.weights.2)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
@@ -234,7 +230,7 @@ impl Problem<'_> {
             let score_start = clock::<PROFILE>();
             let metrics = proposal.metrics();
             let value = if self.settings.mode == "mana2" {
-                proposal.mana2_score()
+                proposal.mana2_score(&self.weights.2)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
@@ -1020,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn simple_objective_and_normalized_mixture_use_numeric_totals() {
+    fn configured_objectives_and_normalized_mixture_use_numeric_totals() {
         let seed = layout();
         let mut weights = Weights::default();
         weights.0[INSRAF] = 0.2;
@@ -1031,20 +1027,19 @@ mod tests {
             (corpus("first.json", b"aa aq hr rh aqr qra"), 1.0),
             (corpus("second.json", b"hhh rrr ar ar qr"), 3.0),
         ];
+        weights.2 =
+            mana2_metrics::Weights::from_text("sfbw = [-11]\npinkyringcurl = [0]\n").unwrap();
         let locked = vec![true; seed.slots.len()];
-        for mode in ["detailed", "simple"] {
-            let mut settings = SearchSettings {
+        for mode in ["detailed", "mana2"] {
+            let settings = SearchSettings {
                 mode: mode.into(),
                 ..settings()
             };
-            if mode == "simple" {
-                settings.simple[5..9].copy_from_slice(&[0.2, 0.7, 0.3, 0.9]);
-            }
             let effort = LocalEffort::new(&seed, &weights);
             let expected: f64 = corpora
                 .iter()
                 .map(|(corpus, share)| {
-                    let cache = ng::Incremental::new(
+                    let mut cache = ng::Incremental::new(
                         corpus,
                         &seed,
                         Geometry::new(physical_keys(&seed)),
@@ -1052,7 +1047,13 @@ mod tests {
                         |a, b, key| effort.get(a, b, key),
                     )
                     .unwrap();
-                    (share / 4.0) * objective(&cache.metrics(), &weights, &settings)
+                    let score = if mode == "mana2" {
+                        cache.enable_mana2();
+                        cache.mana2_score(&weights.2)
+                    } else {
+                        objective(&cache.metrics(), &weights, &settings)
+                    };
+                    (share / 4.0) * score
                 })
                 .sum();
             let result = run_profiled::<false, false>(

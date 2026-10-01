@@ -105,8 +105,8 @@ They exclude repeated fingers, redirects and LRL/RLR alternation. By default,
 scissors, stretches, row changes and off-home placement do not veto a roll.
 Set `include_scissors = false` and/or `include_stretches = false` to filter
 consecutive pairs AB and BC using akler's movement definitions. Skip AC is
-not a veto. Both detailed and simple mode use the selected filters; neither
-adds an extra row-change filter. Other penalties are still counted normally.
+not a veto. Detailed mode uses the selected filters and adds no extra row-change
+filter. Other penalties are still counted normally.
 This optional scissors-plus-stretch filter is stricter in scope than Mana2's
 `IsGoodRoll`, which only calls its scissor classifier. The geometry classifiers
 also differ between the applications.
@@ -198,10 +198,10 @@ and ignored text can differ from Mana2's input handling.
 
 All Mana2 stat IDs are available as ranker columns and support sorting. Select
 them in the ranker column picker (`v`) or list the IDs under `[ranker] columns`;
-they show `n/a` when the active mode is not `mana2`. Columns with positive
-weight slopes are sorted high-to-low by default and use the higher-is-better
-color gradient; penalty columns sort low-to-high. Zero-weight stats have no
-score preference and use the conventional low-to-high direction. `SCORE` is
+they show `n/a` when the active mode is not `mana2`. Per-stat default sorting
+and colors follow the built-in schedules: reward columns sort high-to-low,
+and penalty or zero-weight columns sort low-to-high. Changing a schedule
+changes the objective; it does not change these per-stat display conventions. `SCORE` is
 always lower-is-better because it contains the negated Mana2 score.
 Eight Mana2 IDs overlap detailed column names; in the ranker and `[ranker] columns`,
 use `M2_SFB`, `M2_SFS`, `M2_SKB`, `M2_SKS`, `M2_LSB`, `M2_LSS`, `M2_ALT`, and `M2_ROLL` for
@@ -214,13 +214,17 @@ weighted same-finger/stretch/scissor ratings, alternation and redirect families,
 and directional two- and three-key rolls (including good-roll and no-thumb
 variants). Percent stats are percentages; weighted movement stats are continuous
 ratings. Trigram no-thumb variants use the full trigram denominator. The score
-sums each stat's progressive slope schedule copied from the checked-in
-[Mana2 weights.toml](../mana2/weights.toml). Editing that TOML file does not
-change akler's compiled schedule. Each slope applies only to the next interval
-of that stat; it is not a flat
-weight multiplied by the full value. Mana2 maximizes this score, so akler uses
-its negative as the lower-is-better objective. This is independent of `[weights]`
-and `simple_*`; visible ranker metric columns retain akler's detailed definitions.
+sums each stat's progressive slope schedule from the `[mana2]` section of
+`akler.conf`. Schedules alternate slope and upper boundary in brackets, as in
+`sfbw = [-4, 0.5, -13, 1, -26]`. Each slope applies only to the next interval
+of that stat; it is not a flat weight multiplied by the full value. Negative
+slopes penalize a stat and positive slopes reward it. Boundaries must be finite,
+positive, and strictly ascending; slopes may be any finite signed number. A
+single slope can be written as `[0.3]` or `0.3`. Omitted stat IDs retain their
+built-in schedules, while unknown or duplicate IDs are errors. Mana2 maximizes
+this score, so akler uses its negative as the lower-is-better objective. These
+schedules are independent of `[weights]`; visible ranker metric columns retain
+akler's detailed definitions.
 
 The port follows the definitions in [Mana2 core stats](../mana2/core/stats.go),
 its [built-in stat catalog](../mana2/stats/builtin.go), and the active
@@ -230,36 +234,6 @@ retain akler's stored-table normalization and skipgram semantics; action layouts
 use akler's bounded decoded physical-context counts. These are source/population
 limits, so the same layout may not match a Mana2 report produced by Mana2's own
 corpus loader and keyboard engine.
-
-## Simple mode: what 1u and 2u meant
-
-The old “1u/2u jump” wording referred to **one-row/two-row separation**, not
-Euclidean movement length: home↔top/bottom versus top↔bottom. The settings are
-`row1` and `row2`. These include all same-hand, different-finger pairs with that
-row separation, so they include scissors and the corresponding other-row
-changes. They must not be added as extra columns to a detailed scissors total.
-
-Numeric geometry does not turn these logical row changes into distance bins.
-Simple mode uses nine terms, configured in `[search]` in `akler.conf`:
-
-| Setting | Meaning | Default |
-|---|---|---:|
-| `simple_sfb` | SFB penalty. | 12 |
-| `simple_sfs` | SFS penalty. | 4 |
-| `simple_lateral` | Combined bigram/skipgram lateral-stretch penalty. | 2 |
-| `simple_row1` | Combined one-row-change penalty. | 0.75 |
-| `simple_row2` | Combined two-row-change penalty. | 2 |
-| `simple_insraf_reward` | Clean inward SRAF credit. | 0.25 |
-| `simple_outsraf_reward` | Clean outward SRAF credit. | 0.25 |
-| `simple_inroll_reward` | Inward roll credit, using the detailed mode `[rolls]` filters. | 0.25 |
-| `simple_outroll_reward` | Outward roll credit, using the detailed mode `[rolls]` filters. | 0.25 |
-
-Combined pair/skip terms divide their summed counts by bigram + skipgram mass.
-Simple mode does not add detailed scissors, SKB/SKS, travel, or off-home weights.
-Both optimizers support simple mode. The ranker uses detailed weights unless
-Mana2 mode is selected; in either mode its SCORE is for the selected corpus,
-while optimizer objectives may combine training corpora. See
-[settings](USAGE.md#search-settings).
 
 ## Weight configuration
 
@@ -274,7 +248,6 @@ explicitly set. The aggregate itself is never weighted. Column visibility
 does not edit weights, caps, or metric calculations.
 
 Legacy `sraf_reward` and `roll_reward` entries set both of their directional
-children, unless a corresponding child is explicitly configured. Likewise,
-legacy `simple_sraf_reward` and `simple_roll_reward` set both simple-mode
-directions. Equal inward and outward weights reproduce the old combined reward;
-the directional keys allow the optimizer to prefer one direction.
+children, unless a corresponding child is explicitly configured. Equal inward
+and outward weights reproduce the old combined reward; the directional keys
+allow the optimizer to prefer one direction.

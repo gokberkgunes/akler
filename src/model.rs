@@ -141,7 +141,6 @@ const SIMPLE_NAMES: [&str; 9] = ["SFB", "SFS", "Lat. stretch", "1-row change", "
 
 const SIMPLE_KEYS: [&str; 9] = ["sfb", "sfs", "lateral", "row1", "row2", "insraf_reward", "outsraf_reward", "inroll_reward", "outroll_reward"];
 
-const DEFAULT_SIMPLE: [f64; 9] = [12.0, 1.5, 2.0, 0.75, 2.0, 0.25, 0.25, 0.25, 0.25];
 
 const METRIC_NAMES: [&str; N_METRICS] = [
     "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
@@ -1871,14 +1870,14 @@ fn metrics_totals(raw: &Raw, totals: &[f64; 4]) -> Metrics {
     }
 }
 
-// Keep roll policy beside the weights so evaluations and worker threads use
-// the same immutable objective snapshot, without global configuration reads.
-#[derive(Clone, Copy, Debug)]
-struct Weights([f64; N_WEIGHTS], RollSettings);
+// Keep detailed weights, roll policy and Mana2 schedules in one immutable
+// objective snapshot for evaluations and worker threads.
+#[derive(Clone, Debug)]
+struct Weights([f64; N_WEIGHTS], RollSettings, mana2_metrics::Weights);
 
 impl Weights {
     fn new(values: [f64; N_WEIGHTS]) -> Self {
-        Self(values, RollSettings::default())
+        Self(values, RollSettings::default(), mana2_metrics::Weights::default())
     }
 
     fn rolls(&self) -> RollSettings {
@@ -2250,20 +2249,6 @@ fn contributor_data_mode(m: usize, before: &[usize], after: &[usize], c: &Corpus
 
 fn contributor_data(m: usize, before: &[usize], after: &[usize], c: &Corpus, model: &Model, merge_reverse: bool) -> Vec<Contributor> {
     contributor_data_mode(m, before, after, c, model, merge_reverse, CreditView::Clean)
-}
-
-fn simple_breakdown(m: &Metrics, w: &[f64; 9]) -> Breakdown {
-    let mut b = Breakdown::default();
-    for i in 0..9 {
-        let v = m.simple[i]*w[i];
-        if i >= 5 {
-            b.bonus += v;
-        } else {
-            b.penalty += v;
-        }
-    }
-    b.net = b.penalty - b.bonus;
-    b
 }
 
 fn metric_value_text(m: usize, v: f64, decimals: usize) -> String {

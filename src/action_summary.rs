@@ -112,7 +112,10 @@ fn from_counts(
 
     let metrics = metrics_totals(&raw, &totals);
     let score = if mana2 {
-        -mana2_metrics::score(&mana2_metrics::stats(raw.1.as_ref().unwrap(), totals))
+        -mana2_metrics::score(
+            &mana2_metrics::stats(raw.1.as_ref().unwrap(), totals),
+            &weights.2,
+        )
     } else {
         breakdown(&metrics, weights).net
     };
@@ -241,20 +244,19 @@ mod tests {
         )
         .unwrap();
         let corpus = corpus(5);
-        let summary = evaluate_with_mode(
-            &layout,
-            &corpus,
-            &Weights::default(),
-            &stop,
-            &progress,
-            "mana2",
-        )
-        .unwrap();
+        let mut weights = Weights::default();
+        weights.2 = mana2_metrics::Weights::from_text("finger-usage-LP = [-2]\n").unwrap();
+        let summary =
+            evaluate_with_mode(&layout, &corpus, &weights, &stop, &progress, "mana2").unwrap();
         let mana2 = summary.raw.1.as_ref().expect("Mana2 counters are enabled");
         let stats = mana2_metrics::stats(mana2, summary.totals);
         assert_eq!(
             summary.score.to_bits(),
-            (-mana2_metrics::score(&stats)).to_bits()
+            (-mana2_metrics::score(&stats, &weights.2)).to_bits()
+        );
+        assert_ne!(
+            summary.score,
+            -mana2_metrics::score(&stats, &Weights::default().2)
         );
     }
 }

@@ -73,7 +73,9 @@ fn config_sections(text: &str) -> AppResult<BTreeMap<String, String>> {
 
         if let Some(name) = content.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             section = name.trim().to_ascii_lowercase();
-            if !["weights", "search", "ranker", "ngrams", "rolls"].contains(&section.as_str()) {
+            if !["weights", "mana2", "search", "ranker", "ngrams", "rolls"]
+                .contains(&section.as_str())
+            {
                 return Err(format!("line {}: unknown section [{section}]", index + 1).into());
             }
             if sections.insert(section.clone(), String::new()).is_some() {
@@ -120,11 +122,13 @@ fn parse_ngram_limit(value: &str) -> AppResult<Option<usize>> {
 fn parse_app_config(text: &str) -> AppResult<AppConfig> {
     let mut config = AppConfig::default();
     let mut rolls = RollSettings::default();
+    let mut mana2_weights = mana2_metrics::Weights::default();
 
     for (section, body) in config_sections(text)? {
         let result = (|| -> AppResult<()> {
             match section.as_str() {
                 "weights" => config.weights = weights_from_text(&body)?,
+                "mana2" => mana2_weights = mana2_metrics::Weights::from_text(&body)?,
                 "search" => config.search = search_from_text(&body)?,
                 "ranker" => {
                     for (key, value) in config_lines(&body)? {
@@ -174,6 +178,7 @@ fn parse_app_config(text: &str) -> AppResult<AppConfig> {
     }
 
     config.weights = config.weights.with_rolls(rolls);
+    config.weights.2 = mana2_weights;
     Ok(config)
 }
 
@@ -242,9 +247,10 @@ fn app_config_text(config: &AppConfig) -> String {
     format!(
         "# akler configuration; see doc/USAGE.md.\n\
          # Missing settings use built-in defaults. Limits other than all are approximate.\n\n\
-         [weights]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
+         [weights]\n{}\n[mana2]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
          [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\ninclude_spacegrams = {}\n",
         weights_text(&config.weights),
+        config.weights.2.config_text(),
         rolls_config_text(config.weights.rolls()),
         search_settings_text(&config.search),
         rank_config_text(&config.rank_columns),
@@ -339,6 +345,7 @@ fn save_optimizer_settings(weights: &Weights, search: &SearchSettings) -> AppRes
     validate_search_settings(search)?;
     save_config_sections(&[
         ("weights", weights_text(weights)),
+        ("mana2", weights.2.config_text()),
         ("rolls", rolls_config_text(weights.rolls())),
         ("search", search_settings_text(search)),
     ])
@@ -357,6 +364,7 @@ mod config_tests {
         let defaults = AppConfig::default();
         let parsed = parse_app_config(&app_config_text(&defaults)).unwrap();
         assert_eq!(parsed.weights.0, defaults.weights.0);
+        assert_eq!(parsed.weights.2, defaults.weights.2);
         assert_eq!(
             search_settings_text(&parsed.search),
             search_settings_text(&defaults.search)
@@ -419,9 +427,70 @@ mod config_tests {
             "[ngrams]\ntrigrams = -1",
             "[ngrams]\ntrigrams = 1.5",
             "[ngrams]\nbigrams = 2000",
+            "[mana2]\nunknown = [1]",
+            "[mana2]\nsfbw = []",
+            "[mana2]\nsfbw = [-4, 0.5]",
+            "[mana2]\nsfbw = [-4, 0, -13]",
+            "[mana2]\nsfbw = [-4, 1, -13, 0.5, -26]",
+            "[mana2]\nsfbw = [-4, inf, -13]",
+            "[mana2]\nsfbw = [-4, 0.5, NaN]",
         ] {
             assert!(parse_app_config(text).is_err(), "accepted {text:?}");
         }
+    }
+
+    #[test]
+    fn mana2_schedules_parse_case_insensitively_and_round_trip() {
+        let source = "[mana2]\nSFBW = [-3.5, 0.25, 2, 1.5, -9]\n\
+                      FINGER-USAGE-lp = 0.75\n[weights]\nsfb = 7\n";
+        let parsed = parse_app_config(source).unwrap();
+        let round = parse_app_config(&app_config_text(&parsed)).unwrap();
+        assert_eq!(round.weights.2, parsed.weights.2);
+        assert_eq!(round.weights.0[SFB], 7.0);
+        assert!(parsed.weights.2.config_text().contains(
+            "sfbw = [-3.5, 0.25, 2, 1.5, -9]"
+        ));
+        assert!(parsed
+            .weights
+            .2
+            .config_text()
+            .contains("finger-usage-LP = [0.75]"));
+
+        // Score each interval independently, including exact boundaries.
+        let sfbw = mana2_metrics::STAT_IDS
+            .iter()
+            .position(|id| *id == "sfbw")
+            .unwrap();
+        let pinky = mana2_metrics::STAT_IDS
+            .iter()
+            .position(|id| *id == "finger-usage-LP")
+            .unwrap();
+        for value in [0.1_f64, 0.25, 1.0, 1.5, 2.0] {
+            let mut stats = mana2_metrics::Stats {
+                values: [0.0; mana2_metrics::N_STATS],
+            };
+            stats.values[sfbw] = value;
+            stats.values[pinky] = 20.0;
+            let expected = -3.5 * value.min(0.25)
+                + 2.0 * (value - 0.25).clamp(0.0, 1.25)
+                - 9.0 * (value - 1.5).max(0.0)
+                + 0.75 * 20.0;
+            assert_eq!(mana2_metrics::score(&stats, &parsed.weights.2), expected);
+        }
+
+        let saved_weights = replace_config_section(source, "weights", "sfb = 9\n").unwrap();
+        let after_save = parse_app_config(&saved_weights).unwrap();
+        assert_eq!(after_save.weights.2, parsed.weights.2);
+        assert_eq!(after_save.weights.0[SFB], 9.0);
+
+        let commented = source
+            .replace("SFBW =", "# keep Mana2 notes\nSFBW =")
+            .replace("2, 1.5, -9]", "2, 1.5, -9] # custom schedule");
+        let reset =
+            replace_config_section(&commented, "mana2", &Weights::default().2.config_text()).unwrap();
+        assert_eq!(parse_app_config(&reset).unwrap().weights.2, Weights::default().2);
+        assert!(reset.contains("# keep Mana2 notes"));
+        assert!(reset.contains("# custom schedule"));
     }
 
     #[test]
