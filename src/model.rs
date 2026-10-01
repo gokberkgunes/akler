@@ -1729,11 +1729,17 @@ impl Model {
 }
 
 #[derive(Clone,Debug)]
-struct Raw([f64; N_RAW]);
+struct Raw([f64; N_RAW], Option<mana2_metrics::RawStats>);
 
 impl Default for Raw {
     fn default() -> Self {
-        Self([0.0; N_RAW])
+        Self([0.0; N_RAW], None)
+    }
+}
+
+impl Raw {
+    fn with_mana2() -> Self {
+        Self([0.0; N_RAW], Some(mana2_metrics::RawStats::default()))
     }
 }
 
@@ -1756,6 +1762,10 @@ fn add_bits(raw: &mut Raw, mut bits: u128, f: f64) {
 fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f64) {
     let f = g.f*sign;
     let a = pos[g.ids[0]];
+    if let Some(mana) = &mut raw.1 {
+        let ids = g.ids.map(|id| pos[id]);
+        mana2_metrics::add_gram(mana, &geometry.keys, g.kind, &ids[..g.len], f);
+    }
     match g.kind {
         0 => {
             let key = geometry.keys[a];
@@ -1795,8 +1805,12 @@ fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f
 }
 
 fn full_raw(arr: &[usize], c: &Corpus, g: &Geometry) -> Raw {
+    full_raw_with_mana2(arr, c, g, false)
+}
+
+fn full_raw_with_mana2(arr: &[usize], c: &Corpus, g: &Geometry, mana2: bool) -> Raw {
     let pos = positions(arr);
-    let mut raw = Raw::default();
+    let mut raw = if mana2 { Raw::with_mana2() } else { Raw::default() };
     for gram in &c.grams {
         add_gram(&mut raw, gram, &pos, g, 1.0);
     }

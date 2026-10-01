@@ -19,6 +19,17 @@ pub(crate) fn evaluate(
     stop: &AtomicBool,
     progress: &AtomicU64,
 ) -> ak::Result<Summary> {
+    evaluate_with_mode(layout, corpus, weights, stop, progress, "detailed")
+}
+
+pub(crate) fn evaluate_with_mode(
+    layout: &ak::Layout,
+    corpus: &ng::NgramCorpus,
+    weights: &Weights,
+    stop: &AtomicBool,
+    progress: &AtomicU64,
+    mode: &str,
+) -> ak::Result<Summary> {
     let mut timing = load_profile::LoadProfile::new("action ranking summary");
     let effort = action_ui::LocalEffort::new(layout, weights);
     timing.mark("Physical effort tables");
@@ -26,12 +37,17 @@ pub(crate) fn evaluate(
     let counts = corpus.evaluate(layout, stop, progress, |a, b, key| effort.get(a, b, key))?;
     timing.mark("Physical mapping and transient histograms (nested report)");
 
-    let summary = from_counts(layout, &counts, weights)?;
+    let summary = from_counts(layout, &counts, weights, mode)?;
     timing.mark("Physical geometry, raw metrics and score");
     Ok(summary)
 }
 
-fn from_counts(layout: &ak::Layout, counts: &ng::Counts, weights: &Weights) -> ak::Result<Summary> {
+fn from_counts(
+    layout: &ak::Layout,
+    counts: &ng::Counts,
+    weights: &Weights,
+    mode: &str,
+) -> ak::Result<Summary> {
     if counts.presses == 0.0 {
         return Err("no decoded keypresses".into());
     }
@@ -55,7 +71,12 @@ fn from_counts(layout: &ak::Layout, counts: &ng::Counts, weights: &Weights) -> a
         &counts.skip,
         &counts.tables[2],
     ];
-    let mut raw = Raw::default();
+    let mana2 = mode == "mana2";
+    let mut raw = if mana2 {
+        Raw::with_mana2()
+    } else {
+        Raw::default()
+    };
     let mut totals = [0.0; 4];
 
     // Keep the detailed adapter's kind order, lexicographic physical-key order,
@@ -90,7 +111,11 @@ fn from_counts(layout: &ak::Layout, counts: &ng::Counts, weights: &Weights) -> a
     }
 
     let metrics = metrics_totals(&raw, &totals);
-    let score = breakdown(&metrics, weights).net;
+    let score = if mana2 {
+        -mana2_metrics::score(&mana2_metrics::stats(raw.1.as_ref().unwrap(), totals))
+    } else {
+        breakdown(&metrics, weights).net
+    };
     Ok(Summary {
         raw,
         totals,
@@ -204,5 +229,32 @@ mod tests {
                 assert_eq!(summary, detailed);
             }
         }
+    }
+
+    #[test]
+    fn mana2_summary_uses_native_stats_and_maximization_score() {
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        let layout = ak::Layout::parse(
+            &crate::action_fast::tests::fixtures()[0],
+            Path::new("summary-mana2.dat"),
+        )
+        .unwrap();
+        let corpus = corpus(5);
+        let summary = evaluate_with_mode(
+            &layout,
+            &corpus,
+            &Weights::default(),
+            &stop,
+            &progress,
+            "mana2",
+        )
+        .unwrap();
+        let mana2 = summary.raw.1.as_ref().expect("Mana2 counters are enabled");
+        let stats = mana2_metrics::stats(mana2, summary.totals);
+        assert_eq!(
+            summary.score.to_bits(),
+            (-mana2_metrics::score(&stats)).to_bits()
+        );
     }
 }

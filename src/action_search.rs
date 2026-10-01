@@ -159,7 +159,12 @@ impl Problem<'_> {
         let mut excess = 0.0;
         for (i, cache) in self.caches.iter().enumerate() {
             let metrics = cache.metrics();
-            score += self.shares[i] * objective(&metrics, self.weights, self.settings);
+            let value = if self.settings.mode == "mana2" {
+                cache.mana2_score()
+            } else {
+                objective(&metrics, self.weights, self.settings)
+            };
+            score += self.shares[i] * value;
             if self.shares[i] != 0.0 {
                 excess += violation(&metrics, &self.baseline[i], self.settings);
             }
@@ -228,7 +233,12 @@ impl Problem<'_> {
         for (i, proposal) in self.proposals.iter().enumerate() {
             let score_start = clock::<PROFILE>();
             let metrics = proposal.metrics();
-            score += self.shares[i] * objective(&metrics, self.weights, self.settings);
+            let value = if self.settings.mode == "mana2" {
+                proposal.mana2_score()
+            } else {
+                objective(&metrics, self.weights, self.settings)
+            };
+            score += self.shares[i] * value;
             if PROFILE {
                 profile.score += elapsed::<PROFILE>(score_start);
             }
@@ -534,9 +544,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
     if !generation && initial.violation != 0.0 {
         return Err("starting arrangement violates active limits".into());
     }
-    let free: Vec<_> = (0..locked.len())
-        .filter(|&slot| !locked[slot] && !problem.seed.space(slot))
-        .collect();
+    let free: Vec<_> = (0..locked.len()).filter(|&slot| !locked[slot]).collect();
     let started = Instant::now();
     let mut runtime = Runtime {
         started,
@@ -697,7 +705,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
             return Err("generated action permutation is invalid".into());
         }
         for (slot, &locked) in locked.iter().enumerate() {
-            if (locked || problem.seed.space(slot)) && candidate.arr[slot] != initial.arr[slot] {
+            if locked && candidate.arr[slot] != initial.arr[slot] {
                 return Err("locked action-layout key moved".into());
             }
         }
@@ -758,6 +766,9 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
             &control.cancel,
             |a, b, key| effort.get(a, b, key),
         )?;
+        if settings.mode == "mana2" {
+            cache.enable_mana2();
+        }
         if baseline_arr != identity {
             let saved = cache.numeric_state();
             cache.restore(&baseline_arr, None, &control.cancel, |a, b, key| {
@@ -1000,7 +1011,7 @@ mod tests {
             for candidate in &a.archive {
                 assert!(valid_arrangement(&candidate.arr, seed.slots.len()));
                 for (slot, &locked) in locked.iter().enumerate() {
-                    if locked || seed.space(slot) {
+                    if locked {
                         assert_eq!(candidate.arr[slot], slot);
                     }
                 }

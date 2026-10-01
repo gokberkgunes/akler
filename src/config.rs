@@ -1,11 +1,23 @@
 const APP_CONFIG_FILE: &str = "akler.conf";
 const LEGACY_CONFIG_FILE: &str = "layouter.conf";
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct NgramLimits {
     trigrams: Option<usize>,
     tetragrams: Option<usize>,
     pentagrams: Option<usize>,
+    include_spacegrams: bool,
+}
+
+impl Default for NgramLimits {
+    fn default() -> Self {
+        Self {
+            trigrams: None,
+            tetragrams: None,
+            pentagrams: None,
+            include_spacegrams: true,
+        }
+    }
 }
 
 impl NgramLimits {
@@ -143,6 +155,13 @@ fn parse_app_config(text: &str) -> AppResult<AppConfig> {
                             "trigrams" => config.ngrams.trigrams = parse_ngram_limit(&value)?,
                             "tetragrams" => config.ngrams.tetragrams = parse_ngram_limit(&value)?,
                             "pentagrams" => config.ngrams.pentagrams = parse_ngram_limit(&value)?,
+                            "include_spacegrams" => {
+                                config.ngrams.include_spacegrams = match value.to_ascii_lowercase().as_str() {
+                                    "true" => true,
+                                    "false" => false,
+                                    _ => return Err(format!("{key} must be true or false").into()),
+                                }
+                            }
                             _ => return Err(format!("unknown setting {key}").into()),
                         }
                     }
@@ -224,7 +243,7 @@ fn app_config_text(config: &AppConfig) -> String {
         "# akler configuration; see doc/USAGE.md.\n\
          # Missing settings use built-in defaults. Limits other than all are approximate.\n\n\
          [weights]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
-         [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\n",
+         [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\ninclude_spacegrams = {}\n",
         weights_text(&config.weights),
         rolls_config_text(config.weights.rolls()),
         search_settings_text(&config.search),
@@ -232,6 +251,7 @@ fn app_config_text(config: &AppConfig) -> String {
         limit(config.ngrams.trigrams),
         limit(config.ngrams.tetragrams),
         limit(config.ngrams.pentagrams),
+        config.ngrams.include_spacegrams,
     )
 }
 
@@ -469,6 +489,21 @@ mod config_tests {
 #[cfg(test)]
 mod roll_config_tests {
     use super::*;
+
+    #[test]
+    fn spacegram_option_defaults_true_and_round_trips() {
+        assert!(parse_app_config("").unwrap().ngrams.include_spacegrams);
+        let parsed = parse_app_config("[ngrams]\ninclude_spacegrams = false\n").unwrap();
+        assert!(!parsed.ngrams.include_spacegrams);
+        assert!(!parse_app_config(&app_config_text(&parsed))
+            .unwrap()
+            .ngrams
+            .include_spacegrams);
+        assert!(parse_app_config("[ngrams]\ninclude_spacegrams = true\n")
+            .unwrap()
+            .ngrams
+            .include_spacegrams);
+    }
 
     #[test]
     fn roll_options_round_trip_and_preserve_defaults_and_aliases() {

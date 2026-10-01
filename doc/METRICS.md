@@ -58,6 +58,9 @@ HSB/HSS duplicate daHJB/daHJS. Adjacent and nonadjacent jump categories are
 disjoint and each has its own weight. Lateral stretch may overlap a jump.
 Different metrics also use different denominators.
 
+In the ranker, `FJB` sums daFJB, caFJB, dnFJB, and cnFJB. `FJS` sums their
+skipgram counterparts. These summary columns have no separate weights.
+
 Old `dfab`, `cfab`, `dfas`, `cfas`, `dfjb`, `cfjb`, `dfjs`, `cfjs`,
 `dfsb`, `cfsb`, `dfss`, and `cfss` weight keys are accepted as aliases for
 the corresponding adjacent full-jump keys. Old `fsb`/`fss` values seed the
@@ -182,6 +185,52 @@ ranking is mapped bigram mass / stored source bigram mass, not raw-text coverage
 Action rows show coverage as unavailable and report physical presses/ignored
 characters in their inspector instead of substituting a different denominator.
 
+## Mana2 ranking and search mode
+
+Set `[search] mode = mana2` in `akler.conf` to use Mana2's aggregate score as
+the optimizer objective and ranker `SCORE`. The ranker stores `-Mana2 score`
+as `SCORE`, so lower is better and the default ascending sort puts the best
+layout first. Other ranker columns continue to show akler's detailed metrics;
+they are not Mana2's reported statistics. Ordinary layouts use the same
+decoded corpus and configured n-gram limits as their other metrics. Action
+layouts use akler's bounded physical n-gram decoder, so their source coverage
+and ignored text can differ from Mana2's input handling.
+
+All Mana2 stat IDs are available as ranker columns and support sorting. Select
+them in the ranker column picker (`v`) or list the IDs under `[ranker] columns`;
+they show `n/a` when the active mode is not `mana2`. Columns with positive
+weight slopes are sorted high-to-low by default and use the higher-is-better
+color gradient; penalty columns sort low-to-high. Zero-weight stats have no
+score preference and use the conventional low-to-high direction. `SCORE` is
+always lower-is-better because it contains the negated Mana2 score.
+Eight Mana2 IDs overlap detailed column names; in the ranker and `[ranker] columns`,
+use `M2_SFB`, `M2_SFS`, `M2_SKB`, `M2_SKS`, `M2_LSB`, `M2_LSS`, `M2_ALT`, and `M2_ROLL` for
+those Mana2 stats. The unprefixed names continue to select akler's detailed
+columns.
+
+Mana2 mode computes Mana2's built-in catalog plus its active `pinkyringcurl`
+example stat: per-finger usage, off-pinky, same-finger/same-key bigram and skipgram percentages, continuous
+weighted same-finger/stretch/scissor ratings, alternation and redirect families,
+and directional two- and three-key rolls (including good-roll and no-thumb
+variants). Percent stats are percentages; weighted movement stats are continuous
+ratings. Trigram no-thumb variants use the full trigram denominator. The score
+sums each stat's progressive slope schedule copied from the checked-in
+[Mana2 weights.toml](../mana2/weights.toml). Editing that TOML file does not
+change akler's compiled schedule. Each slope applies only to the next interval
+of that stat; it is not a flat
+weight multiplied by the full value. Mana2 maximizes this score, so akler uses
+its negative as the lower-is-better objective. This is independent of `[weights]`
+and `simple_*`; visible ranker metric columns retain akler's detailed definitions.
+
+The port follows the definitions in [Mana2 core stats](../mana2/core/stats.go),
+its [built-in stat catalog](../mana2/stats/builtin.go), and the active
+[`pinkyringcurl` example](../mana2/stats/example.go). It applies those
+formulas to akler's mapped corpus counts and geometry. Ordinary corpora therefore
+retain akler's stored-table normalization and skipgram semantics; action layouts
+use akler's bounded decoded physical-context counts. These are source/population
+limits, so the same layout may not match a Mana2 report produced by Mana2's own
+corpus loader and keyboard engine.
+
 ## Simple mode: what 1u and 2u meant
 
 The old “1u/2u jump” wording referred to **one-row/two-row separation**, not
@@ -207,8 +256,9 @@ Simple mode uses nine terms, configured in `[search]` in `akler.conf`:
 
 Combined pair/skip terms divide their summed counts by bigram + skipgram mass.
 Simple mode does not add detailed scissors, SKB/SKS, travel, or off-home weights.
-Both optimizers support simple mode. The ranker always uses detailed weights;
-its SCORE need not equal a simple-mode or mixed-corpus search objective. See
+Both optimizers support simple mode. The ranker uses detailed weights unless
+Mana2 mode is selected; in either mode its SCORE is for the selected corpus,
+while optimizer objectives may combine training corpora. See
 [settings](USAGE.md#search-settings).
 
 ## Weight configuration

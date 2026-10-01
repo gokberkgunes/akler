@@ -70,8 +70,7 @@ fn apply_preset(s: &mut SearchSettings, name: &str) {
     if name == "custom" {
         return;
     }
-    s.mode = "simple".into();
-    s.simple = DEFAULT_SIMPLE;
+    s.mode = "mana2".into();
     s.sfb_limit = Some(0.05);
     s.sfs_limit = Some(0.25);
     s.travel_limit = None;
@@ -100,8 +99,8 @@ fn validate_search_settings(s: &SearchSettings) -> AppResult<()> {
     if !["refine", "random", "evolve"].contains(&s.design.as_str()) {
         return Err("design must be refine, random or evolve".into());
     }
-    if !["simple", "detailed"].contains(&s.mode.as_str()) {
-        return Err("mode must be simple or detailed".into());
+    if !["simple", "detailed", "mana2"].contains(&s.mode.as_str()) {
+        return Err("mode must be mana2 or detailed (simple is a legacy mode)".into());
     }
     if !["custom", "balanced", "strict", "low-travel", "explore"].contains(&s.preset.as_str()) {
         return Err("unknown preset".into());
@@ -329,6 +328,14 @@ impl Problem {
     }
 
     fn breakdown(&self, raw: &Raw, c: &Corpus) -> Breakdown {
+        if self.settings.mode == "mana2" {
+            let mana = raw.1.as_ref().expect("mana2 totals must be enabled");
+            let mut result = Breakdown::default();
+            result.net = -mana2_metrics::score(&mana2_metrics::stats(mana, c.totals));
+            result.penalty = result.net.max(0.0);
+            result.bonus = (-result.net).max(0.0);
+            return result;
+        }
         let m = metrics(raw, c);
         if self.settings.mode == "simple" {
             simple_breakdown(&m, &self.settings.simple)
@@ -377,7 +384,7 @@ struct State {
 impl State {
     fn new(arr: Vec<usize>, p: &Problem) -> Self {
         let pos = positions(&arr);
-        let raws = p.corpora.iter().map(|c|full_raw(&arr, c, &p.model.geometry)).collect:: <Vec<_>>();
+        let raws = p.corpora.iter().map(|c|full_raw_with_mana2(&arr, c, &p.model.geometry, p.settings.mode == "mana2")).collect:: <Vec<_>>();
         let score = p.score(&raws);
         Self {
             arr,
@@ -849,7 +856,7 @@ fn run_search(p: &Problem, seed_arr: &[usize], locked: &[bool], control: &Contro
     if !generation&&!p.feasible(&initial.raws) {
         return Err("starting arrangement violates active limits".into());
     }
-    let free: Vec<_> =(0..locked.len()).filter(|&i|!locked[i] && p.model.canonical[seed_arr[i]] != b' ').collect();
+    let free: Vec<_> =(0..locked.len()).filter(|&i|!locked[i]).collect();
     let mut rng = Rng::new(p.settings.seed);
     let started = Instant::now();
     let mut rt = SearchRuntime {
@@ -971,7 +978,7 @@ fn run_search(p: &Problem, seed_arr: &[usize], locked: &[bool], control: &Contro
             return Err("generated permutation is invalid".into());
         }
         for (i, &lock) in locked.iter().enumerate() {
-            if (lock || p.model.canonical[seed_arr[i]] == b' ') && c.arr[i] != seed_arr[i] {
+            if lock && c.arr[i] != seed_arr[i] {
                 return Err("locked key moved".into());
             }
         }

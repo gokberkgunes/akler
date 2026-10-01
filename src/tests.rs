@@ -1021,7 +1021,7 @@ fn config_round_trips_and_presets() {
     s.mix.insert("reddit".into(), 0.7);
     apply_preset(&mut s, "strict");
     let r = search_from_text(&search_settings_text(&s)).unwrap();
-    assert_eq!(r.mode, "simple");
+    assert_eq!(r.mode, "mana2");
     assert_eq!(r.travel_limit, Some(0.0));
     assert_eq!(r.design, "evolve");
     assert_eq!(r.simple, s.simple);
@@ -1120,6 +1120,22 @@ fn search_respects_locks_and_relative_limits() {
             if locked {
                 assert_eq!(c.arr[i], p.model.original[i]);
             }
+        }
+    }
+}
+
+#[test]
+fn mana2_ordinary_swap_matches_full_physical_recalculation() {
+    let mut problem = source_problem();
+    problem.settings.mode = "mana2".into();
+    let before = State::new(problem.model.original.clone(), &problem);
+    let mut trial = before.clone();
+    trial_into(&mut trial, &before, Move::pair(0, 1), &problem);
+    let rebuilt = State::new(trial.arr.clone(), &problem);
+    assert!((trial.score - rebuilt.score).abs() < 1e-9);
+    for (incremental, full) in trial.raws.iter().zip(&rebuilt.raws) {
+        for (left, right) in incremental.1.unwrap().0.iter().zip(full.1.unwrap().0) {
+            assert!((left - right).abs() < 1e-9);
         }
     }
 }

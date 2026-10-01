@@ -61,3 +61,5 @@ mod atomic_analysis;
 mod atomic_report;
 
 mod atomic_ui;
+
+mod mana2_metrics;

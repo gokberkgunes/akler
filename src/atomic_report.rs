@@ -964,6 +964,7 @@ mod tests {
                 trigrams: Some(1),
                 tetragrams: None,
                 pentagrams: None,
+                include_spacegrams: true,
             },
         )
         .unwrap();

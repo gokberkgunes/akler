@@ -236,6 +236,13 @@ fn load_frequency_source_with_limits(text: &str, path: &Path, limits: NgramLimit
     if !got[0]||!got[1] {
         return Err("corpus requires letters/monograms and bigrams".into());
     }
+    // Filter stored grams before deriving skipgrams. That way trigrams which
+    // contain a space cannot add endpoint-only skip evidence either.
+    if !limits.include_spacegrams {
+        for table in &mut tables {
+            table.retain(|(gram, _)| !gram.as_bytes().contains(&b' '));
+        }
+    }
     if !got[2] {
         if got[3] {
             let mut skip = BTreeMap::new();
@@ -1110,6 +1117,27 @@ mod ngram_limit_tests {
 
         let malformed = SOURCE.replace("\"bbc\":1", "\"wrong-width\":1");
         assert!(Source::from_text_with_limits(&malformed, Path::new("inline.json"), limits).is_err());
+    }
+
+    #[test]
+    fn disabling_spacegrams_filters_tables_and_prevents_space_trigram_derivation() {
+        let text = r#"{"letters":{"a":3,"b":3,"c":1},
+            "bigrams":{"a ":2," b":2,"ab":1,"bc":1},
+            "trigrams":{"a b":2,"abc":1}}"#;
+        let source = Source::from_text_with_limits(
+            text,
+            Path::new("spacegrams.json"),
+            NgramLimits {
+                include_spacegrams: false,
+                ..NgramLimits::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(source.tables[1], vec![("ab".to_owned(), 1.0), ("bc".to_owned(), 1.0)]);
+        assert_eq!(source.tables[2], vec![("ac".to_owned(), 1.0)]);
+        assert_eq!(source.tables[3], vec![("abc".to_owned(), 1.0)]);
+        assert_eq!(source.masses[1..], [2.0, 1.0, 1.0]);
     }
 }
 

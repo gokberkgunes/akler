@@ -2,30 +2,161 @@ const RANK_SCORE: usize = N_METRICS;
 
 const RANK_COVERAGE: usize = N_METRICS + 1;
 
-const RANK_COUNT: usize = N_METRICS + 2;
+const RANK_FJB: usize = N_METRICS + 2;
+
+const RANK_FJS: usize = N_METRICS + 3;
+
+const BASE_RANK_COUNT: usize = N_METRICS + 4;
+
+const RANK_MANA_START: usize = BASE_RANK_COUNT;
+
+const RANK_COUNT: usize = BASE_RANK_COUNT + mana2_metrics::N_STATS;
 
 const RANK_Y: usize = 3;
 
 const RANK_DATA: usize = 6;
 
-const RANK_ORDER: [usize; RANK_COUNT] = [
-    RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS, LSB, LSS, REDIR, WRED, WISH, SRAF, INSRAF, OUTSRAF, ROLL,
-    INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
-    DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, ALT, DNFJB, CNFJB, DNFJS, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, VTRAVEL, LTRAVEL, RANK_COVERAGE,
+const RANK_ORDER: [usize; RANK_COUNT - 8] = [
+    RANK_SCORE,
+    SFB,
+    SKB,
+    SFS,
+    SKS,
+    TRAVEL,
+    SFTRAVEL,
+    FSB,
+    HSB,
+    FSS,
+    HSS,
+    RANK_FJB,
+    RANK_FJS,
+    LSB,
+    LSS,
+    REDIR,
+    WRED,
+    WISH,
+    SRAF,
+    INSRAF,
+    OUTSRAF,
+    ROLL,
+    INROLL,
+    OUTROLL,
+    IN2,
+    OUT2,
+    IN3,
+    OUT3,
+    DAHJB,
+    CAHJB,
+    DAHJS,
+    CAHJS,
+    ALT,
+    DNHJB,
+    CNHJB,
+    DNHJS,
+    CNHJS,
+    VTRAVEL,
+    LTRAVEL,
+    RANK_COVERAGE,
+    RANK_MANA_START + 0,
+    RANK_MANA_START + 1,
+    RANK_MANA_START + 2,
+    RANK_MANA_START + 3,
+    RANK_MANA_START + 4,
+    RANK_MANA_START + 5,
+    RANK_MANA_START + 6,
+    RANK_MANA_START + 7,
+    RANK_MANA_START + 8,
+    RANK_MANA_START + 9,
+    RANK_MANA_START + 10,
+    RANK_MANA_START + 11,
+    RANK_MANA_START + 12,
+    RANK_MANA_START + 13,
+    RANK_MANA_START + 14,
+    RANK_MANA_START + 15,
+    RANK_MANA_START + 16,
+    RANK_MANA_START + 17,
+    RANK_MANA_START + 18,
+    RANK_MANA_START + 19,
+    RANK_MANA_START + 20,
+    RANK_MANA_START + 21,
+    RANK_MANA_START + 22,
+    RANK_MANA_START + 23,
+    RANK_MANA_START + 24,
+    RANK_MANA_START + 25,
+    RANK_MANA_START + 26,
+    RANK_MANA_START + 27,
+    RANK_MANA_START + 28,
+    RANK_MANA_START + 29,
+    RANK_MANA_START + 30,
+    RANK_MANA_START + 31,
+    RANK_MANA_START + 32,
+    RANK_MANA_START + 33,
+    RANK_MANA_START + 34,
+    RANK_MANA_START + 35,
+    RANK_MANA_START + 36,
+    RANK_MANA_START + 37,
+    RANK_MANA_START + 38,
+    RANK_MANA_START + 39,
+    RANK_MANA_START + 40,
+    RANK_MANA_START + 41,
+    RANK_MANA_START + 42,
+    RANK_MANA_START + 43,
+    RANK_MANA_START + 44,
+    RANK_MANA_START + 45,
 ];
 
 fn rank_name(m: usize) -> &'static str {
-    if m == RANK_SCORE {
+    if m >= RANK_MANA_START {
+        match mana2_metrics::STAT_IDS[m - RANK_MANA_START] {
+            // These IDs overlap with akler's detailed column names. Prefix
+            // them so both metrics remain selectable and serializable.
+            "sfb" => "M2_SFB",
+            "sfs" => "M2_SFS",
+            "skb" => "M2_SKB",
+            "sks" => "M2_SKS",
+            "lsb" => "M2_LSB",
+            "lss" => "M2_LSS",
+            "alt" => "M2_ALT",
+            "roll" => "M2_ROLL",
+            id => id,
+        }
+    } else if m == RANK_SCORE {
         "SCORE"
     } else if m == RANK_COVERAGE {
         "COVERAGE"
+    } else if m == RANK_FJB {
+        "FJB"
+    } else if m == RANK_FJS {
+        "FJS"
     } else {
         METRIC_NAMES[m]
     }
 }
 
 fn rank_positive(m: usize) -> bool {
-    m == RANK_COVERAGE ||(m<N_METRICS && higher_better(m))
+    m == RANK_COVERAGE
+        || (m < N_METRICS && higher_better(m))
+        || (m >= RANK_MANA_START
+            && mana2_higher_better(mana2_metrics::STAT_IDS[m - RANK_MANA_START]))
+}
+
+/// Mana2's positive score slopes are rewards: larger reported values improve
+/// its score. The remaining nonzero schedules are penalties, while zero-only
+/// schedules have no preference and keep the conventional ascending default.
+/// This classification mirrors mana2/weights.toml.
+fn mana2_higher_better(id: &str) -> bool {
+    matches!(id, "goodrollnothumbs" | "inroll2" | "inroll3")
+}
+
+fn rank_percent(m: usize) -> bool {
+    if m == RANK_COVERAGE || m == RANK_FJB || m == RANK_FJS {
+        return true;
+    }
+    if m < RANK_MANA_START {
+        return false;
+    }
+    let id = mana2_metrics::STAT_IDS[m - RANK_MANA_START];
+    !matches!(id, "sfbw" | "lsb" | "vsb" | "sfsw" | "lss" | "vss")
 }
 
 enum RankRow {
@@ -89,8 +220,25 @@ impl RankRow {
 }
 
 fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
-    if m == RANK_SCORE {
+    if m >= RANK_MANA_START {
+        let raw = row.raw().1.as_ref()?;
+        let stats = mana2_metrics::stats(raw, *row.totals());
+        Some(stats.values[m - RANK_MANA_START])
+    } else if m == RANK_SCORE {
         Some(row.score())
+    } else if m == RANK_FJB || m == RANK_FJS {
+        let component = if m == RANK_FJB {
+            [DAFJB, CAFJB, DNFJB, CNFJB]
+        } else {
+            [DAFJS, CAFJS, DNFJS, CNFJS]
+        };
+        let denominator = denominator_totals(component[0], row.raw(), row.totals());
+        (denominator > 0.0).then(|| {
+            pct(
+                component.iter().map(|&id| row.raw().0[id].max(0.0)).sum(),
+                denominator,
+            )
+        })
     } else if m == RANK_COVERAGE {
         // The action adapter's coverage is over decoded physical grams, not the
         // source text bigrams measured by ordinary coverage. Do not label it 100%.
@@ -105,12 +253,25 @@ fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
     }
 }
 
-fn plain_rank_row(board: Board, source: &Source, weights: &Weights) -> AppResult<RankRow> {
+fn plain_rank_row(
+    board: Board,
+    source: &Source,
+    weights: &Weights,
+    mode: &str,
+) -> AppResult<RankRow> {
     let model = Model::with_rolls(board, weights.rolls());
     let corpus = model.corpus(source)?;
-    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    let mana2 = mode == "mana2";
+    let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, mana2);
     let metrics = metrics(&raw, &corpus);
-    let score = breakdown(&metrics, weights).net;
+    let score = if mana2 {
+        -mana2_metrics::score(&mana2_metrics::stats(
+            raw.1.as_ref().unwrap(),
+            corpus.totals,
+        ))
+    } else {
+        breakdown(&metrics, weights).net
+    };
 
     Ok(RankRow::Plain {
         model,
@@ -152,12 +313,25 @@ impl RankCorpora {
         limits: NgramLimits,
         stop: &AtomicBool,
     ) -> Self {
-        let plain = layouts.iter().any(|(_, layout)| matches!(layout, RankLayout::Plain(_)))
-            .then(|| Source::from_text_with_limits(text, path, limits).map_err(|error| error.to_string()));
-        let action = layouts.iter().any(|(_, layout)| matches!(layout, RankLayout::Action(_)))
-            .then(|| action_ngrams::NgramCorpus::from_text_progress_with_limits(
-                text, path, limits, stop, &AtomicU64::new(0),
-            ).map(Arc::new));
+        let plain = layouts
+            .iter()
+            .any(|(_, layout)| matches!(layout, RankLayout::Plain(_)))
+            .then(|| {
+                Source::from_text_with_limits(text, path, limits).map_err(|error| error.to_string())
+            });
+        let action = layouts
+            .iter()
+            .any(|(_, layout)| matches!(layout, RankLayout::Action(_)))
+            .then(|| {
+                action_ngrams::NgramCorpus::from_text_progress_with_limits(
+                    text,
+                    path,
+                    limits,
+                    stop,
+                    &AtomicU64::new(0),
+                )
+                .map(Arc::new)
+            });
 
         Self { plain, action }
     }
@@ -184,18 +358,42 @@ fn evaluate_rank_layout(
     weights: &Weights,
     stop: &AtomicBool,
 ) -> AppResult<RankRow> {
+    evaluate_rank_layout_with_mode(layout, corpora, weights, stop, "detailed")
+}
+
+fn evaluate_rank_layout_with_mode(
+    layout: RankLayout,
+    corpora: &RankCorpora,
+    weights: &Weights,
+    stop: &AtomicBool,
+    mode: &str,
+) -> AppResult<RankRow> {
     match layout {
         RankLayout::Plain(board) => {
-            let source = corpora.plain.as_ref().ok_or("ordinary corpus was not prepared")?
-                .as_ref().map_err(|error| error.clone())?;
-            plain_rank_row(board, source, weights)
+            let source = corpora
+                .plain
+                .as_ref()
+                .ok_or("ordinary corpus was not prepared")?
+                .as_ref()
+                .map_err(|error| error.clone())?;
+            plain_rank_row(board, source, weights, mode)
         }
         RankLayout::Action(layout) => {
-            let corpus = corpora.action.as_ref().ok_or("action corpus was not prepared")?
-                .as_ref().map_err(|error| error.clone())?;
-            let summary = action_summary::evaluate(
-                &layout, corpus, weights, stop, &AtomicU64::new(0),
-            ).map_err(|error| format!("action evaluation: {error}"))?;
+            let corpus = corpora
+                .action
+                .as_ref()
+                .ok_or("action corpus was not prepared")?
+                .as_ref()
+                .map_err(|error| error.clone())?;
+            let summary = action_summary::evaluate_with_mode(
+                &layout,
+                corpus,
+                weights,
+                stop,
+                &AtomicU64::new(0),
+                mode,
+            )
+            .map_err(|error| format!("action evaluation: {error}"))?;
             Ok(RankRow::Action {
                 layout,
                 summary,
@@ -214,6 +412,7 @@ struct RankingData {
     warnings: Vec<String>,
     columns: [bool; RANK_COUNT],
     weights: Weights,
+    mana2: bool,
 }
 
 fn load_ranking_progress(
@@ -232,7 +431,9 @@ fn load_ranking_progress(
         }
         let parsed = fs::read_to_string(&layout_path)
             .map_err(|error| error.to_string())
-            .and_then(|text| parse_rank_layout(&text, &layout_path).map_err(|error| error.to_string()));
+            .and_then(|text| {
+                parse_rank_layout(&text, &layout_path).map_err(|error| error.to_string())
+            });
         match parsed {
             Ok(layout) => layouts.push((layout_path, layout)),
             Err(error) => errors.push(format!("{}: {error}", layout_path.display())),
@@ -256,7 +457,13 @@ fn load_ranking_progress(
         if stop.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
-        match evaluate_rank_layout(layout, &corpora, &config.weights, stop) {
+        match evaluate_rank_layout_with_mode(
+            layout,
+            &corpora,
+            &config.weights,
+            stop,
+            &config.search.mode,
+        ) {
             Ok(row) => rows.push(row),
             Err(error) => errors.push(format!("{}: {error}", layout_path.display())),
         }
@@ -279,6 +486,7 @@ fn load_ranking_progress(
         warnings,
         columns: config.rank_columns,
         weights: config.weights,
+        mana2: config.search.mode == "mana2",
     })
 }
 
@@ -311,7 +519,13 @@ where
 }
 
 fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> AppResult<()> {
-    if let RankRow::Action { layout, corpus, details, .. } = row {
+    if let RankRow::Action {
+        layout,
+        corpus,
+        details,
+        ..
+    } = row
+    {
         let evaluation = rank_details_with(details, || {
             let snapshot_layout = layout.clone();
             let snapshot_corpus = Arc::clone(corpus);
@@ -323,8 +537,13 @@ fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> App
                 &layout.name,
                 move |stop, progress| {
                     action_ui::evaluate_progress(
-                        &snapshot_layout, &snapshot_corpus, &snapshot_weights, stop, progress,
-                    ).map(Arc::new)
+                        &snapshot_layout,
+                        &snapshot_corpus,
+                        &snapshot_weights,
+                        stop,
+                        progress,
+                    )
+                    .map(Arc::new)
                 },
             )
         })?;
@@ -340,8 +559,19 @@ fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> App
     let mut scroll = 0;
     loop {
         let canvas = dashboard(
-            term, "Layout", "v validate | q back", model, &model.original,
-            &model.original, corpus, weights, None, None, "", None, false,
+            term,
+            "Layout",
+            "v validate | q back",
+            model,
+            &model.original,
+            &model.original,
+            corpus,
+            weights,
+            None,
+            None,
+            "",
+            None,
+            false,
         );
         term.present(&canvas, scroll)?;
         let event = term.event()?;
@@ -349,7 +579,15 @@ fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> App
             continue;
         }
         if let Some(Action::Metric(metric)) = action_press(term, &canvas, &event, scroll) {
-            contributor_view(term, metric, model, &model.original, &model.original, corpus, false)?;
+            contributor_view(
+                term,
+                metric,
+                model,
+                &model.original,
+                &model.original,
+                corpus,
+                false,
+            )?;
         }
         match event {
             Event::Char('.') => term.precise = !term.precise,
@@ -361,17 +599,17 @@ fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> App
     }
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 enum Hidden {
     Column(usize),
-    Row(PathBuf)
+    Row(PathBuf),
 }
 
 struct RankColumns {
     hidden: [bool; RANK_COUNT],
     rows: BTreeSet<PathBuf>,
     history: Vec<Hidden>,
-    first: usize
+    first: usize,
 }
 
 impl RankColumns {
@@ -380,20 +618,24 @@ impl RankColumns {
             hidden: [false; RANK_COUNT],
             rows: BTreeSet::new(),
             history: Vec::new(),
-            first: 0
+            first: 0,
         }
     }
 
     fn visible(&self) -> Vec<usize> {
-        RANK_ORDER.iter().copied().filter(|&m|!self.hidden[m]).collect()
+        RANK_ORDER
+            .iter()
+            .copied()
+            .filter(|&m| !self.hidden[m])
+            .collect()
     }
 
     fn hide(&mut self, m: usize) -> bool {
         if m >= RANK_COUNT || self.hidden[m] {
             return false;
         }
-        if let Some(i) = self.visible().iter().position(|&id|id == m) {
-            if i<self.first {
+        if let Some(i) = self.visible().iter().position(|&id| id == m) {
+            if i < self.first {
                 self.first = self.first.saturating_sub(1);
             }
         }
@@ -415,11 +657,11 @@ impl RankColumns {
             match last {
                 Hidden::Row(p) => {
                     self.rows.remove(&p);
-                },
+                }
                 Hidden::Column(m) => {
                     self.hidden[m] = false;
-                    if let Some(i) = self.visible().iter().position(|&id|id == m) {
-                        if i<self.first {
+                    if let Some(i) = self.visible().iter().position(|&id| id == m) {
+                        if i < self.first {
                             self.first = i;
                         } else if i >= self.first + capacity.max(1) {
                             self.first = i + 1 - capacity.max(1);
@@ -439,8 +681,28 @@ impl RankColumns {
 }
 
 const RANK_DEFAULT_COLUMNS: &[usize] = &[
-    RANK_SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB, FSS, HSS,
-    LSB, LSS, REDIR, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, RANK_COVERAGE,
+    RANK_SCORE,
+    SFB,
+    SKB,
+    SFS,
+    SKS,
+    TRAVEL,
+    SFTRAVEL,
+    FSB,
+    HSB,
+    FSS,
+    HSS,
+    RANK_FJB,
+    RANK_FJS,
+    LSB,
+    LSS,
+    REDIR,
+    INSRAF,
+    OUTSRAF,
+    INROLL,
+    OUTROLL,
+    ALT,
+    RANK_COVERAGE,
 ];
 
 fn default_rank_columns() -> [bool; RANK_COUNT] {
@@ -465,50 +727,41 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
                 continue;
             }
             let canonical = match name.to_ascii_uppercase().as_str() {
-                "DFSB" => "DAFJB",
-                "CFSB" => "CAFJB",
-                "DFSS" => "DAFJS",
-                "CFSS" => "CAFJS",
-                "DFJB" => "DAFJB",
-                "CFJB" => "CAFJB",
-                "DFJS" => "DAFJS",
-                "CFJS" => "CAFJS",
-                "DFAB" => "DAFJB",
-                "CFAB" => "CAFJB",
-                "DFAS" => "DAFJS",
-                "CFAS" => "CAFJS",
-                "DSB" => "DNFJB",
-                "DSS" => "DNFJS",
-                "CSB" => "CNFJB",
-                "CSS" => "CNFJS",
-                "DFNB" => "DNFJB",
-                "DFNS" => "DNFJS",
-                "CFNB" => "CNFJB",
-                "CFNS" => "CNFJS",
+                "DFSB" | "CFSB" | "DFJB" | "CFJB" | "DFAB" | "CFAB" | "DSB" | "CSB" | "DFNB"
+                | "CFNB" | "DAFJB" | "CAFJB" | "DNFJB" | "CNFJB" => "FJB",
+                "DFSS" | "CFSS" | "DFJS" | "CFJS" | "DFAS" | "CFAS" | "DSS" | "CSS" | "DFNS"
+                | "CFNS" | "DAFJS" | "CAFJS" | "DNFJS" | "CNFJS" => "FJS",
                 _ => name,
             };
-            let metric = RANK_ORDER.iter().copied()
+            let metric = RANK_ORDER
+                .iter()
+                .copied()
                 .find(|&metric| rank_name(metric).eq_ignore_ascii_case(canonical))
                 .ok_or_else(|| format!("unknown ranker column {name:?}"))?;
             hidden[metric] = false;
         }
     }
-    if hidden.iter().all(|&value| value) {
+    if RANK_ORDER.iter().all(|&id| hidden[id]) {
         return Err("select at least one ranker column".into());
     }
     Ok(hidden)
 }
 
 fn rank_columns_text(hidden: &[bool; RANK_COUNT]) -> String {
-    let names: Vec<_> = RANK_ORDER.iter().copied()
+    let names: Vec<_> = RANK_ORDER
+        .iter()
+        .copied()
         .filter(|&metric| !hidden[metric])
         .map(rank_name)
         .collect();
-    format!("# Visible ranker columns; edit here or press v in the ranker.\n{}\n", names.join(" "))
+    format!(
+        "# Visible ranker columns; edit here or press v in the ranker.\n{}\n",
+        names.join(" ")
+    )
 }
 
 fn toggle_rank_column(hidden: &mut [bool; RANK_COUNT], metric: usize) {
-    if hidden[metric] || hidden.iter().filter(|&&value| !value).count() > 1 {
+    if hidden[metric] || RANK_ORDER.iter().filter(|&&id| !hidden[id]).count() > 1 {
         hidden[metric] = !hidden[metric];
     }
 }
@@ -522,22 +775,43 @@ fn choose_rank_columns(
     let mut scroll = 0;
     let mut status = String::new();
     loop {
-        let mut canvas = Canvas::new(term.width(), RANK_COUNT + 6);
+        let mut canvas = Canvas::new(term.width(), RANK_ORDER.len() + 6);
         header(
-            &mut canvas, "Ranker columns", "", "",
+            &mut canvas,
+            "Ranker columns",
+            "",
+            "",
             "Space toggle | d compact | a all | s save defaults | q cancel",
         );
         for (index, &metric) in RANK_ORDER.iter().enumerate() {
             canvas.text(
-                1, index + 3,
-                &format!("{} [{}] {}", if index == selected { '›' } else { ' ' },
-                    if hidden[metric] { ' ' } else { 'x' }, rank_name(metric)),
+                1,
+                index + 3,
+                &format!(
+                    "{} [{}] {}",
+                    if index == selected { '›' } else { ' ' },
+                    if hidden[metric] { ' ' } else { 'x' },
+                    rank_name(metric)
+                ),
                 if index == selected { YELLOW } else { FG },
             );
-            canvas.hit(Rect { x: 1, y: index + 3, w: 24, h: 1 }, Action::Item(index));
+            canvas.hit(
+                Rect {
+                    x: 1,
+                    y: index + 3,
+                    w: 24,
+                    h: 1,
+                },
+                Action::Item(index),
+            );
         }
-        canvas.text(1, RANK_COUNT + 4, &short(&status, canvas.w.saturating_sub(2)), CYAN);
-        canvas.h = RANK_COUNT + 6;
+        canvas.text(
+            1,
+            RANK_ORDER.len() + 4,
+            &short(&status, canvas.w.saturating_sub(2)),
+            CYAN,
+        );
+        canvas.h = RANK_ORDER.len() + 6;
         term.present(&canvas, scroll)?;
         let event = term.event()?;
         if scroll_event(&event, &mut scroll, canvas.h, term.size.1) {
@@ -550,12 +824,14 @@ fn choose_rank_columns(
         match event {
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
             Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
-            Event::Down | Event::Char('j') => selected = (selected + 1).min(RANK_COUNT - 1),
-            Event::Char(' ') | Event::Enter => toggle_rank_column(&mut hidden, RANK_ORDER[selected]),
+            Event::Down | Event::Char('j') => selected = (selected + 1).min(RANK_ORDER.len() - 1),
+            Event::Char(' ') | Event::Enter => {
+                toggle_rank_column(&mut hidden, RANK_ORDER[selected])
+            }
             Event::Char('d') => hidden = default_rank_columns(),
             Event::Char('a') => hidden.fill(false),
             Event::Char('s') => {
-                if hidden.iter().all(|&value| value) {
+                if RANK_ORDER.iter().all(|&id| hidden[id]) {
                     status = "Select at least one column".into();
                     continue;
                 }
@@ -582,43 +858,48 @@ struct RankGrid {
     metrics: Vec<usize>,
     first: usize,
     total: usize,
-    capacity: usize
+    capacity: usize,
 }
 
 impl RankGrid {
     fn new(width: usize, name: usize, cell: usize, columns: &mut RankColumns) -> Self {
         let name = name.min(width.saturating_sub(cell + 3));
-        let capacity = (width.saturating_sub(name + 2) /(cell + 1)).max(1);
+        let capacity = (width.saturating_sub(name + 2) / (cell + 1)).max(1);
         let visible = columns.visible();
         columns.first = columns.first.min(visible.len().saturating_sub(capacity));
-        let metrics: Vec<_> = visible.iter().skip(columns.first).take(capacity).copied().collect();
+        let metrics: Vec<_> = visible
+            .iter()
+            .skip(columns.first)
+            .take(capacity)
+            .copied()
+            .collect();
         Self {
-            width: name + 2 + metrics.len()*(cell + 1),
+            width: name + 2 + metrics.len() * (cell + 1),
             name,
             cell,
             metrics,
             first: columns.first,
             total: visible.len(),
-            capacity
+            capacity,
         }
     }
 
     fn content_x(&self, col: usize) -> usize {
-        2 + self.name + col*(self.cell + 1)
+        2 + self.name + col * (self.cell + 1)
     }
 
     fn metric_at(&self, x: usize, y: usize, count: usize) -> Option<usize> {
-        if y != RANK_Y + 1&&!(RANK_DATA..RANK_DATA + count).contains(&y) {
+        if y != RANK_Y + 1 && !(RANK_DATA..RANK_DATA + count).contains(&y) {
             return None;
         }
         self.metrics.iter().enumerate().find_map(|(j, &m)| {
             let xx = self.content_x(j);
-            (x >= xx && x<xx + self.cell).then_some(m)
+            (x >= xx && x < xx + self.cell).then_some(m)
         })
     }
 
     fn layout_at(&self, x: usize, y: usize, count: usize) -> Option<usize> {
-        if x >= 1 && x<1 + self.name &&(RANK_DATA..RANK_DATA + count).contains(&y) {
+        if x >= 1 && x < 1 + self.name && (RANK_DATA..RANK_DATA + count).contains(&y) {
             Some(y - RANK_DATA)
         } else {
             None
@@ -626,16 +907,16 @@ impl RankGrid {
     }
 }
 
-#[derive(Clone,Copy)]
+#[derive(Clone, Copy)]
 struct RankRange {
     lo: f64,
-    hi: f64
+    hi: f64,
 }
 
 fn rank_ranges(rows: &[RankRow], hidden: &BTreeSet<PathBuf>) -> [RankRange; RANK_COUNT] {
     let mut out = [RankRange {
         lo: f64::INFINITY,
-        hi: f64::NEG_INFINITY
+        hi: f64::NEG_INFINITY,
     }; RANK_COUNT];
     for row in rows {
         if hidden.contains(row.path()) {
@@ -654,24 +935,31 @@ fn rank_ranges(rows: &[RankRow], hidden: &BTreeSet<PathBuf>) -> [RankRange; RANK
 }
 
 fn rank_color(m: usize, v: f64, range: RankRange) -> u8 {
-    if !v.is_finite()||!range.lo.is_finite()||!range.hi.is_finite() {
+    if !v.is_finite() || !range.lo.is_finite() || !range.hi.is_finite() {
         return MUTED;
     }
     let span = range.hi - range.lo;
-    if span.abs() <= 1e-12*(1.0 + range.lo.abs().max(range.hi.abs())) {
+    if span.abs() <= 1e-12 * (1.0 + range.lo.abs().max(range.hi.abs())) {
         return gradient(0.5);
     }
     let t = ((v - range.lo) / span).clamp(0.0, 1.0);
-    gradient(if rank_positive(m) {
-        t
-    } else {
-        1.0 - t
-    })
+    gradient(if rank_positive(m) { t } else { 1.0 - t })
 }
 
-fn rank_order(rows: &[RankRow], filter: &str, metric: Option<usize>, ascending: bool, hidden: &BTreeSet<PathBuf>) -> Vec<usize> {
+fn rank_order(
+    rows: &[RankRow],
+    filter: &str,
+    metric: Option<usize>,
+    ascending: bool,
+    hidden: &BTreeSet<PathBuf>,
+) -> Vec<usize> {
     let filter = filter.to_ascii_lowercase();
-    let mut order: Vec<_> =(0..rows.len()).filter(|&i|!hidden.contains(rows[i].path()) && rows[i].name().to_ascii_lowercase().contains(&filter)).collect();
+    let mut order: Vec<_> = (0..rows.len())
+        .filter(|&i| {
+            !hidden.contains(rows[i].path())
+                && rows[i].name().to_ascii_lowercase().contains(&filter)
+        })
+        .collect();
     order.sort_by(|&a, &b| {
         if let Some(m) = metric {
             let va = rank_value(&rows[a], m);
@@ -681,32 +969,36 @@ fn rank_order(rows: &[RankRow], filter: &str, metric: Option<usize>, ascending: 
             }
         }
         let cmp = if let Some(m) = metric {
-            rank_value(&rows[a], m).unwrap_or(0.0).total_cmp(&rank_value(&rows[b], m).unwrap_or(0.0))
+            rank_value(&rows[a], m)
+                .unwrap_or(0.0)
+                .total_cmp(&rank_value(&rows[b], m).unwrap_or(0.0))
         } else {
             rows[a].name().cmp(rows[b].name())
         };
-        (if ascending {
-            cmp
-        } else {
-            cmp.reverse()
-        }).then_with(|| rows[a].name().cmp(rows[b].name()))
+        (if ascending { cmp } else { cmp.reverse() })
+            .then_with(|| rows[a].name().cmp(rows[b].name()))
     });
     order
 }
 
-fn rank_viewport(top: &mut usize, selected: &mut usize, total: usize, capacity: usize, follow: bool) {
+fn rank_viewport(
+    top: &mut usize,
+    selected: &mut usize,
+    total: usize,
+    capacity: usize,
+    follow: bool,
+) {
     let capacity = capacity.max(1);
     *selected = (*selected).min(total.saturating_sub(1));
     *top = (*top).min(total.saturating_sub(capacity));
     if follow {
-        if *selected<*top {
-            *top=*selected;
+        if *selected < *top {
+            *top = *selected;
         } else if *selected >= top.saturating_add(capacity) {
-            *top=*selected + 1 - capacity;
+            *top = *selected + 1 - capacity;
         }
-    }
-    else if total>0 {
-        *selected = (*selected).clamp(*top,(top.saturating_add(capacity) - 1).min(total - 1));
+    } else if total > 0 {
+        *selected = (*selected).clamp(*top, (top.saturating_add(capacity) - 1).min(total - 1));
     }
 }
 
@@ -717,41 +1009,52 @@ fn short_end(text: &str, width: usize) -> String {
     } else if width <= 1 {
         "…".into()
     } else {
-        format!("…{}", cs[cs.len() - width + 1..].iter().collect:: <String>())
+        format!("…{}", cs[cs.len() - width + 1..].iter().collect::<String>())
     }
 }
 
-fn draw_rank_table(c: &mut Canvas, g: &RankGrid, rows: &[RankRow], order: &[usize], top: usize, selected: usize, shown: usize, metric: Option<usize>, ascending: bool, dp: usize, ranges: &[RankRange; RANK_COUNT]) -> usize {
+fn draw_rank_table(
+    c: &mut Canvas,
+    g: &RankGrid,
+    rows: &[RankRow],
+    order: &[usize],
+    top: usize,
+    selected: usize,
+    shown: usize,
+    metric: Option<usize>,
+    ascending: bool,
+    dp: usize,
+    ranges: &[RankRange; RANK_COUNT],
+) -> usize {
     let bottom = RANK_DATA + shown.max(1);
-    c.boxed(Rect {
-        x: 0,
-        y: RANK_Y,
-        w: g.width,
-        h: bottom - RANK_Y + 1
-    }, BORDER);
+    c.boxed(
+        Rect {
+            x: 0,
+            y: RANK_Y,
+            w: g.width,
+            h: bottom - RANK_Y + 1,
+        },
+        BORDER,
+    );
     c.line(0, RANK_Y + 2, g.width, BORDER);
     c.put(0, RANK_Y + 2, '├', BORDER);
     c.put(g.width - 1, RANK_Y + 2, '┤', BORDER);
-    let arrow = if ascending {
-        "↑"
-    } else {
-        "↓"
-    };
-    c.text(2, RANK_Y + 1, &format!("Layout{}", if metric.is_none() {
-        arrow
-    } else {
-        ""
-    }), if metric.is_none() {
-        YELLOW
-    } else {
-        FG
-    });
-    c.hit(Rect {
-        x: 1,
-        y: RANK_Y + 1,
-        w: g.name,
-        h: 1
-    }, Action::Command('n'));
+    let arrow = if ascending { "↑" } else { "↓" };
+    c.text(
+        2,
+        RANK_Y + 1,
+        &format!("Layout{}", if metric.is_none() { arrow } else { "" }),
+        if metric.is_none() { YELLOW } else { FG },
+    );
+    c.hit(
+        Rect {
+            x: 1,
+            y: RANK_Y + 1,
+            w: g.name,
+            h: 1,
+        },
+        Action::Command('n'),
+    );
     for (j, &m) in g.metrics.iter().enumerate() {
         let x = g.content_x(j);
         c.put(x - 1, RANK_Y, '┬', BORDER);
@@ -760,53 +1063,67 @@ fn draw_rank_table(c: &mut Canvas, g: &RankGrid, rows: &[RankRow], order: &[usiz
             c.put(x - 1, y, '│', BORDER);
         }
         c.put(x - 1, RANK_Y + 2, '┼', BORDER);
-        c.center(x, RANK_Y + 1, g.cell, &format!("{}{}", rank_name(m), if metric == Some(m) {
-            arrow
-        } else {
-            ""
-        }), if metric == Some(m) {
-            YELLOW
-        } else {
-            FG
-        });
-        c.hit(Rect {
+        c.center(
             x,
-            y: RANK_Y + 1,
-            w: g.cell,
-            h: 1
-        }, Action::Metric(m));
+            RANK_Y + 1,
+            g.cell,
+            &format!(
+                "{}{}",
+                rank_name(m),
+                if metric == Some(m) { arrow } else { "" }
+            ),
+            if metric == Some(m) { YELLOW } else { FG },
+        );
+        c.hit(
+            Rect {
+                x,
+                y: RANK_Y + 1,
+                w: g.cell,
+                h: 1,
+            },
+            Action::Metric(m),
+        );
     }
     let digits = order.len().to_string().len();
     for (offset, &i) in order.iter().skip(top).take(shown).enumerate() {
         let r = top + offset;
         let y = RANK_DATA + offset;
-        let row=&rows[i];
-        let prefix = format!("{}{:>digits$}. ", if r == selected {
-            '›'
-        } else {
-            ' '
-        }, r + 1);
+        let row = &rows[i];
+        let prefix = format!(
+            "{}{:>digits$}. ",
+            if r == selected { '›' } else { ' ' },
+            r + 1
+        );
         let name = short_end(row.name(), g.name.saturating_sub(prefix.chars().count()));
         c.text(1, y, &format!("{prefix}{name}"), FG);
-        c.hit(Rect {
-            x: 1,
-            y,
-            w: g.width - 2,
-            h: 1
-        }, Action::Item(r));
+        c.hit(
+            Rect {
+                x: 1,
+                y,
+                w: g.width - 2,
+                h: 1,
+            },
+            Action::Item(r),
+        );
         for (j, &m) in g.metrics.iter().enumerate() {
             let value = rank_value(row, m);
             let text = match value {
                 Some(v) => {
                     let mut s = number(v, dp);
-                    if m == RANK_COVERAGE || m<N_METRICS&&!physical_metric(m) {
+                    if rank_percent(m) || m < N_METRICS && !physical_metric(m) {
                         s.push('%');
                     }
                     s
-                },
-                None => "n/a".into()
+                }
+                None => "n/a".into(),
             };
-            c.right(g.content_x(j) + 1, y, g.cell - 2, &text, value.map(|v|rank_color(m, v, ranges[m])).unwrap_or(MUTED));
+            c.right(
+                g.content_x(j) + 1,
+                y,
+                g.cell - 2,
+                &text,
+                value.map(|v| rank_color(m, v, ranges[m])).unwrap_or(MUTED),
+            );
         }
     }
     if order.is_empty() {
@@ -837,7 +1154,13 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         let capacity = height.saturating_sub(RANK_DATA + 3).max(1);
         rank_viewport(&mut top, &mut selected, order.len(), capacity, false);
         let shown = order.len().saturating_sub(top).min(capacity);
-        let name_width = rows.iter().map(|r|r.name().chars().count()).max().unwrap_or(12).saturating_add(order.len().to_string().len() + 3).clamp(18, 30);
+        let name_width = rows
+            .iter()
+            .map(|r| r.name().chars().count())
+            .max()
+            .unwrap_or(12)
+            .saturating_add(order.len().to_string().len() + 3)
+            .clamp(18, 30);
         let mut cw = 10usize;
         for row in rows {
             for m in 0..RANK_COUNT {
@@ -848,32 +1171,72 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         }
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
-        header(&mut c, "Ranker", &data.name, "", "v columns | c corpus | r reload | u restore | H all | q back");
-        let bottom = draw_rank_table(&mut c, &grid, rows, &order, top, selected, shown, metric, ascending, term.decimals(), &ranges);
+        let title = if data.mana2 {
+            "Ranker · Mana2 SCORE"
+        } else {
+            "Ranker"
+        };
+        header(
+            &mut c,
+            title,
+            &data.name,
+            "",
+            "v columns | c corpus | r reload | u restore | H all | q back",
+        );
+        let bottom = draw_rank_table(
+            &mut c,
+            &grid,
+            rows,
+            &order,
+            top,
+            selected,
+            shown,
+            metric,
+            ascending,
+            term.decimals(),
+            &ranges,
+        );
         let mut footer = format!("{} layouts · travel u/100", order.len());
         if !errors.is_empty() {
             footer.push_str(&format!(" · {} failed (e errors)", errors.len()));
         }
-        if data.warnings.iter().any(|warning| warning.starts_with("Approximate")) {
+        if data
+            .warnings
+            .iter()
+            .any(|warning| warning.starts_with("Approximate"))
+        {
             footer.push_str(" · limited n-grams (i info)");
         }
-        let hidden = columns.hidden.iter().filter(|&&x|x).count();
-        if hidden>0 {
+        let hidden = columns.hidden.iter().filter(|&&x| x).count();
+        if hidden > 0 {
             footer.push_str(&format!(" · {hidden} columns hidden"));
         }
         if !columns.rows.is_empty() {
             footer.push_str(&format!(" · {} rows hidden", columns.rows.len()));
         }
-        if grid.total>grid.metrics.len() {
-            footer.push_str(&format!(" · columns {}–{}/{}", grid.first + 1, grid.first + grid.metrics.len(), grid.total));
+        if grid.total > grid.metrics.len() {
+            footer.push_str(&format!(
+                " · columns {}–{}/{}",
+                grid.first + 1,
+                grid.first + grid.metrics.len(),
+                grid.total
+            ));
         }
         c.text(0, bottom + 1, &short(&footer, width), MUTED);
-        let selected_name = order.get(selected).map(|&i|rows[i].name()).unwrap_or("");
-        c.text(0, bottom + 2, &short(if status.is_empty() {
-            selected_name
-        } else {
-            &status
-        }, width), CYAN);
+        let selected_name = order.get(selected).map(|&i| rows[i].name()).unwrap_or("");
+        c.text(
+            0,
+            bottom + 2,
+            &short(
+                if status.is_empty() {
+                    selected_name
+                } else {
+                    &status
+                },
+                width,
+            ),
+            CYAN,
+        );
         c.h = bottom + 3;
         term.present(&c, 0)?;
         let mut e = term.event()?;
@@ -882,8 +1245,9 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             y,
             button: 1,
             release: false,
-            motion: false
-        } = e {
+            motion: false,
+        } = e
+        {
             if let Some(offset) = grid.layout_at(x, y, shown) {
                 if let Some(&i) = order.get(top + offset) {
                     columns.hide_row(rows[i].path().to_owned());
@@ -901,7 +1265,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             Event::Wheel(n) => Some(n),
             Event::PageUp => Some(-(capacity as i32)),
             Event::PageDown => Some(capacity as i32),
-            _ => None
+            _ => None,
         };
         if let Some(d) = delta {
             top = (top as i64 + d as i64).max(0) as usize;
@@ -912,15 +1276,15 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             match a {
                 Action::Metric(m) => {
                     if metric == Some(m) {
-                        ascending=!ascending;
+                        ascending = !ascending;
                     } else {
                         metric = Some(m);
-                        ascending=!rank_positive(m);
+                        ascending = !rank_positive(m);
                     }
                     top = 0;
                     selected = 0;
                     continue;
-                },
+                }
                 Action::Item(r) => {
                     if selected == r {
                         if let Some(&i) = order.get(r) {
@@ -929,10 +1293,9 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                     }
                     selected = r;
                     continue;
-                },
-                Action::Command(ch) => e = Event::Char(ch),
-                _ => {
                 }
+                Action::Command(ch) => e = Event::Char(ch),
+                _ => {}
             }
         }
         match e {
@@ -1016,7 +1379,11 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                     "v chooses columns; Space toggles; s saves defaults to akler.conf. d chooses compact defaults; a selects all.".into(),
                     "Action layouts use their bounded n-gram evaluator. Their COVERAGE is n/a; open a row for physical presses and ignored text.".into(),
                     "Colors use min/max of every non-hidden layout; green is preferable. Different key sets still require coverage checks.".into(),
-                    "SCORE uses saved detailed weights on this corpus. Candidate comparison uses its actual training objective.".into(),
+                    if data.mana2 {
+                        "SCORE is negative Mana2 score. Mana2 stat columns use their Mana2 IDs; remaining columns keep akler definitions.".into()
+                    } else {
+                        "SCORE uses saved detailed weights on this corpus. Candidate comparison uses its actual training objective.".into()
+                    },
                     "Enter opens the selected layout; . changes precision; / filters names; e shows errors; i shows corpus/limit notes.".into()
                 ])?,
             _ => {
@@ -1025,7 +1392,12 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
     }
 }
 
-fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], selected: usize) -> AppResult<usize> {
+fn candidate_view(
+    term: &mut Terminal,
+    p: &Problem,
+    candidates: &[Candidate],
+    selected: usize,
+) -> AppResult<usize> {
     if candidates.is_empty() {
         return Ok(selected);
     }
@@ -1043,13 +1415,15 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
             corpus,
             raw,
             metrics,
-            score: item.score
+            score: item.score,
         });
     }
     let mut columns = RankColumns::new();
-    let wanted = [RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, DNFJB, CNFJB, SRAF, ROLL];
+    let wanted = [
+        RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, RANK_FJB, RANK_FJS, SRAF, ROLL,
+    ];
     for m in 0..RANK_COUNT {
-        columns.hidden[m]=!wanted.contains(&m);
+        columns.hidden[m] = !wanted.contains(&m);
     }
     let mut chosen = selected.min(rows.len() - 1);
     let (mut top, mut current) = (0, chosen);
@@ -1063,12 +1437,40 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
         let shown = order.len().saturating_sub(top).min(capacity);
         let g = RankGrid::new(term.size.0.max(64), 18, 10, &mut columns);
         let mut c = Canvas::ranking(term.size.0.max(64), term.size.1.max(12));
-        header(&mut c, "Candidates", &p.corpora[0].name, &p.model.board.name, "q back");
-        let bottom = draw_rank_table(&mut c, &g, &rows, &order, top, current, shown, metric, ascending, term.decimals(), &ranges);
+        header(
+            &mut c,
+            "Candidates",
+            &p.corpora[0].name,
+            &p.model.board.name,
+            "q back",
+        );
+        let bottom = draw_rank_table(
+            &mut c,
+            &g,
+            &rows,
+            &order,
+            top,
+            current,
+            shown,
+            metric,
+            ascending,
+            term.decimals(),
+            &ranges,
+        );
         if let Some(&i) = order.get(current) {
-            let nearest = candidates.iter().enumerate().filter(|(j, _)|*j != i).map(|(_, other)|letter_distance(&p.model, &other.arr, &candidates[i].arr)).min();
+            let nearest = candidates
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, other)| letter_distance(&p.model, &other.arr, &candidates[i].arr))
+                .min();
             if let Some(n) = nearest {
-                c.text(0, bottom + 1, &format!("Nearest candidate: {n} moved letters"), MUTED);
+                c.text(
+                    0,
+                    bottom + 1,
+                    &format!("Nearest candidate: {n} moved letters"),
+                    MUTED,
+                );
             }
         }
         c.h = bottom + 2;
@@ -1080,19 +1482,18 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
                     if let Some(&i) = order.get(r) {
                         return Ok(i);
                     }
-                },
+                }
                 Action::Metric(m) => {
                     if metric == Some(m) {
-                        ascending=!ascending;
+                        ascending = !ascending;
                     } else {
                         metric = Some(m);
-                        ascending=!rank_positive(m);
+                        ascending = !rank_positive(m);
                     }
                     current = 0;
                     top = 0;
-                },
-                _ => {
                 }
+                _ => {}
             }
         }
         match e {
@@ -1101,15 +1502,14 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
                     chosen = i;
                 }
                 return Ok(chosen);
-            },
-            Event::Char('q')|Event::Escape|Event::Quit => return Ok(chosen),
+            }
+            Event::Char('q') | Event::Escape | Event::Quit => return Ok(chosen),
             Event::Up => current = current.saturating_sub(1),
             Event::Down => current = (current + 1).min(order.len().saturating_sub(1)),
             Event::Left => columns.first = columns.first.saturating_sub(1),
             Event::Right => columns.first = columns.first.saturating_add(1),
-            Event::Char('.') => term.precise=!term.precise,
-            _ => {
-            }
+            Event::Char('.') => term.precise = !term.precise,
+            _ => {}
         }
     }
 }
@@ -1118,7 +1518,8 @@ fn candidate_view(term: &mut Terminal, p: &Problem, candidates: &[Candidate], se
 mod ranker_tests {
     use super::*;
 
-    const NORMAL_LAYOUT: &str = "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n";
+    const NORMAL_LAYOUT: &str =
+        "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n";
 
     const ACTION_LAYOUT: &str = "@ w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space space\n@ aa\n";
 
@@ -1132,32 +1533,53 @@ mod ranker_tests {
         }
         assert!(!hidden[FSB]);
         assert!(!hidden[FSS]);
+        assert!(!hidden[RANK_FJB]);
+        assert!(!hidden[RANK_FJS]);
         for metric in [DAFJB, CAFJB, DAFJS, CAFJS, DNFJB, CNFJB, DNFJS, CNFJS] {
             assert!(hidden[metric]);
         }
-        assert_eq!(parse_rank_columns(&rank_columns_text(&hidden)).unwrap(), hidden);
+        assert_eq!(
+            parse_rank_columns(&rank_columns_text(&hidden)).unwrap(),
+            hidden
+        );
 
-        let all = [false; RANK_COUNT];
-        assert_eq!(parse_rank_columns(&rank_columns_text(&all)).unwrap(), all);
+        let mut all = [true; RANK_COUNT];
+        for &metric in &RANK_ORDER {
+            all[metric] = false;
+        }
+        // Only selectable columns can be emitted by rank_columns_text; legacy
+        // detailed full-jump source columns are accepted as aliases, not shown.
+        let parsed_all = parse_rank_columns(&rank_columns_text(&all)).unwrap();
+        for &metric in &RANK_ORDER {
+            assert_eq!(
+                parsed_all[metric],
+                all[metric],
+                "{metric}: {}",
+                rank_name(metric)
+            );
+        }
+        for metric in [DAFJB, CAFJB, DAFJS, CAFJS, DNFJB, CNFJB, DNFJS, CNFJS] {
+            assert!(parsed_all[metric]);
+        }
         assert_eq!(
             parse_rank_columns("DFSB CFSS").unwrap(),
-            parse_rank_columns("DAFJB CAFJS").unwrap()
+            parse_rank_columns("FJB FJS").unwrap()
         );
         assert_eq!(
             parse_rank_columns("DFJB CFJS").unwrap(),
-            parse_rank_columns("DAFJB CAFJS").unwrap()
+            parse_rank_columns("FJB FJS").unwrap()
         );
         assert_eq!(
             parse_rank_columns("DFAB CFAS").unwrap(),
-            parse_rank_columns("DAFJB CAFJS").unwrap()
+            parse_rank_columns("FJB FJS").unwrap()
         );
         assert_eq!(
             parse_rank_columns("DSB CSS").unwrap(),
-            parse_rank_columns("DNFJB CNFJS").unwrap()
+            parse_rank_columns("FJB FJS").unwrap()
         );
         assert_eq!(
             parse_rank_columns("DFNB CFNS").unwrap(),
-            parse_rank_columns("DNFJB CNFJS").unwrap()
+            parse_rank_columns("FJB FJS").unwrap()
         );
         assert_eq!(
             parse_rank_columns("DHJB CHJS").unwrap(),
@@ -1181,6 +1603,18 @@ mod ranker_tests {
     }
 
     #[test]
+    fn mana2_rank_direction_follows_progressive_score_sign() {
+        assert!(!rank_positive(RANK_SCORE));
+        assert!(rank_positive(RANK_MANA_START + 36)); // inroll2
+        assert!(rank_positive(RANK_MANA_START + 40)); // inroll3
+        assert!(rank_positive(RANK_MANA_START + 45)); // goodrollnothumbs
+        assert!(!rank_positive(RANK_MANA_START + 10)); // offpinky
+        assert!(!rank_positive(RANK_MANA_START + 15)); // lsb
+        assert!(!rank_positive(RANK_MANA_START + 37)); // inroll2nothumbs
+        assert!(!rank_positive(RANK_MANA_START + 34)); // roll (zero schedule)
+    }
+
+    #[test]
     fn mixed_ranker_preserves_both_evaluators_exactly() {
         let path = Path::new("inline.json");
         let source = Source::from_text(CORPUS, path).unwrap();
@@ -1195,64 +1629,132 @@ mod ranker_tests {
 
         let plain = evaluate_rank_layout(
             parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
-            &prepared, &weights, &stop,
-        ).unwrap();
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
         let model = Model::new(board_from_text(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap());
         let ordinary_corpus = model.corpus(&source).unwrap();
         let ordinary_raw = full_raw(&model.original, &ordinary_corpus, &model.geometry);
         let ordinary_metrics = metrics(&ordinary_raw, &ordinary_corpus);
-        assert_eq!(plain.raw().0.map(f64::to_bits), ordinary_raw.0.map(f64::to_bits));
-        assert_eq!(plain.metrics().v.map(f64::to_bits), ordinary_metrics.v.map(f64::to_bits));
-        assert_eq!(plain.score().to_bits(), breakdown(&ordinary_metrics, &weights).net.to_bits());
-        assert_eq!(rank_value(&plain, RANK_COVERAGE), Some(ordinary_corpus.coverage[1]));
+        assert_eq!(
+            plain.raw().0.map(f64::to_bits),
+            ordinary_raw.0.map(f64::to_bits)
+        );
+        assert_eq!(
+            plain.metrics().v.map(f64::to_bits),
+            ordinary_metrics.v.map(f64::to_bits)
+        );
+        assert_eq!(
+            plain.score().to_bits(),
+            breakdown(&ordinary_metrics, &weights).net.to_bits()
+        );
+        assert_eq!(
+            rank_value(&plain, RANK_COVERAGE),
+            Some(ordinary_corpus.coverage[1])
+        );
 
         let action = evaluate_rank_layout(
             parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
-            &prepared, &weights, &stop,
-        ).unwrap();
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
         let layout = action_keys::Layout::parse(ACTION_LAYOUT, Path::new("magic.dat")).unwrap();
-        let expected = action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
-        assert_eq!(action.raw().0.map(f64::to_bits), expected.raw.0.map(f64::to_bits));
-        assert_eq!(action.metrics().v.map(f64::to_bits), expected.metrics.v.map(f64::to_bits));
+        let expected =
+            action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
+        assert_eq!(
+            action.raw().0.map(f64::to_bits),
+            expected.raw.0.map(f64::to_bits)
+        );
+        assert_eq!(
+            action.metrics().v.map(f64::to_bits),
+            expected.metrics.v.map(f64::to_bits)
+        );
         assert_eq!(action.score().to_bits(), expected.score.to_bits());
         assert_eq!(rank_value(&action, RANK_COVERAGE), None);
         assert!(matches!(&action, RankRow::Action { layout, .. }
             if layout.slots.iter().any(|slot| slot.label == "@")));
+
+        for row in [&plain, &action] {
+            for (column, parts) in [
+                (RANK_FJB, [DAFJB, CAFJB, DNFJB, CNFJB]),
+                (RANK_FJS, [DAFJS, CAFJS, DNFJS, CNFJS]),
+            ] {
+                let expected: f64 = parts.iter().map(|&metric| row.metrics().v[metric]).sum();
+                assert!((rank_value(row, column).unwrap() - expected).abs() < 1e-9);
+            }
+        }
 
         let rows = vec![plain, action];
         let hidden = BTreeSet::new();
         let order = rank_order(&rows, "", Some(RANK_SCORE), true, &hidden);
         assert_eq!(order.len(), 2);
         assert_eq!(rank_order(&rows, "magic", None, true, &hidden), vec![1]);
-        assert_eq!(rank_order(&rows, "", Some(RANK_COVERAGE), false, &hidden), vec![0, 1]);
+        assert_eq!(
+            rank_order(&rows, "", Some(RANK_COVERAGE), false, &hidden),
+            vec![0, 1]
+        );
     }
 
     #[test]
     fn ranker_prepares_only_required_corpus_engines() {
         let path = Path::new("inline.json");
         let stop = AtomicBool::new(false);
-        let normal = || (PathBuf::from("normal.dat"), parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap());
-        let magic = || (PathBuf::from("magic.dat"), parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap());
+        let normal = || {
+            (
+                PathBuf::from("normal.dat"),
+                parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+            )
+        };
+        let magic = || {
+            (
+                PathBuf::from("magic.dat"),
+                parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+            )
+        };
 
-        let action_only = RankCorpora::prepare(&[magic()], CORPUS, path, NgramLimits::default(), &stop);
+        let action_only =
+            RankCorpora::prepare(&[magic()], CORPUS, path, NgramLimits::default(), &stop);
         assert!(action_only.plain.is_none());
         assert!(action_only.action.as_ref().unwrap().is_ok());
 
-        let ordinary = RankCorpora::prepare(&[normal()], CORPUS, path, NgramLimits::default(), &stop);
+        let ordinary =
+            RankCorpora::prepare(&[normal()], CORPUS, path, NgramLimits::default(), &stop);
         assert!(ordinary.plain.as_ref().unwrap().is_ok());
         assert!(ordinary.action.is_none());
 
-        let mixed = RankCorpora::prepare(&[normal(), magic()], CORPUS, path, NgramLimits::default(), &stop);
+        let mixed = RankCorpora::prepare(
+            &[normal(), magic()],
+            CORPUS,
+            path,
+            NgramLimits::default(),
+            &stop,
+        );
         assert!(mixed.plain.as_ref().unwrap().is_ok());
         assert!(mixed.action.as_ref().unwrap().is_ok());
 
         let limited = RankCorpora::prepare(
-            &[normal(), magic()], CORPUS, path,
-            NgramLimits { trigrams: Some(1), ..NgramLimits::default() }, &stop,
+            &[normal(), magic()],
+            CORPUS,
+            path,
+            NgramLimits {
+                trigrams: Some(1),
+                ..NgramLimits::default()
+            },
+            &stop,
         );
-        assert_eq!(limited.plain.as_ref().unwrap().as_ref().unwrap().tables[3].len(), 1);
+        assert_eq!(
+            limited.plain.as_ref().unwrap().as_ref().unwrap().tables[3].len(),
+            1
+        );
         assert!(!limited.warnings().is_empty());
-        assert_eq!(mixed.plain.as_ref().unwrap().as_ref().unwrap().tables[3].len(), 3);
+        assert_eq!(
+            mixed.plain.as_ref().unwrap().as_ref().unwrap().tables[3].len(),
+            3
+        );
     }
 
     #[test]
@@ -1266,9 +1768,15 @@ mod ranker_tests {
 
         let missing = evaluate_rank_layout(
             parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
-            &prepared, &weights, &stop,
+            &prepared,
+            &weights,
+            &stop,
         );
-        assert!(missing.err().unwrap().to_string().contains("missing cached contexts"));
+        assert!(missing
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("missing cached contexts"));
 
         let invalid = format!("{ACTION_LAYOUT}swap y ,/u\n");
         assert!(parse_rank_layout(&invalid, Path::new("invalid.dat")).is_err());
@@ -1279,7 +1787,10 @@ mod ranker_tests {
         let stop = AtomicBool::new(false);
         let weights = Weights::default();
         let prepared = RankCorpora::prepare(
-            &[(PathBuf::from("magic.dat"), parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap())],
+            &[(
+                PathBuf::from("magic.dat"),
+                parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+            )],
             CORPUS,
             Path::new("inline.json"),
             NgramLimits::default(),
@@ -1287,16 +1798,30 @@ mod ranker_tests {
         );
         let mut row = evaluate_rank_layout(
             parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
-            &prepared, &weights, &stop,
-        ).unwrap();
-        let RankRow::Action { layout, corpus, details, .. } = &mut row else {
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
+        let RankRow::Action {
+            layout,
+            corpus,
+            details,
+            ..
+        } = &mut row
+        else {
             panic!("expected an action row");
         };
         assert!(details.is_none());
-        assert!(Arc::ptr_eq(corpus, prepared.action.as_ref().unwrap().as_ref().unwrap()));
+        assert!(Arc::ptr_eq(
+            corpus,
+            prepared.action.as_ref().unwrap().as_ref().unwrap()
+        ));
 
         assert!(rank_details_with(details, || Ok(None)).unwrap().is_none());
-        let error = rank_details_with(details, || Err("interrupted detail load".into())).err().unwrap();
+        let error = rank_details_with(details, || Err("interrupted detail load".into()))
+            .err()
+            .unwrap();
         assert_eq!(error.to_string(), "interrupted detail load");
         assert!(details.is_none());
 
@@ -1304,9 +1829,13 @@ mod ranker_tests {
             action_ui::evaluate_progress(layout, corpus, &weights, &stop, &AtomicU64::new(0))
                 .map(|value| Some(Arc::new(value)))
                 .map_err(|error| error.into())
-        }).unwrap().unwrap();
-        let reopened = rank_details_with(details, || panic!("cached details must not be reevaluated"))
-            .unwrap().unwrap();
+        })
+        .unwrap()
+        .unwrap();
+        let reopened =
+            rank_details_with(details, || panic!("cached details must not be reevaluated"))
+                .unwrap()
+                .unwrap();
         assert!(Arc::ptr_eq(&first, &reopened));
     }
 
@@ -1317,13 +1846,19 @@ mod ranker_tests {
         let make_row = |source: &str, text: &str, limits: NgramLimits, weights: &Weights| {
             let layout = parse_rank_layout(source, Path::new("magic.dat")).unwrap();
             let prepared = RankCorpora::prepare(
-                &[(PathBuf::from("magic.dat"), layout)], text,
-                Path::new("inline.json"), limits, &stop,
+                &[(PathBuf::from("magic.dat"), layout)],
+                text,
+                Path::new("inline.json"),
+                limits,
+                &stop,
             );
             evaluate_rank_layout(
                 parse_rank_layout(source, Path::new("magic.dat")).unwrap(),
-                &prepared, weights, &stop,
-            ).unwrap()
+                &prepared,
+                weights,
+                &stop,
+            )
+            .unwrap()
         };
         let original = make_row(ACTION_LAYOUT, CORPUS, NgramLimits::default(), &weights);
         let original_score = original.score().to_bits();
@@ -1336,15 +1871,41 @@ mod ranker_tests {
             make_row(ACTION_LAYOUT, CORPUS, NgramLimits::default(), &weights),
             make_row(&changed_rule, CORPUS, NgramLimits::default(), &weights),
             make_row(&staggered, CORPUS, NgramLimits::default(), &weights),
-            make_row(ACTION_LAYOUT, &changed_corpus, NgramLimits::default(), &weights),
-            make_row(ACTION_LAYOUT, CORPUS, NgramLimits { trigrams: Some(1), ..NgramLimits::default() }, &weights),
-            make_row(ACTION_LAYOUT, CORPUS, NgramLimits::default(), &changed_weights),
+            make_row(
+                ACTION_LAYOUT,
+                &changed_corpus,
+                NgramLimits::default(),
+                &weights,
+            ),
+            make_row(
+                ACTION_LAYOUT,
+                CORPUS,
+                NgramLimits {
+                    trigrams: Some(1),
+                    ..NgramLimits::default()
+                },
+                &weights,
+            ),
+            make_row(
+                ACTION_LAYOUT,
+                CORPUS,
+                NgramLimits::default(),
+                &changed_weights,
+            ),
         ];
-        let RankRow::Action { corpus: old_corpus, details: old_details, .. } = &original else {
+        let RankRow::Action {
+            corpus: old_corpus,
+            details: old_details,
+            ..
+        } = &original
+        else {
             panic!("expected an action row");
         };
         for replacement in &replacements {
-            let RankRow::Action { corpus, details, .. } = replacement else {
+            let RankRow::Action {
+                corpus, details, ..
+            } = replacement
+            else {
                 panic!("expected an action row");
             };
             assert!(!Arc::ptr_eq(old_corpus, corpus));

@@ -155,7 +155,9 @@ fn evaluate_counts(
     };
     let corpus = model.corpus(&source).map_err(|e| e.to_string())?;
     timing.mark("Physical count adapter and metric corpus");
-    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    // Keep Mana2's native counters with action evaluations so optimizer views
+    // can report the same physical stats as its objective and ranker.
+    let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, true);
     let metrics = metrics(&raw, &corpus);
     let score = breakdown(&metrics, w).net;
     timing.mark("Raw metrics and score");
@@ -373,7 +375,11 @@ pub(crate) fn action_keyboard(
                 finger_tint(s.finger)
             },
         );
-        let label = short(&s.label, kw - 2);
+        let label = if s.binding == ak::Binding::Text(vec![b' ']) {
+            "SP".to_owned()
+        } else {
+            short(&s.label, kw - 2)
+        };
         c.center(kx + 1, ky + 1, kw - 2, &label, color);
         if selected == Some(i) {
             c.put(kx + 1, ky + 1, '›', FG);
@@ -476,6 +482,94 @@ fn action_frame(
     c.text(0, y + 1, &short(controls, c.w), MUTED);
     c.h = y + 3;
     c
+}
+
+fn mana2_stats(raw: &Raw, totals: &[f64; 4]) -> mana2_metrics::Stats {
+    mana2_metrics::stats(
+        raw.1
+            .as_ref()
+            .expect("Mana2 evaluation must retain native stat counters"),
+        *totals,
+    )
+}
+
+fn mana2_compact_stats(
+    c: &mut Canvas,
+    y: usize,
+    before: Option<&mana2_metrics::Stats>,
+    after: &mana2_metrics::Stats,
+    decimals: usize,
+) -> usize {
+    let selected = [
+        ("LP", "finger-usage-LP"),
+        ("RP", "finger-usage-RP"),
+        ("offpinky", "offpinky"),
+        ("curl", "pinkyringcurl"),
+        ("SFB", "sfb"),
+        ("SFS", "sfs"),
+        ("alt", "alt"),
+        ("redirect", "redirect"),
+        ("roll", "roll"),
+        ("good roll", "goodroll"),
+    ];
+    let format = |label: &str, id: &str| {
+        let value = after.get(id).expect("selected Mana2 stat is defined");
+        if let Some(before) = before {
+            format!(
+                "{label} {}%→{}%",
+                number(before.get(id).unwrap(), decimals),
+                number(value, decimals)
+            )
+        } else {
+            format!("{label} {}%", number(value, decimals))
+        }
+    };
+    let first = selected[..4]
+        .iter()
+        .map(|(label, id)| format(label, id))
+        .collect::<Vec<_>>()
+        .join("   ");
+    let second = selected[4..]
+        .iter()
+        .map(|(label, id)| format(label, id))
+        .collect::<Vec<_>>()
+        .join("   ");
+    c.text(0, y, &short(&first, c.w), FG);
+    c.text(0, y + 1, &short(&second, c.w), FG);
+    y + 2
+}
+
+fn mana2_score_line(
+    c: &mut Canvas,
+    y: usize,
+    before: Option<f64>,
+    after: f64,
+    objective: f64,
+    decimals: usize,
+) -> usize {
+    let score = if let Some(before) = before {
+        format!(
+            "Mana2 SCORE {} → {} (higher is better)",
+            number(before, decimals),
+            number(after, decimals),
+        )
+    } else {
+        format!("Mana2 SCORE {} (higher is better)", number(after, decimals),)
+    };
+    c.text(0, y, &short(&score, c.w), CYAN);
+    c.text(
+        0,
+        y + 1,
+        &short(
+            &format!(
+                "Training objective {} (weighted corpus mixture; lower is better)",
+                number(objective, decimals),
+            ),
+            c.w,
+        ),
+        MUTED,
+    );
+    y + 2
 }
 
 fn trace_view(term: &mut Terminal, l: &ak::Layout, w: &Weights, physical: bool) -> AppResult<()> {
@@ -651,8 +745,11 @@ fn action_setup_frame(
             );
         }
         y += 4;
-    } else {
+    } else if settings.mode == "detailed" {
         y = grouped_weight_rows(&mut c, y, weights) + 1;
+    } else {
+        c.text(0, y, "Mana2 stats and bundled progressive weights", MUTED);
+        y += 2;
     }
 
     let fields = settings_labels(settings);
@@ -1242,11 +1339,10 @@ fn action_simple_contributors(
 fn action_default_locks(layout: &ak::Layout, generation: bool) -> Vec<bool> {
     (0..layout.slots.len())
         .map(|i| {
-            layout.space(i)
-                || (!generation
-                    && (layout.home(i)
-                        || !layout.slots[i].main
-                        || matches!(layout.slots[i].binding, ak::Binding::Named(_))))
+            !generation
+                && (layout.home(i)
+                    || !layout.slots[i].main
+                    || matches!(layout.slots[i].binding, ak::Binding::Named(_)))
         })
         .collect()
 }
@@ -1301,9 +1397,7 @@ fn action_optimizer_setup(
         if let Some(action) = action_press(term, &frame, &event, scroll) {
             match action {
                 Action::Key(i) => {
-                    if !layout.space(i) {
-                        locks[i] = !locks[i];
-                    }
+                    locks[i] = !locks[i];
                     continue;
                 }
                 Action::Weight(i) => {
@@ -1389,8 +1483,8 @@ fn action_optimizer_setup(
                 "Optimizer",
                 &[
                     "Space run; s save configuration; r reload; d defaults; o original.".into(),
-                    "g design; m simple/detailed; p preset; n new seed; x corpus mixture.".into(),
-                    "H home/action locks; U unlock except Space; L lock all. Mouse toggles locks.".into(),
+                    "g design; m detailed/Mana2; p preset; n new seed; x corpus mixture.".into(),
+                    "H home/action locks; U unlock all; L lock all. Mouse toggles locks.".into(),
                     "Limits are increases relative to the original on each training corpus.".into(),
                     "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into(),
                     "Detailed weights also select typing effort, including in simple mode; w edits them.".into(),
@@ -1490,6 +1584,19 @@ fn action_optimizer_search(
                         MUTED,
                     );
                     y += 2;
+                } else if settings.mode == "mana2" {
+                    let stats = mana2_stats(raw, totals);
+                    y = mana2_compact_stats(&mut frame, y, None, &stats, term.decimals());
+                    if snapshot.has_best {
+                        y = mana2_score_line(
+                            &mut frame,
+                            y,
+                            None,
+                            mana2_metrics::score(&stats),
+                            snapshot.best.score,
+                            term.decimals(),
+                        );
+                    }
                 } else {
                     y = grouped_metric_totals(
                         &mut frame,
@@ -1501,27 +1608,27 @@ fn action_optimizer_search(
                         term.decimals(),
                     );
                     y = finger_table(&mut frame, y + 1, baseline, &current, term.decimals());
-                }
-                y = score_panel(
-                    &mut frame,
-                    y + 1,
-                    &action_score_breakdown(baseline, weights, settings),
-                    &action_score_breakdown(&current, weights, settings),
-                    None,
-                    term.decimals(),
-                );
-                if snapshot.has_best {
-                    frame.text(
-                        0,
-                        y,
-                        &format!(
-                            "Search objective: {} ({}, training mixture)",
-                            number(snapshot.best.score, term.decimals()),
-                            settings.mode,
-                        ),
-                        CYAN,
+                    y = score_panel(
+                        &mut frame,
+                        y + 1,
+                        &action_score_breakdown(baseline, weights, settings),
+                        &action_score_breakdown(&current, weights, settings),
+                        None,
+                        term.decimals(),
                     );
-                    y += 2;
+                    if snapshot.has_best {
+                        frame.text(
+                            0,
+                            y,
+                            &format!(
+                                "Search objective: {} ({}, training mixture)",
+                                number(snapshot.best.score, term.decimals()),
+                                settings.mode,
+                            ),
+                            CYAN,
+                        );
+                        y += 2;
+                    }
                 }
                 frame.text(
                     0,
@@ -1620,6 +1727,24 @@ fn action_result_frame(
             MUTED,
         );
         y += 2;
+    } else if settings.mode == "mana2" {
+        let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
+        let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
+        y = mana2_compact_stats(
+            &mut frame,
+            y,
+            Some(&before_stats),
+            &after_stats,
+            term.decimals(),
+        );
+        y = mana2_score_line(
+            &mut frame,
+            y,
+            Some(mana2_metrics::score(&before_stats)),
+            mana2_metrics::score(&after_stats),
+            objective,
+            term.decimals(),
+        );
     } else {
         y = grouped_metric_cards(
             &mut frame,
@@ -1637,27 +1762,29 @@ fn action_result_frame(
             &after.metrics,
             term.decimals(),
         );
+        y = score_panel(
+            &mut frame,
+            y + 1,
+            &action_score_breakdown(&before.metrics, weights, settings),
+            &action_score_breakdown(&after.metrics, weights, settings),
+            None,
+            term.decimals(),
+        );
     }
-    y = score_panel(
-        &mut frame,
-        y + 1,
-        &action_score_breakdown(&before.metrics, weights, settings),
-        &action_score_breakdown(&after.metrics, weights, settings),
-        None,
-        term.decimals(),
-    );
-    frame.text(
-        0,
-        y,
-        &format!(
-            "Search objective: {} ({}, training mixture) · {}-gram estimate",
-            number(objective, term.decimals()),
-            settings.mode,
-            after.counts.order,
-        ),
-        CYAN,
-    );
-    y += 2;
+    if settings.mode != "mana2" {
+        frame.text(
+            0,
+            y,
+            &format!(
+                "Search objective: {} ({}, training mixture) · {}-gram estimate",
+                number(objective, term.decimals()),
+                settings.mode,
+                after.counts.order,
+            ),
+            CYAN,
+        );
+        y += 2;
+    }
     frame.text(0, y, &short(status, frame.w), CYAN);
     frame.h = y + 2;
     frame
@@ -1953,11 +2080,11 @@ fn run_action_search<const PROFILE: bool, const DETAIL: bool>(
     for _ in 0..40 {
         let mut improved = false;
         for a in 0..best.slots.len() {
-            if locked[a] || best.space(a) {
+            if locked[a] {
                 continue;
             }
             for b in a + 1..best.slots.len() {
-                if locked[b] || best.space(b) {
+                if locked[b] {
                     continue;
                 }
                 if cancel.load(Ordering::Relaxed) {
@@ -2498,7 +2625,7 @@ mod ngram_integration_tests {
         assert!(refine[action]);
         assert!(!generation[action]);
         for i in 0..layout.slots.len() {
-            assert_eq!(generation[i], layout.space(i));
+            assert!(!generation[i]);
             if layout.space(i) || layout.home(i) || !layout.slots[i].main {
                 assert!(refine[i]);
             }

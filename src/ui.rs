@@ -800,7 +800,9 @@ fn keyboard(
             h: 3
         };
         c.boxed(r, border);
-        c.center(kx + 1, ky + 1, kw - 2, &display_symbol(model.canonical[arr[i]]).to_string(), color);
+        let symbol = model.canonical[arr[i]];
+        let label = if symbol == b' ' { "SP".to_owned() } else { display_symbol(symbol).to_string() };
+        c.center(kx + 1, ky + 1, kw - 2, &label, color);
         // Keyboard/click selection is indicated without changing ANSI color.
         if highlight.contains(&i) || cursor == Some(i) {
             c.put(kx + 1, ky + 1, '›', FG);
@@ -1799,6 +1801,42 @@ fn problem_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
     info_page(term, "Search objective audit", &lines)
 }
 
+fn mana2_stats_for(arr: &[usize], corpus: &Corpus, model: &Model) -> mana2_metrics::Stats {
+    let raw = full_raw_with_mana2(arr, corpus, &model.geometry, true);
+    mana2_metrics::stats(raw.1.as_ref().unwrap(), corpus.totals)
+}
+
+fn mana2_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
+    let mut old = [0.0; mana2_metrics::N_STATS];
+    let mut new = [0.0; mana2_metrics::N_STATS];
+    let mut lines = vec!["Mana2 score is maximized; AKLER minimizes its negative.".into()];
+    for (i, corpus) in p.corpora.iter().enumerate() {
+        let before = mana2_stats_for(&p.model.original, corpus, &p.model);
+        let after = mana2_stats_for(arr, corpus, &p.model);
+        lines.push(format!(
+            "{} (share {:.3}): score {:.4} → {:.4}",
+            corpus.name,
+            p.shares[i],
+            mana2_metrics::score(&before),
+            mana2_metrics::score(&after)
+        ));
+        for (index, value) in mana2_metrics::score_contributions(&before).into_iter().enumerate() {
+            old[index] += p.shares[i] * value;
+        }
+        for (index, value) in mana2_metrics::score_contributions(&after).into_iter().enumerate() {
+            new[index] += p.shares[i] * value;
+        }
+    }
+    lines.push(String::new());
+    lines.push(format!("Training objective {:.4} → {:.4}", -old.iter().sum::<f64>(), -new.iter().sum::<f64>()));
+    lines.push(String::new());
+    lines.push("Mana2 stat              Before term      After term".into());
+    for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
+        lines.push(format!("{id:<24} {:+11.4}     {:+11.4}", old[index], new[index]));
+    }
+    info_page(term, "Mana2 objective audit", &lines)
+}
+
 fn validation_view(term: &mut Terminal, model: &Model, before: &[usize], after: &[usize]) -> AppResult<()> {
     let paths = corpus_paths()?;
     let mut lines = vec!["Corpus              SFB before → after    SFS before → after    Bi coverage".into()];
@@ -2376,14 +2414,14 @@ fn choose_design(
     term: &mut Terminal,
     s: &mut SearchSettings,
     m: &Model,
-    arr: &[usize],
+    _arr: &[usize],
     locks: &mut Vec<bool>
 ) -> AppResult<()> {
     if let Some(i) = menu(term, "", &["Refine".into(), "Random".into(), "Evolve".into()])? {
         let old = s.design.clone();
         s.design = ["refine", "random", "evolve"][i].into();
         if old == "refine" && s.design != "refine" {
-            * locks = arr.iter().map(|&id | m.canonical[id] == b' ').collect();
+            locks.fill(false);
         } else if old != "refine" && s.design == "refine" {
             * locks = default_locks(&m.board);
         }
@@ -2392,8 +2430,8 @@ fn choose_design(
 }
 
 fn choose_metrics(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
-    if let Some(i) = menu(term, "", &["Simple".into(), "Detailed".into()])? {
-        s.mode = ["simple", "detailed"][i].into();
+    if let Some(i) = menu(term, "", &["Detailed".into(), "Mana2".into()])? {
+        s.mode = ["detailed", "mana2"][i].into();
         s.preset = "custom".into();
     }
     Ok(())
@@ -2461,8 +2499,11 @@ fn optimizer_setup_frame(
             }, Action::SimpleWeight(i));
         }
         y += 4;
-    } else {
+    } else if s.mode == "detailed" {
         y = grouped_weight_rows(&mut c, y, w) + 1;
+    } else {
+        c.text(0, y, "Mana2 stats and bundled progressive weights", MUTED);
+        y += 2;
     }
     let labels = settings_labels(s);
     let cols = if c.w >= 80 {
@@ -2523,9 +2564,7 @@ fn optimizer_setup(
         if let Some(action) = action_press(term, &c, &e, scroll) {
             match action {
                 Action::Key(i) => {
-                    if model.canonical[arr[i]] != b' ' {
-                        locks[i]=!locks[i];
-                    }
+                    locks[i]=!locks[i];
                     continue;
                 },
                 Action::Weight(i) => {
@@ -2567,7 +2606,7 @@ fn optimizer_setup(
             Event::Char(' ') => return Ok(true),
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(false),
             Event::Char('H')=>*locks = default_locks(&model.board),
-            Event::Char('U')=>*locks = arr.iter().map(|&i | model.canonical[i] == b' ').collect(),
+            Event::Char('U')=>locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o')=>*arr = model.original.clone(),
             Event::Char('n') => s.seed = new_seed(),
@@ -2602,7 +2641,7 @@ fn optimizer_setup(
             Event::Char('?') => info_page(
                 term,
                 "Optimizer",
-                &["Space run; s save configuration; r reload; d defaults; o original.".into(), "g design; m simple/detailed; p preset; n new seed; x corpus mixture.".into(), "H home locks; U unlock except Space; L lock all. Mouse toggles locks.".into(), "Limits are increases relative to the original on each training corpus.".into(), "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into()]
+                &["Space run; s save configuration; r reload; d defaults; o original.".into(), "g design; m detailed/Mana2; p preset; n new seed; x corpus mixture.".into(), "H home/thumb locks; U unlock all; L lock all. Mouse toggles locks.".into(), "Limits are increases relative to the original on each training corpus.".into(), "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into()]
             )?,
             _ => {
             }
@@ -2635,8 +2674,9 @@ fn optimizer_dashboard(
     status: &str
 ) -> Canvas {
     let co=&p.corpora[0];
-    let r0 = full_raw(&p.model.original, co, &p.model.geometry);
-    let r1 = full_raw(arr, co, &p.model.geometry);
+    let mana2 = p.settings.mode == "mana2";
+    let r0 = full_raw_with_mana2(&p.model.original, co, &p.model.geometry, mana2);
+    let r1 = full_raw_with_mana2(arr, co, &p.model.geometry, mana2);
     let a = metrics(&r0, co);
     let b = metrics(&r1, co);
     let mut cv = Canvas::new(term.width(), 96);
@@ -2647,7 +2687,24 @@ fn optimizer_dashboard(
     } else {
         None
     };
-    if p.settings.mode == "simple" {
+    if mana2 {
+        let before = mana2_metrics::stats(r0.1.as_ref().unwrap(), co.totals);
+        let after = mana2_metrics::stats(r1.1.as_ref().unwrap(), co.totals);
+        for (label, id) in [("SFBW", "sfbw"), ("SFSW", "sfsw"), ("Stretch", "lsb"), ("Scissor", "vsb"), ("Weak RED", "redirectweak"), ("Roll", "roll")] {
+            let left = before.get(id).unwrap_or(0.0);
+            let right = after.get(id).unwrap_or(0.0);
+            let suffix = if matches!(id, "redirectweak" | "roll") { "%" } else { "" };
+            cv.text(0, y, &short(&format!("{label:12} {left:.2}{suffix} → {right:.2}{suffix}"), cv.w), FG);
+            y += 1;
+        }
+        y += 1;
+        cv.text(0, y, &short(&format!("Mana2 score {:.2} → {:.2} (higher is better)", mana2_metrics::score(&before), mana2_metrics::score(&after)), cv.w), CYAN);
+        y += 1;
+        if let Some((old, new)) = mix {
+            cv.text(0, y, &short(&format!("Training objective {:.2} → {:.2} (lower is better)", old, new), cv.w), MUTED);
+            y += 1;
+        }
+    } else if p.settings.mode == "simple" {
         y = simple_metric_table(&mut cv, y, &a, &b, term.decimals()) + 1;
         cv.text(
             0,
@@ -2660,7 +2717,9 @@ fn optimizer_dashboard(
         y = grouped_metric_cards(&mut cv, y, &a, &b, &r1, co, term.decimals());
         y = finger_table(&mut cv, y + 1, &a, &b, term.decimals());
     }
-    y = score_panel(&mut cv, y + 1, &p.breakdown(&r0, co), &p.breakdown(&r1, co), mix, term.decimals());
+    if !mana2 {
+        y = score_panel(&mut cv, y + 1, &p.breakdown(&r0, co), &p.breakdown(&r1, co), mix, term.decimals());
+    }
     cv.text(0, y, &short(status, cv.w), CYAN);
     cv.h = y + 2;
     cv
@@ -2827,6 +2886,14 @@ fn save_result(
                     new.simple[j]
                 ));
         }
+        if p.settings.mode == "mana2" {
+            let before = mana2_stats_for(&p.model.original, c, &p.model);
+            let after = mana2_stats_for(arr, c, &p.model);
+            report.push_str(&format!("mana2_score = {:.9} -> {:.9}\n", mana2_metrics::score(&before), mana2_metrics::score(&after)));
+            for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
+                report.push_str(&format!("mana2_{id} = {:.9} -> {:.9}\n", before.values[index], after.values[index]));
+            }
+        }
     }
     atomic_write(&path.with_extension("run.txt"), &report, false)?;
     Ok(path)
@@ -2849,6 +2916,11 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
     for name in SIMPLE_KEYS {
         out.push_str(&format!(",simple_{name}"));
     }
+    if p.settings.mode == "mana2" {
+        for id in mana2_metrics::STAT_IDS {
+            out.push_str(&format!(",mana2_{id}"));
+        }
+    }
     out.push('\n');
     for (j, candidate) in res.archive.iter().enumerate() {
         for (i, co) in p.corpora.iter().enumerate() {
@@ -2867,6 +2939,12 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
                 ));
             for v in m.v.into_iter().chain(m.simple) {
                 out.push_str(&format!(",{v:.9}"));
+            }
+            if p.settings.mode == "mana2" {
+                let stats = mana2_stats_for(&candidate.arr, co, &p.model);
+                for value in stats.values {
+                    out.push_str(&format!(",{value:.9}"));
+                }
             }
             out.push('\n');
         }
@@ -2888,6 +2966,9 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
 }
 
 fn simple_objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
+    if p.settings.mode == "mana2" {
+        return mana2_objective_view(term, p, arr);
+    }
     if p.settings.mode != "simple" {
         return problem_objective_view(term, p, arr);
     }
@@ -2934,7 +3015,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
     let mut weights = config.weights;
     let mut settings = config.search;
     if settings.design != "refine" {
-        locks = arr.iter().map(|&i | model.canonical[i] == b' ').collect();
+        locks.fill(false);
     }
     timing.mark("Weights, settings and locks");
     drop(timing);
@@ -2980,7 +3061,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     &arr,
                     &locks,
                     "Optimizer result",
-                    "r setup | Space refine | b compare | [ ] | s save | S batch | q back",
+                    "r setup | Space refine | b compare | [ ] | a stats | s save | S batch | q back",
                     &text
                 );
                 term.present(&frame, scroll)?;

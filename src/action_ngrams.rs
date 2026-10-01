@@ -378,6 +378,14 @@ impl NgramCorpus {
         if tables.iter().any(|t| !t.values().sum::<f64>().is_finite()) {
             return Err("n-gram frequency sum overflow".into());
         }
+        // Spaces separate contexts. Removing only entries that contain a
+        // literal space preserves post-space shorter contexts without joining
+        // text across the boundary.
+        if !limits.include_spacegrams {
+            for table in &mut tables {
+                table.retain(|gram, _| !gram.contains(&b' '));
+            }
+        }
         let caps = [
             None,
             None,
@@ -567,6 +575,27 @@ fn contribute(
     add(3, [a as usize, b as usize, c as usize], 3);
 }
 
+fn add_tail_mana2(raw: &mut Raw, tail: Tail, frequency: f64, geometry: &Geometry) {
+    let Some(mana) = &mut raw.1 else { return };
+    let [a, b, c] = tail;
+    if c == GAP {
+        return;
+    }
+    let c = c as usize;
+    mana2_metrics::add_gram(mana, &geometry.keys, 0, &[c], frequency);
+    if b == GAP {
+        return;
+    }
+    let b = b as usize;
+    mana2_metrics::add_gram(mana, &geometry.keys, 1, &[b, c], frequency);
+    if a == GAP {
+        return;
+    }
+    let a = a as usize;
+    mana2_metrics::add_gram(mana, &geometry.keys, 2, &[a, c], frequency);
+    mana2_metrics::add_gram(mana, &geometry.keys, 3, &[a, b, c], frequency);
+}
+
 // Physical geometry never moves with bindings. Compile the disjoint event
 // fields of a terminal history into one mask; retain floating travel values in
 // Geometry. No frequency, binding, weight or candidate state lives here.
@@ -654,6 +683,7 @@ impl TailContributions {
             }
         };
         add_bits(raw, bits, f);
+        add_tail_mana2(raw, tail, f, g);
     }
 }
 
@@ -743,6 +773,12 @@ impl Proposal {
         metrics_totals(&self.raw, &self.totals)
     }
 
+    pub(crate) fn mana2_score(&self) -> f64 {
+        assert!(self.valid);
+        let raw = self.raw.1.as_ref().expect("mana2 totals must be enabled");
+        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals))
+    }
+
     #[cfg(test)]
     pub(crate) fn summary(&self, w: &Weights) -> (Metrics, f64) {
         summary(&self.raw, self.totals, w)
@@ -801,6 +837,18 @@ pub(crate) struct Incremental {
 }
 
 impl Incremental {
+    pub(crate) fn enable_mana2(&mut self) {
+        self.raw.1 = Some(mana2_metrics::RawStats::default());
+        for (tail, window) in self.tails.iter().zip(self.corpus.windows.iter()) {
+            add_tail_mana2(&mut self.raw, *tail, window.weight, &self.geometry);
+        }
+    }
+
+    pub(crate) fn mana2_score(&self) -> f64 {
+        let raw = self.raw.1.as_ref().expect("mana2 totals must be enabled");
+        -mana2_metrics::score(&mana2_metrics::stats(raw, self.totals))
+    }
+
     pub(crate) fn new<F>(
         corpus: &NgramCorpus,
         layout: &ak::Layout,
@@ -968,7 +1016,11 @@ impl Incremental {
         }
 
         let mut mapper = crate::action_fast::Mapper::new(&self.program, &self.keys);
-        let mut raw = Raw::default();
+        let mut raw = if self.raw.1.is_some() {
+            Raw::with_mana2()
+        } else {
+            Raw::default()
+        };
         let mut totals = [0.0; 4];
         for (id, window) in self.corpus.windows.iter().enumerate() {
             if stop.load(Ordering::Relaxed) {
@@ -1297,13 +1349,10 @@ mod tests {
                 for &b in &ids {
                     for &c in &ids {
                         for f in [1.0, -1.0, 0.1, -0.1, 0.0, -0.0] {
-                            let mut expected = Raw(std::array::from_fn(|i| {
-                                if i % 2 == 0 {
-                                    1234.125
-                                } else {
-                                    -0.0
-                                }
-                            }));
+                            let mut expected = Raw(
+                                std::array::from_fn(|i| if i % 2 == 0 { 1234.125 } else { -0.0 }),
+                                None,
+                            );
                             let mut actual = expected.clone();
                             let mut et = [17.25, 31.5, 2.75, 2.75];
                             let mut at = et;
@@ -1393,10 +1442,13 @@ mod tests {
         let effort = crate::action_ui::LocalEffort::new(&seed, &weights);
         let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
         let make = |layout: &ak::Layout| {
-            Incremental::new(&corpus, layout, geometry.clone(), &stop, |a, b, key| {
-                effort.get(a, b, key)
-            })
-            .unwrap()
+            let mut cache =
+                Incremental::new(&corpus, layout, geometry.clone(), &stop, |a, b, key| {
+                    effort.get(a, b, key)
+                })
+                .unwrap();
+            cache.enable_mana2();
+            cache
         };
         let mut cache = make(&seed);
         let original = cache.numeric_state();
@@ -1423,6 +1475,7 @@ mod tests {
             for (actual, expected) in proposal.metrics().v.iter().zip(fresh.metrics().v) {
                 assert!((actual - expected).abs() < 1e-8);
             }
+            assert!((proposal.mana2_score() - fresh.mana2_score()).abs() < 1e-8);
             cache.commit(&mut proposal);
             assert_eq!(cache.tails, fresh.tails);
             cache
@@ -2031,7 +2084,7 @@ mod tests {
                 state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
                 ((state >> 32) % 10000) as f64 * 0.03125
             };
-            let raw = Raw(std::array::from_fn(|_| next() - 10.0));
+            let raw = Raw(std::array::from_fn(|_| next() - 10.0), None);
             let totals = if trial % 7 == 0 {
                 [0.0; 4]
             } else {
@@ -2356,6 +2409,7 @@ mod limit_tests {
                 trigrams: Some(2000),
                 tetragrams: Some(2000),
                 pentagrams: Some(2000),
+                include_spacegrams: true,
             },
         ] {
             let actual =
@@ -2365,6 +2419,24 @@ mod limit_tests {
             assert!(actual.warnings.is_empty());
             assert_eq!(actual.order, original.order);
         }
+    }
+
+    #[test]
+    fn disabling_spacegrams_removes_literal_space_contexts() {
+        let text = cached_text(b"ab cd");
+        let corpus = NgramCorpus::from_text_with_limits(
+            &text,
+            Path::new("spacegrams.json"),
+            NgramLimits {
+                include_spacegrams: false,
+                ..NgramLimits::default()
+            },
+        )
+        .unwrap();
+        assert!(corpus
+            .windows
+            .iter()
+            .all(|window| !window.text().contains(&b' ')));
     }
 
     #[test]
@@ -2432,6 +2504,7 @@ mod limit_tests {
             trigrams: Some(1),
             tetragrams: Some(1),
             pentagrams: Some(1),
+            include_spacegrams: true,
         };
         let full = NgramCorpus::from_text(&text, Path::new("inline.json")).unwrap();
         let limited =

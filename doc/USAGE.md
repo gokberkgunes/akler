@@ -19,10 +19,10 @@ Edit the commented [akler.conf](../akler.conf) in the current directory:
 | Section | Contents |
 |---|---|
 | `[weights]` | Detailed metric, finger-usage, and off-home weights; see [METRICS.md](METRICS.md). |
-| `[search]` | Search options, simple-mode weights, and `corpus.NAME` mixture shares. |
+| `[search]` | Search options, scoring mode, simple-mode weights, and `corpus.NAME` mixture shares. |
 | `[rolls]` | Independent `include_thumbs`, `include_scissors`, and `include_stretches` toggles. |
 | `[ranker]` | `columns = SCORE SFB SFS ...`, using displayed metric names. |
-| `[ngrams]` | Independent `trigrams`, `tetragrams`, and `pentagrams` maximum counts. |
+| `[ngrams]` | `include_spacegrams` and independent `trigrams`, `tetragrams`, and `pentagrams` maximum counts. |
 
 Entries use `name = value`; `#` starts a comment. Missing entries use built-in
 defaults. Either optimizer's setup `s` saves weights, roll filters, and search settings;
@@ -71,6 +71,17 @@ including non-rolls and rolls rejected by either movement filter. Enabling
 thumbs changes only roll denominators, not ALT/RED/etc. Excluding thumbs
 never joins presses across a thumb.
 
+`[ngrams] include_spacegrams = true` is the default. Set it to `false` to
+exclude stored n-grams containing a space from evaluation and optimization,
+including magic layouts. This changes the available populations and their
+denominators. It filters data when the corpus is loaded; it does not rewrite
+the corpus file or join presses across a space. `include_thumbs` still controls
+whether thumb-containing patterns *that remain in the population* can count
+as rolls. A non-space thumb key is unaffected by the spacegram switch.
+Explicit skipgram tables store only the two endpoints, so this switch cannot
+identify a space in the omitted middle position. When skipgrams are derived
+from trigrams, space-containing trigrams are filtered before derivation.
+
 After editing the file, use `r` in the ranker or optimizer setup; reopen an
 editor to load new settings. Existing open ranker details keep their original
 settings until the ranker is reloaded. Corpus tables can be reused: only the
@@ -94,13 +105,15 @@ weights; hiding a column never removes its score contribution.
 Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggle,
 `d` selects compact defaults, `a` selects all, and `s` saves `[ranker] columns` in
 `akler.conf`. Escape/q cancels. Defaults are
-shared by ordinary and action layouts. Detailed D/C categories remain available
-without crowding the initial table. The column value accepts
+shared by ordinary and action layouts. `FJB` and `FJS` each sum four full-jump
+categories: discordant/concordant and adjacent/nonadjacent. They are display
+columns, not extra score weights. Old detailed full-jump ranker columns load as
+`FJB` or `FJS`. The column value accepts
 whitespace-separated metric names (case-insensitive); at least one is required.
 Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB,
-FSS, HSS, LSB, LSS, RED, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, and COVERAGE.
+FSS, HSS, FJB, FJS, LSB, LSS, RED, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, and COVERAGE.
 Combined SRAF/ROLL and IN2/OUT2/IN3/OUT3 are available in the column picker;
-existing saved column selections are preserved. `H` in the main ranker restores all columns/rows
+other saved column selections are preserved. `H` in the main ranker restores all columns/rows
 for the current session. Middle-click hiding is temporary unless saved via `v`, `s`.
 Ranker `r` reloads configuration, including weights/limits, and the layouts.
 Opened inspectors use the same weight snapshot as their ranking results. Magic
@@ -129,9 +142,10 @@ reload settings, `p` for presets, `g` for design, `m` for scoring mode, `n` for
 a new seed, and `x` for corpus shares. `d` restores default settings; `o` restores
 the original arrangement. Setup reload updates weights/search; corpus n-gram
 limits stay with the loaded corpus until it is reopened. Click keys to toggle
-locks, `H` restores default locks, `U` unlocks except Space, and `L` locks all. Magic refinement initially
-locks named actions as well as home/thumb keys; generation initially locks
-Space only. Detailed weights also control action typing effort, even when the
+locks, `H` restores default locks, `U` unlocks all keys including Space, and `L` locks all. Refine defaults
+lock home and thumb keys; magic refinement also locks named actions. Generation
+starts unlocked. Space can move when its physical slot is unlocked. Keyboard drawings label it `SP`.
+Detailed weights also control action typing effort, even when the
 search objective uses simple mode.
 
 Magic search results use `r` to return to setup, Space to refine the selected
@@ -238,6 +252,7 @@ The default keeps every entry. To set separate maximum counts, edit:
 
 ```ini
 [ngrams]
+include_spacegrams = false
 trigrams = 2000
 tetragrams = 2000
 pentagrams = 2000
@@ -300,11 +315,17 @@ following settings under `[search]` in the same file.
 | `max_sfb_increase` / `max_sfs_increase` | Allowed increase from the original layout, in percentage points, per training corpus; `none` disables. | 0 / 0 |
 | `max_travel_increase` / `max_sftravel_increase` | Analogous limits in key units/100; `none` disables. | none / none |
 | `design` | `refine` improves the input; `random` starts shuffled layouts; `evolve` can cross/mutate retained parents. | refine |
-| `mode` | `detailed` weights or nine-term `simple` scoring. | detailed |
-| `preset` | Name recorded for a settings selection. File loading does not apply other preset values automatically. | custom |
+| `mode` | Scoring mode; choices listed below. | detailed |
+| `preset` | Name recorded for the selected preset. Choosing a preset applies its mode and caps immediately; loading this value from the file does not reapply it. | custom |
 | `min_distance` | Minimum differing letter positions for candidate diversity, and from the template for generation. | 6 |
 | `simple_*` | Nine simple-mode weights listed in METRICS.md. | See table |
 | `corpus.NAME` | Relative training share; positive shares are normalized to sum to 1. No mixture means selected corpus only. | No mixture |
+
+Scoring modes:
+
+* `detailed`: Score with the weights in `akler.conf`.
+* `mana2`: Score with Mana2 stats and bundled progressive weights.
+* `simple`: Score with the nine `simple_*` weights in `akler.conf`.
 
 `metrics` aliases `mode`; legacy `max_sfb`/`max_sfs` are also baseline-relative
 increase limits, not absolute ceilings. Caps are checked per training corpus,
@@ -314,14 +335,21 @@ finite/nonnegative; cycle probability is at most 1, and hybrid mode requires
 Legacy combined SRAF/ROLL reward names remain accepted and initialize both
 directions unless the corresponding directional setting is explicit.
 
-Choosing a preset in either optimizer changes settings immediately:
+Set `mode = mana2` to use Mana2's progressive score; akler minimizes its negative. The ranker uses the same
+mode for its `SCORE` column, labeled `Mana2 SCORE`, while other ranker columns
+remain akler's detailed metrics. Mana2 stat definitions, schedules, and the
+input/population limits of this port are described in [METRICS.md](METRICS.md#mana2-ranking-and-search-mode).
+
+Choosing any non-custom preset in either optimizer selects Mana2 mode and applies
+the caps below immediately. Other search settings remain as configured. `custom`
+only records the selection and keeps current values.
 
 | Preset | Effect |
 |---|---|
-| balanced | Simple defaults; SFB +0.05 pp, SFS +0.25 pp; no travel caps. |
-| strict | Simple defaults; zero increase in SFB/SFS/TRAVEL/SFTRAVEL. |
-| low-travel | Balanced caps plus zero increase in TRAVEL/SFTRAVEL. |
-| explore | Simple defaults; SFB/SFS/travel caps disabled. |
+| balanced | Mana2 mode; SFB +0.05 pp and SFS +0.25 pp caps; travel caps disabled. |
+| strict | Mana2 mode; zero increase allowed in SFB, SFS, TRAVEL, and SFTRAVEL. |
+| low-travel | Mana2 mode; balanced SFB/SFS caps and zero increase in TRAVEL/SFTRAVEL. |
+| explore | Mana2 mode; SFB/SFS and travel caps disabled. |
 | custom | Keeps current values. |
 
 Magic search now supports the same hybrid/sweep methods, restarts, annealing,
