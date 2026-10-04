@@ -155,8 +155,8 @@ impl Problem<'_> {
         let mut excess = 0.0;
         for (i, cache) in self.caches.iter().enumerate() {
             let metrics = cache.metrics();
-            let value = if self.settings.mode == "mana2" {
-                cache.mana2_score(&self.weights.2)
+            let value = if self.settings.uses_mana2_stats() {
+                cache.physical_score(self.weights, &self.settings.mode)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
@@ -229,8 +229,8 @@ impl Problem<'_> {
         for (i, proposal) in self.proposals.iter().enumerate() {
             let score_start = clock::<PROFILE>();
             let metrics = proposal.metrics();
-            let value = if self.settings.mode == "mana2" {
-                proposal.mana2_score(&self.weights.2)
+            let value = if self.settings.uses_mana2_stats() {
+                proposal.physical_score(self.weights, &self.settings.mode)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
@@ -762,7 +762,7 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
             &control.cancel,
             |a, b, key| effort.get(a, b, key),
         )?;
-        if settings.mode == "mana2" {
+        if settings.uses_mana2_stats() {
             cache.enable_mana2();
         }
         if baseline_arr != identity {
@@ -1030,7 +1030,7 @@ mod tests {
         weights.2 =
             mana2_metrics::Weights::from_text("sfbw = [-11]\npinkyringcurl = [0]\n").unwrap();
         let locked = vec![true; seed.slots.len()];
-        for mode in ["detailed", "mana2"] {
+        for mode in ["detailed", "mana2", "simple"] {
             let settings = SearchSettings {
                 mode: mode.into(),
                 ..settings()
@@ -1047,9 +1047,9 @@ mod tests {
                         |a, b, key| effort.get(a, b, key),
                     )
                     .unwrap();
-                    let score = if mode == "mana2" {
+                    let score = if settings.uses_mana2_stats() {
                         cache.enable_mana2();
-                        cache.mana2_score(&weights.2)
+                        cache.physical_score(&weights, mode)
                     } else {
                         objective(&cache.metrics(), &weights, &settings)
                     };

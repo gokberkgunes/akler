@@ -398,7 +398,7 @@ fn action_controls(optimize: bool) -> &'static str {
     if optimize {
         "Space run | Tab setup/results | U unlock | w weights | s save copy | q back"
     } else {
-        "Click stat for details | Click/drag swap | u undo | s save copy | r original | . digits | q back"
+        "Click stat for details | Click/drag swap | u undo | s save copy | r original | c corpus | . digits | q back"
     }
 }
 
@@ -415,11 +415,7 @@ fn action_frame(
     status: &str,
 ) -> Canvas {
     let mut c = Canvas::new(term.width(), 150);
-    let controls = if title == "Layout" {
-        "i corpus | t text trace | p key trace | . digits | q back"
-    } else {
-        action_controls(locks.is_some())
-    };
+    let controls = "? help | q back";
     header(&mut c, title, &a.corpus.name, &l.name, "");
     let mut y = action_keyboard(&mut c, 2, l, base, locks, selected) + 1;
     let limited = if a
@@ -443,21 +439,10 @@ fn action_frame(
             term.decimals(),
         );
     }
-    c.text(
-        0,
-        y,
-        &short(
-            &format!(
-                "{}-gram estimate{limited}   Physical presses {}   ignored {}",
-                a.counts.order,
-                number(a.counts.presses, term.decimals()),
-                number(a.counts.ignored_characters, term.decimals())
-            ),
-            c.w,
-        ),
-        MUTED,
-    );
-    y += 2;
+    if !limited.is_empty() {
+        c.text(0, y, "Notes: limited contexts (i info)", YELLOW);
+        y += 2;
+    }
     if title != "Editor" {
         y = grouped_metric_cards(
             &mut c,
@@ -707,7 +692,7 @@ fn action_setup_frame(
         "Optimizer",
         &corpus.name,
         &layout.name,
-        "Space run | s save | r reload | p preset | q back",
+        "Space run | ? help | q back",
     );
     let mut y = action_keyboard(&mut c, 3, layout, baseline, Some(locks), None) + 1;
     c.text(
@@ -722,11 +707,11 @@ fn action_setup_frame(
     );
     y += 2;
 
-    if settings.mode == "detailed" {
-        y = grouped_weight_rows(&mut c, y, weights) + 1;
-    } else {
-        c.text(0, y, "Mana2 weights: [mana2] in akler.conf", MUTED);
-        y += 2;
+    match settings.mode.as_str() {
+        "detailed" => y = grouped_weight_rows(&mut c, y, weights) + 1,
+        "mana2" => y = mana2_weight_rows(&mut c, y, &weights.2) + 1,
+        "simple" => y = simple_weight_rows(&mut c, y, &weights.3) + 1,
+        _ => unreachable!("validated search mode"),
     }
 
     let fields = settings_labels(settings);
@@ -838,13 +823,7 @@ fn action_detail_frame_named(
     merge: bool,
 ) -> Canvas {
     let mut c = Canvas::new(width, 64);
-    header(
-        &mut c,
-        title,
-        corpus,
-        &layout.name,
-        "d sort | b pair | a all/top | ? help | q back",
-    );
+    header(&mut c, title, corpus, &layout.name, "? help | q back");
     let mut y = action_keyboard(&mut c, 2, layout, baseline, None, None) + 1;
     c.text(
         0,
@@ -997,10 +976,11 @@ fn action_contributors(
                 merge = !merge;
                 scroll = 0;
             }
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &c,
                 METRIC_NAMES[m],
-                &[ METRIC_HELP[m].into(), roll_settings_label(after.model.geometry.rolls), "Keys are physical slots pressed, including action keys, labelled by the current layout; they are not emitted text.".into(), "Before is the loaded baseline; After is the current layout. Blue keys have moved.".into(), "Top 16 contributions are shown with the remainder in Other. a shows all rows; b combines reversed pairs.".into(), "SRAF/ALT show clean credit; roll thumb inclusion and movement filters follow [rolls]. Both-zero rows are omitted; — means unchanged.".into(),]
+                &[ METRIC_HELP[m].into(), "d sorts by change; a toggles all/top; b combines reversed pairs; q returns.".into(), roll_settings_label(after.model.geometry.rolls), "Keys are physical slots pressed, including action keys, labelled by the current layout; they are not emitted text.".into(), "Before is the loaded baseline; After is the current layout. Blue keys have moved.".into(), "Top 16 contributions are shown with the remainder in Other.".into(), "SRAF shows clean credit; ALT counts all non-thumb LRL/RLR triples. Roll thumb inclusion and movement filters follow [rolls]. Both-zero rows are omitted; — means unchanged.".into(),]
             )?,
             _ => {
             }
@@ -1066,10 +1046,11 @@ pub(crate) fn action_editor(
             },
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
             Event::Char('.') => term.precise=!term.precise,
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &c,
                 "Action controls",
-                &[action_controls(false).into(), "Click a stat for its contributing patterns.".into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into()]
+                &[action_controls(false).into(), "Click a stat for its contributing patterns.".into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into(), format!("{}-gram estimate; physical presses {}; ignored characters {}.", current.counts.order, number(current.counts.presses, term.decimals()), number(current.counts.ignored_characters, term.decimals()))]
             )?,
             Event::Char('i') => show_corpus_info(term, &current.corpus)?,
             Event::Char('t') => trace_view(term, &l, &w, false)?,
@@ -1293,6 +1274,7 @@ fn action_optimizer_setup(
             settings,
             status,
         );
+        scroll = scroll.min(frame.h.saturating_sub(term.size.1));
         term.present(&frame, scroll)?;
         let mut event = term.event()?;
         if scroll_event(&event, &mut scroll, frame.h, term.size.1) {
@@ -1307,6 +1289,40 @@ fn action_optimizer_setup(
                 Action::Weight(i) => {
                     if let Err(error) = edit_single_weight(term, weights, i) {
                         *status = error.to_string();
+                    }
+                    continue;
+                }
+                Action::Mana2Weight(i) => {
+                    match edit_mana2_weight(term, weights, i) {
+                        Ok(true) => {
+                            settings.preset = "custom".into();
+                            *status = format!("Updated Mana2 {}", mana2_metrics::STAT_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(error) => *status = error.to_string(),
+                    }
+                    continue;
+                }
+                Action::SimpleWeight(i) => {
+                    match edit_simple_weight(term, weights, i) {
+                        Ok(true) => {
+                            settings.preset = "custom".into();
+                            *status = format!("Updated Simple {}", simple_metrics::STAT_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(error) => *status = error.to_string(),
+                    }
+                    continue;
+                }
+                Action::SimpleSpeedSetting(i) => {
+                    match edit_simple_speed_setting(term, weights, i) {
+                        Ok(true) => {
+                            settings.preset = "custom".into();
+                            *status =
+                                format!("Updated Simple {}", simple_metrics::SPEED_SETTING_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(error) => *status = error.to_string(),
                     }
                     continue;
                 }
@@ -1371,16 +1387,19 @@ fn action_optimizer_setup(
                 Err(error) => *status = error.to_string(),
             },
             Event::Char('i') => info_page(term, "Corpus", &corpus.warnings)?,
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &frame,
                 "Optimizer",
                 &[
-                    "Space run; s save configuration; r reload; d defaults; o original.".into(),
-                    "g design; m detailed/Mana2; p preset; n new seed; x corpus mixture.".into(),
+                    action_controls(true).into(),
+                    "Space run; s save configuration; r reload; d defaults; o reset layout to original.".into(),
+                    "g design; m detailed/Mana2/Simple; p preset; n new seed; x corpus mixture.".into(),
                     "H home/action locks; U unlock all; L lock all. Mouse toggles locks.".into(),
                     "Limits are increases relative to the original on each training corpus.".into(),
                     "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into(),
                     "Detailed weights select typing effort; w edits them.".into(),
+                    "Click a Mana2 schedule or Simple scalar weight to edit it; s saves both sections.".into(),
                 ],
             )?,
             _ => {}
@@ -1391,7 +1410,7 @@ fn action_optimizer_setup(
 fn action_optimizer_search(
     term: &mut Terminal,
     original: &ak::Layout,
-    seed: &ak::Layout,
+    seed: &mut ak::Layout,
     corpora: &[(ng::NgramCorpus, f64)],
     weights: &Weights,
     settings: &SearchSettings,
@@ -1451,7 +1470,7 @@ fn action_optimizer_search(
                 "Optimizing",
                 &corpora[0].0.name,
                 &seed.name,
-                "p pause | q back",
+                "p pause | ? help | q setup",
             );
             let mut y = action_keyboard(&mut frame, 3, &layout, original, Some(locks), None) + 1;
             if let Some((snapshot, baseline, raw, totals)) = &snapshot {
@@ -1475,6 +1494,25 @@ fn action_optimizer_search(
                             term.decimals(),
                         );
                     }
+                } else if settings.mode == "simple" {
+                    let stats = mana2_stats(raw, totals);
+                    y = simple_stats_rows(&mut frame, y, None, &stats, &weights.3, term.decimals());
+                    y = simple_speed_table(
+                        &mut frame,
+                        y + 1,
+                        None,
+                        &stats,
+                        &weights.3,
+                        term.decimals(),
+                    );
+                    y = simple_score_line(
+                        &mut frame,
+                        y,
+                        None,
+                        simple_metrics::score(&stats, &weights.3),
+                        snapshot.has_best.then_some(snapshot.best.score),
+                        term.decimals(),
+                    );
                 } else {
                     y = grouped_metric_totals(
                         &mut frame,
@@ -1537,6 +1575,16 @@ fn action_optimizer_search(
                     control.pause.store(!paused, Ordering::Relaxed);
                 }
                 Event::Char('.') => term.precise = !term.precise,
+                Event::Char('?') => help_popup(
+                    term,
+                    &frame,
+                    "Optimizer search",
+                    &[
+                        "p pauses or resumes the search; q returns to setup and keeps the best current changes in memory.".into(),
+                        "The score, accepted count, trial count, and current best layout remain visible while searching.".into(),
+                        "Use the setup screen to change mode, weights, corpus mixture, locks, limits, and search settings.".into(),
+                    ],
+                )?,
                 Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
                 _ => {}
             }
@@ -1547,6 +1595,13 @@ fn action_optimizer_search(
     control.pause.store(false, Ordering::Relaxed);
     if worker.join().is_err() {
         return Err("action search worker panicked".into());
+    }
+    if matches!(&result, Ok(None)) {
+        if let Some((snapshot, _, _, _)) = snapshot {
+            if snapshot.has_best {
+                *seed = crate::action_search::arrangement(seed, &snapshot.best.arr);
+            }
+        }
     }
     result
 }
@@ -1577,7 +1632,7 @@ fn action_result_frame(
         "Optimizer result",
         &after.corpus.name,
         &layout.name,
-        "r setup | Space refine | b compare | [ ] | s save | S batch | q back",
+        "? help | q setup",
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
     if settings.mode == "mana2" {
@@ -1596,6 +1651,33 @@ fn action_result_frame(
             Some(mana2_metrics::score(&before_stats, &weights.2)),
             mana2_metrics::score(&after_stats, &weights.2),
             objective,
+            term.decimals(),
+        );
+    } else if settings.mode == "simple" {
+        let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
+        let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
+        y = simple_stats_rows(
+            &mut frame,
+            y,
+            Some(&before_stats),
+            &after_stats,
+            &weights.3,
+            term.decimals(),
+        );
+        y = simple_speed_table(
+            &mut frame,
+            y + 1,
+            Some(&before_stats),
+            &after_stats,
+            &weights.3,
+            term.decimals(),
+        );
+        y = simple_score_line(
+            &mut frame,
+            y,
+            Some(simple_metrics::score(&before_stats, &weights.3)),
+            simple_metrics::score(&after_stats, &weights.3),
+            Some(objective),
             term.decimals(),
         );
     } else {
@@ -1624,7 +1706,7 @@ fn action_result_frame(
             term.decimals(),
         );
     }
-    if settings.mode != "mana2" {
+    if settings.mode == "detailed" {
         frame.text(
             0,
             y,
@@ -1657,15 +1739,17 @@ fn save_action_result(
     let path = layout
         .save_new()
         .map_err(|error| format!("layout save: {error}"))?;
-    let mana2 = if settings.mode == "mana2" {
+    let physical_weights = if settings.mode == "mana2" {
         format!("[mana2]\n{}\n", weights.2.config_text())
+    } else if settings.mode == "simple" {
+        format!("[simple]\n{}\n", weights.3.config_text())
     } else {
         String::new()
     };
     let mut report = format!(
         "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
         progress.seed, progress.evaluations, progress.elapsed, candidate.score,
-        weights_text(weights), rolls_config_text(weights.rolls()), mana2, search_settings_text(settings),
+        weights_text(weights), rolls_config_text(weights.rolls()), physical_weights, search_settings_text(settings),
         original.text(), start.text(), layout.text(),
         locks.iter().enumerate().filter_map(|(i, &locked)| locked.then_some(i)).collect::<Vec<_>>(),
     );
@@ -1679,6 +1763,34 @@ fn save_action_result(
         ));
         for warning in &corpus.warnings {
             report.push_str(&format!("# {warning}\n"));
+        }
+        if settings.uses_mana2_stats() {
+            let stop = AtomicBool::new(false);
+            let before = evaluate(original, corpus, weights, &stop)?;
+            let after = evaluate(layout, corpus, weights, &stop)?;
+            let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
+            let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
+            if settings.mode == "mana2" {
+                report.push_str(&format!(
+                    "mana2_score = {:.9} -> {:.9}\n",
+                    mana2_metrics::score(&before_stats, &weights.2),
+                    mana2_metrics::score(&after_stats, &weights.2),
+                ));
+            } else {
+                report.push_str(&format!(
+                    "simple_score = {:.9} -> {:.9}\n",
+                    simple_metrics::score(&before_stats, &weights.3),
+                    simple_metrics::score(&after_stats, &weights.3),
+                ));
+                let before_values = simple_metrics::values(&before_stats, &weights.3);
+                let after_values = simple_metrics::values(&after_stats, &weights.3);
+                for (index, id) in simple_metrics::STAT_IDS.iter().enumerate() {
+                    report.push_str(&format!(
+                        "simple_metric_{id} = {:.9} -> {:.9}\n",
+                        before_values[index], after_values[index],
+                    ));
+                }
+            }
         }
     }
     atomic_write(&path.with_extension("run.txt"), &report, false)?;
@@ -1717,10 +1829,17 @@ fn action_optimizer(
         'runs: loop {
             let start = layout.clone();
             let Some(result) = action_optimizer_search(
-                term, &original, &start, &training, &weights, &settings, &locks,
+                term,
+                &original,
+                &mut layout,
+                &training,
+                &weights,
+                &settings,
+                &locks,
             )?
             else {
-                return Ok(());
+                status = "Search stopped; changes kept in memory. o resets the layout.".into();
+                break 'runs;
             };
             if !result.has_best || result.archive.is_empty() {
                 status = format!("{} · no eligible candidate", result.progress.phase);
@@ -1789,12 +1908,23 @@ fn action_optimizer(
                 }
 
                 match event {
-                    Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-                    Event::Char('.') => term.precise = !term.precise,
-                    Event::Char('r') => {
-                        layout = original.clone();
+                    Event::Escape | Event::Char('q') | Event::Char('r') => {
+                        status = "Changes kept in memory. o resets the layout.".into();
                         break 'runs;
                     }
+                    Event::Quit => return Ok(()),
+                    Event::Char('.') => term.precise = !term.precise,
+                    Event::Char('?') => help_popup(
+                        term,
+                        &frame,
+                        "Optimizer result",
+                        &[
+                            "Space refines this candidate; b compares archived candidates; [ and ] move between them.".into(),
+                            "s saves this candidate; S saves the archive; r or q returns to setup and keeps the current layout in memory.".into(),
+                            "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
+                            ". toggles display precision.".into(),
+                        ],
+                    )?,
                     Event::Char(' ') => {
                         settings.design = "refine".into();
                         settings.seed = settings.seed.wrapping_add(1);
@@ -2074,6 +2204,21 @@ pub(crate) fn inspect_ranked(
         match event {
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
             Event::Char('.') => term.precise = !term.precise,
+            Event::Char('?') => help_popup(
+                term,
+                &canvas,
+                "Layout details",
+                &[
+                    "Click a stat for its contributing physical patterns.".into(),
+                    "i shows corpus and source-limit notes; t traces text; p traces physical key presses; . toggles display precision; q returns.".into(),
+                    format!(
+                        "{}-gram estimate; physical presses {}; ignored characters {}.",
+                        evaluation.counts.order,
+                        number(evaluation.counts.presses, term.decimals()),
+                        number(evaluation.counts.ignored_characters, term.decimals()),
+                    ),
+                ],
+            )?,
             Event::Char('i') => show_corpus_info(term, &evaluation.corpus)?,
             Event::Char('t') => trace_view(term, layout, weights, false)?,
             Event::Char('p') => trace_view(term, layout, weights, true)?,
@@ -2115,7 +2260,14 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
         if command == "ranker" {
             let path = corpus_arg(args, 1)?;
             let mut term = Terminal::open()?;
-            return ranking(&mut term, &path);
+            let result = ranking(&mut term, &path);
+            let restart = term.restart_requested;
+            drop(term);
+            result?;
+            if restart {
+                restart_program(&restart_program_path()?)?;
+            }
+            return Ok(());
         }
         let path = if let Some(p) = args.get(1) {
             PathBuf::from(p)
@@ -2438,6 +2590,50 @@ mod ngram_integration_tests {
                     .count(),
                 layout.slots.len()
             );
+        }
+
+        let mut mana2_weights = weights.clone();
+        mana2_weights.2 = mana2_metrics::Weights::from_text("sfbw = [-11, 1.5, -9]\n").unwrap();
+        let mut mana2_settings = settings.clone();
+        mana2_settings.mode = "mana2".into();
+        let canvas = action_setup_frame(
+            40,
+            &layout,
+            &layout,
+            &corpus,
+            &mana2_weights,
+            &locks,
+            &mana2_settings,
+            "ready",
+        );
+        let text = canvas_text(&canvas);
+        assert!(text.contains("sfbw"));
+        assert!(text.contains("[-11, 1.5, -9]"));
+        for stat in 0..mana2_metrics::STAT_IDS.len() {
+            assert!(canvas
+                .hits
+                .iter()
+                .any(|(_, action)| matches!(action, Action::Mana2Weight(index) if *index == stat)));
+        }
+
+        let mut simple_settings = settings.clone();
+        simple_settings.mode = "simple".into();
+        let canvas = action_setup_frame(
+            40,
+            &layout,
+            &layout,
+            &corpus,
+            &weights,
+            &locks,
+            &simple_settings,
+            "ready",
+        );
+        let text = canvas_text(&canvas);
+        assert!(text.contains("Simple weights"));
+        for stat in 0..simple_metrics::N_STATS {
+            assert!(canvas.hits.iter().any(
+                |(_, action)| matches!(action, Action::SimpleWeight(index) if *index == stat)
+            ));
         }
     }
     #[test]

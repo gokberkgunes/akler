@@ -20,14 +20,15 @@ Edit the commented [akler.conf](../akler.conf) in the current directory:
 |---|---|
 | `[weights]` | Detailed metric, finger-usage, and off-home weights; see [METRICS.md](METRICS.md). |
 | `[mana2]` | Progressive slope schedules for Mana2 stat IDs. |
+| `[simple]` | Flat weights for selected Mana2 pattern stats. |
 | `[search]` | Search options, scoring mode, and `corpus.NAME` mixture shares. |
 | `[rolls]` | Independent `include_thumbs`, `include_scissors`, and `include_stretches` toggles. |
-| `[ranker]` | `columns = SCORE SFB SFS ...`, using displayed metric names. |
+| `[ranker]` | `columns = SCORE SFB SFS ...`; `hidden_layouts = ["layouts/example.dat"]`. |
 | `[ngrams]` | `include_spacegrams` and independent `trigrams`, `tetragrams`, and `pentagrams` maximum counts. |
 
 Entries use `name = value`; `#` starts a comment. Missing entries use built-in
 defaults. Either optimizer's setup `s` saves weights, roll filters, and search settings;
-the ranker's column chooser `s` saves columns. These saves update their sections
+the ranker's column chooser `q` saves columns and returns. These saves update their sections
 while preserving comments and other settings. Unknown/duplicate sections or keys,
 empty values, and invalid numbers are errors. Layout rules and geometry remain
 in each layout file; normalization remains in each corpus's `.config.json`.
@@ -101,11 +102,14 @@ records include the active `[rolls]` settings.
 The ranker evaluates ordinary and magic/adaptive layouts with their existing
 evaluators. Each layout uses its own supported events, so check coverage and
 ignored characters before comparing different key sets. Scores use detailed
-weights; hiding a column never removes its score contribution.
+weights in `detailed` mode, `[mana2]` progressive schedules in `mana2` mode,
+or `[simple]` flat weights on selected Mana2 stats in `simple` mode. Lower
+SCORE is better in every mode. Visible metric columns keep their documented
+definitions, and hiding a column never removes its score contribution.
 
 Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggle,
-`d` selects compact defaults, `a` selects all, and `s` saves `[ranker] columns` in
-`akler.conf`. Escape/q cancels. Defaults are
+`d` selects compact defaults, `a` selects all, and `q` saves `[ranker] columns` in
+`akler.conf` and returns. Escape cancels. Defaults are
 shared by ordinary and action layouts. `FJB` and `FJS` each sum four full-jump
 categories: discordant/concordant and adjacent/nonadjacent. They are display
 columns, not extra score weights. Old detailed full-jump ranker columns load as
@@ -114,9 +118,20 @@ whitespace-separated metric names (case-insensitive); at least one is required.
 Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB,
 FSS, HSS, FJB, FJS, LSB, LSS, RED, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, and COVERAGE.
 Combined SRAF/ROLL and IN2/OUT2/IN3/OUT3 are available in the column picker;
-other saved column selections are preserved. `H` in the main ranker restores all columns/rows
-for the current session. Middle-click hiding is temporary unless saved via `v`, `s`.
+other saved column selections are preserved. `u` restores the last hidden row or column,
+and Ctrl+R hides it again. Row hiding, undo, redo, and `H` save automatically to
+`[ranker] hidden_layouts`. Hidden layouts stay hidden across reloads, corpus changes,
+and program restarts. Paths are exact, quoted filenames; removed files remain listed
+so they stay hidden if added back. `H` restores all rows permanently and all columns
+for the current session. Column selections are saved by opening `v`, then pressing `q`.
+`?` opens a scrollable help popup with controls, current-view details, warnings,
+and layout errors. Escape, Enter, or `?` closes it. The main table keeps a compact footer.
 Ranker `r` reloads configuration, including weights/limits, and the layouts.
+Ranker `R`, or **Reload program** in the main menu, restarts into the current
+executable at its launch path after a rebuild. Arguments, working directory, and
+environment are retained. Terminal state is restored before restarting. With a
+menu launch, restart returns to the main menu; CLI launches repeat their arguments.
+Restart is available from the main menu and ranker, not active layout editors.
 Opened inspectors use the same weight snapshot as their ranking results. Magic
 rows initially retain exact summary values. Opening one prepares its detailed
 physical reports with a cancellable progress screen, then reuses that result on
@@ -127,8 +142,10 @@ frequency-mass warnings.
 
 Click metrics in the editor/results to inspect physical contributors; magic
 labels denote actual action slots, not their emitted characters. `.` toggles
-precision. The help page (`?`) lists mode-specific controls. Action editor `c`
-changes corpus, `w` edits weights, `t` traces output text, and `p` traces specified
+precision. The help popup (`?`) lists mode-specific controls over the current
+editor or optimizer screen. Editor `c` changes
+corpus while keeping your arrangement, comparison baseline, and undo history.
+Action editor `w` edits weights, `t` traces output text, and `p` traces specified
 physical presses. Its `s` saves a new layout copy and `r` restores the original;
 these editor keys do not save/reload configuration. Action `i` shows corpus notes.
 
@@ -150,7 +167,17 @@ starts unlocked. Space can move when its physical slot is unlocked. Keyboard dra
 Detailed weights also control action typing effort when Mana2 is the search
 objective.
 
-Magic search results use `r` to return to setup, Space to refine the selected
+In Mana2 mode, click a weight to edit its full schedule, such as
+`[-4, 0.5, -13, 1, -26]`, or enter a single weight such as `-4`.
+Invalid entries leave the previous weight intact; Esc cancels. `s` saves the
+edited schedules to `[mana2]` in `akler.conf`, preserving its comments.
+
+Search results use `q`, Esc, or `r` to return to setup with the selected
+candidate kept in memory. Returning does not save a layout; `o` in setup
+restores the original. During search, `q` stops and returns to setup with the
+latest best candidate.
+
+Magic search results use Space to refine the selected
 candidate with a new seed, `b` to choose a retained candidate, and `[`/`]` to
 navigate candidates. Caps continue to reference the original loaded layout.
 `s` saves the current layout with its run record; `S` saves each retained
@@ -326,6 +353,22 @@ Scoring modes:
 
 * `detailed`: Score with the weights in `akler.conf`.
 * `mana2`: Score with Mana2 stats and the progressive schedules under `[mana2]`.
+* `simple`: Score selected Mana2 stats with flat weights under `[simple]`; lower is better.
+
+In Simple mode, click a weight in optimizer setup to edit it; `s` saves it.
+`m` cycles Detailed → Mana2 → Simple. Positive Simple weights penalize;
+negative weights reward; zero disables a term. For example, `sfb = 12` makes
+0.4% SFB cost 4.8 points. Stretch/scissor values are ratings, not percentages.
+Bigram and skipgram weights are separate. Inward/outward totals include both
+roll2 and roll3; weighting them alongside total `roll` deliberately adds their
+contributions. Simple uses the All variants, including thumbs under Mana2's
+rules. Its starting weights are editable examples, not calibrated ergonomic costs.
+`fspeed` and `weighted_speed` independently weight finger-motion estimates.
+The optimizer shows per-finger Usage, Fspeed and Weighted, plus hand totals.
+Click speed weights, `speed_skip_ratio`, or `speed_strength_*` to edit; `s` saves.
+Higher strength makes a finger's movement cheaper. Speed uses available bigrams
+and skip1 only; it is a motion rating, not WPM or an exact screenshot match.
+Both nonzero speed weights add both costs, alongside your other Simple weights.
 
 `metrics` aliases `mode`; legacy `max_sfb`/`max_sfs` are also baseline-relative
 increase limits, not absolute ceilings. Caps are checked per training corpus,

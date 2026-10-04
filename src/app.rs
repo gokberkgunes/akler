@@ -616,20 +616,74 @@ fn tui_mode(
     }
 }
 
-fn run() -> AppResult<()> {
+pub(crate) fn restart_program_path() -> AppResult<PathBuf> {
+    let launched = std::env::args_os()
+        .next()
+        .ok_or("cannot determine the program used to launch akler")?;
+    let launched = PathBuf::from(launched);
+    if launched.is_absolute() || launched.components().count() > 1 {
+        let path = if launched.is_absolute() {
+            launched.clone()
+        } else {
+            std::env::current_dir()?.join(&launched)
+        };
+        if path.is_file() {
+            return Ok(path);
+        }
+    } else if let Some(search) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&search) {
+            let path = directory.join(&launched);
+            if path.is_file() {
+                return Ok(path);
+            }
+        }
+    }
+
+    let current = std::env::current_exe()?;
+    if current.is_file() {
+        return Ok(current);
+    }
+    // Linux marks /proc/self/exe this way after Cargo replaces a running
+    // binary. The unsuffixed path is the newly built executable.
+    if let Some(text) = current.to_str() {
+        if let Some(text) = text.strip_suffix(" (deleted)") {
+            let rebuilt = PathBuf::from(text);
+            if rebuilt.is_file() {
+                return Ok(rebuilt);
+            }
+        }
+    }
+    Err(format!(
+        "cannot find a current akler executable to reload (launched as {})",
+        launched.display()
+    )
+    .into())
+}
+
+#[cfg(unix)]
+fn restart_program(path: &Path) -> AppResult<()> {
+    use std::os::unix::process::CommandExt;
+
+    let error = Command::new(path)
+        .args(std::env::args_os().skip(1))
+        .exec();
+    Err(format!("cannot reload {}: {error}", path.display()).into())
+}
+
+fn run() -> AppResult<bool> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
             "--help"|"-h"|"help" => {
                 println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler atomic LAYOUT CORPUS --patterns bigrams|trigrams|skip1 [--query QUERY] [--output PATH]\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
-                return Ok(());
+                return Ok(false);
             },
-            "corpus" => return corpus_command(&args[1..]),
-            "atomic" => return crate::atomic_report::command(&args[1..]),
+            "corpus" => return corpus_command(&args[1..]).map(|_| false),
+            "atomic" => return crate::atomic_report::command(&args[1..]).map(|_| false),
             "import" => {
                 let mut rest = vec!["add".to_string()];
                 rest.extend_from_slice(&args[1..]);
-                return corpus_command(&rest);
+                return corpus_command(&rest).map(|_| false);
             },
             "eval" => {
                 if args.len()<2 || args.len()>3 {
@@ -640,7 +694,8 @@ fn run() -> AppResult<()> {
                 } else {
                     default_corpus_path()?.ok_or("corpus-reddit.json not found; provide a corpus path")?
                 };
-                return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?);
+                return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?)
+                    .map(|_| false);
             },
             "editor"|"edit"|"optimizer"|"optimize"|"ranker"|"rank" => {
                 let mode = match cmd.as_str() {
@@ -658,17 +713,21 @@ fn run() -> AppResult<()> {
                     return Err("too many arguments".into());
                 }
                 let mut term = Terminal::open()?;
-                return if mode == "ranker" {
+                let result = if mode == "ranker" {
                     tui_mode(&mut term, mode, None, args.get(1).map(String::as_str))
                 } else {
                     tui_mode(&mut term, mode, args.get(1).map(Path::new), args.get(2).map(String::as_str))
                 };
+                let restart = term.restart_requested;
+                drop(term);
+                result?;
+                return Ok(restart);
             },
             _ => return Err(format!("unknown mode {cmd}; use akler --help").into())
         }
     }
     let mut term = Terminal::open()?;
-    let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into(), "Atomic editor".into()];
+    let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into(), "Atomic editor".into(), "Reload program".into()];
     while !term.quitting {
         let choice = match menu(&mut term, "akler", &items)? {
             Some(i) => i,
@@ -677,6 +736,7 @@ fn run() -> AppResult<()> {
         let result = match choice {
             3 => corpus_tui(&mut term),
             4 => crate::atomic_ui::open(&mut term),
+            5 => term.request_restart(),
             _ => tui_mode(&mut term, ["editor", "ranker", "optimizer"][choice], None, None),
         };
         if let Err(e) = result {
@@ -685,7 +745,9 @@ fn run() -> AppResult<()> {
             }
         }
     }
-    Ok(())
+    let restart = term.restart_requested;
+    drop(term);
+    Ok(restart)
 }
 
 fn main() {
@@ -696,9 +758,19 @@ fn main() {
         }
         return;
     }
-    if let Err(e) = run() {
-        eprintln!("{e}");
-        std::process::exit(1);
+    match run() {
+        Ok(true) => match restart_program_path().and_then(|path| restart_program(&path)) {
+            Ok(()) => unreachable!(),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        },
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
     }
 }
 

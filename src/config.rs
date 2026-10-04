@@ -36,6 +36,7 @@ struct AppConfig {
     weights: Weights,
     search: SearchSettings,
     rank_columns: [bool; RANK_COUNT],
+    rank_hidden_layouts: BTreeSet<PathBuf>,
     ngrams: NgramLimits,
 }
 
@@ -45,9 +46,33 @@ impl Default for AppConfig {
             weights: Weights::default(),
             search: SearchSettings::default(),
             rank_columns: default_rank_columns(),
+            rank_hidden_layouts: BTreeSet::new(),
             ngrams: NgramLimits::default(),
         }
     }
+}
+
+// Configuration comments begin at an unquoted '#'. This matters for persisted
+// layout paths: a '#' inside a quoted path is part of the path.
+fn config_comment_index(line: &str) -> Option<usize> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch == '#' && !quoted {
+            return Some(index);
+        }
+    }
+    None
+}
+
+fn config_content(line: &str) -> &str {
+    &line[..config_comment_index(line).unwrap_or(line.len())]
 }
 
 fn canonical_config_key<'a>(section: &str, key: &'a str) -> &'a str {
@@ -66,14 +91,14 @@ fn config_sections(text: &str) -> AppResult<BTreeMap<String, String>> {
     let mut seen = BTreeSet::new();
 
     for (index, line) in text.lines().enumerate() {
-        let content = line.split('#').next().unwrap_or("").trim();
+        let content = config_content(line).trim();
         if content.is_empty() {
             continue;
         }
 
         if let Some(name) = content.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             section = name.trim().to_ascii_lowercase();
-            if !["weights", "mana2", "search", "ranker", "ngrams", "rolls"]
+            if !["weights", "mana2", "simple", "search", "ranker", "ngrams", "rolls"]
                 .contains(&section.as_str())
             {
                 return Err(format!("line {}: unknown section [{section}]", index + 1).into());
@@ -119,21 +144,62 @@ fn parse_ngram_limit(value: &str) -> AppResult<Option<usize>> {
     Ok(Some(count))
 }
 
+fn parse_rank_hidden_layouts(value: &str) -> AppResult<BTreeSet<PathBuf>> {
+    let Json::Array(values) = parse_json(value)
+        .map_err(|error| format!("hidden_layouts must be a JSON list of quoted paths: {error}"))?
+    else {
+        return Err("hidden_layouts must be a JSON list of quoted paths".into());
+    };
+    values
+        .into_iter()
+        .map(|value| match value {
+            Json::String(path) if !path.is_empty() => Ok(PathBuf::from(path)),
+            Json::String(_) => Err("hidden_layouts: paths cannot be empty".into()),
+            _ => Err("hidden_layouts: every path must be a quoted string".into()),
+        })
+        .collect()
+}
+
+fn ranker_config_lines(text: &str) -> AppResult<Vec<(String, String)>> {
+    let mut result = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = config_content(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("line {}: expected name = value", index + 1))?;
+        let key = key.trim().to_ascii_lowercase();
+        let value = value.trim().to_string();
+        if key.is_empty() || value.is_empty() {
+            return Err(format!("line {}: setting name and value cannot be empty", index + 1).into());
+        }
+        result.push((key, value));
+    }
+    Ok(result)
+}
+
 fn parse_app_config(text: &str) -> AppResult<AppConfig> {
     let mut config = AppConfig::default();
     let mut rolls = RollSettings::default();
     let mut mana2_weights = mana2_metrics::Weights::default();
+    let mut simple_weights = simple_metrics::Weights::default();
 
     for (section, body) in config_sections(text)? {
         let result = (|| -> AppResult<()> {
             match section.as_str() {
                 "weights" => config.weights = weights_from_text(&body)?,
                 "mana2" => mana2_weights = mana2_metrics::Weights::from_text(&body)?,
+                "simple" => simple_weights = simple_metrics::Weights::from_text(&body)?,
                 "search" => config.search = search_from_text(&body)?,
                 "ranker" => {
-                    for (key, value) in config_lines(&body)? {
+                    for (key, value) in ranker_config_lines(&body)? {
                         match key.as_str() {
                             "columns" => config.rank_columns = parse_rank_columns(&value)?,
+                            "hidden_layouts" => {
+                                config.rank_hidden_layouts = parse_rank_hidden_layouts(&value)?
+                            }
                             _ => return Err(format!("unknown setting {key}").into()),
                         }
                     }
@@ -179,6 +245,7 @@ fn parse_app_config(text: &str) -> AppResult<AppConfig> {
 
     config.weights = config.weights.with_rolls(rolls);
     config.weights.2 = mana2_weights;
+    config.weights.3 = simple_weights;
     Ok(config)
 }
 
@@ -223,14 +290,32 @@ fn read_active_config() -> AppResult<Option<(&'static str, String)>> {
         .map(|text| (LEGACY_CONFIG_FILE, text)))
 }
 
-fn rank_config_text(hidden: &[bool; RANK_COUNT]) -> String {
+fn quoted_rank_path(path: &Path) -> AppResult<String> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| format!("cannot save non-UTF-8 layout path {}", path.display()))?;
+    Ok(json_quote(path))
+}
+
+fn rank_config_text(
+    hidden: &[bool; RANK_COUNT],
+    hidden_layouts: &BTreeSet<PathBuf>,
+) -> AppResult<String> {
     let names: Vec<_> = RANK_ORDER
         .iter()
         .copied()
         .filter(|&metric| !hidden[metric])
         .map(rank_name)
         .collect();
-    format!("columns = {}\n", names.join(" "))
+    let paths = hidden_layouts
+        .iter()
+        .map(|path| quoted_rank_path(path))
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok(format!(
+        "columns = {}\nhidden_layouts = [{}]\n",
+        names.join(" "),
+        paths.join(", ")
+    ))
 }
 
 fn rolls_config_text(rolls: RollSettings) -> String {
@@ -247,13 +332,15 @@ fn app_config_text(config: &AppConfig) -> String {
     format!(
         "# akler configuration; see doc/USAGE.md.\n\
          # Missing settings use built-in defaults. Limits other than all are approximate.\n\n\
-         [weights]\n{}\n[mana2]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
+         [weights]\n{}\n[mana2]\n{}\n[simple]\n{}\n[rolls]\n{}\n[search]\n{}\n[ranker]\n{}\n\
          [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\ninclude_spacegrams = {}\n",
         weights_text(&config.weights),
         config.weights.2.config_text(),
+        config.weights.3.config_text(),
         rolls_config_text(config.weights.rolls()),
         search_settings_text(&config.search),
-        rank_config_text(&config.rank_columns),
+        rank_config_text(&config.rank_columns, &config.rank_hidden_layouts)
+            .expect("default ranker paths are UTF-8"),
         limit(config.ngrams.trigrams),
         limit(config.ngrams.tetragrams),
         limit(config.ngrams.pentagrams),
@@ -264,7 +351,11 @@ fn app_config_text(config: &AppConfig) -> String {
 // Update one section without discarding comments or touching other settings.
 // Keys removed from the section retain their inline comment as a comment line.
 fn replace_config_section(text: &str, section: &str, replacement: &str) -> AppResult<String> {
-    let entries = config_lines(replacement)?;
+    let entries = if section.eq_ignore_ascii_case("ranker") {
+        ranker_config_lines(replacement)?
+    } else {
+        config_lines(replacement)?
+    };
     let values: BTreeMap<_, _> = entries.iter().cloned().collect();
     let mut remaining: BTreeSet<_> = values.keys().cloned().collect();
     let mut output = String::new();
@@ -280,7 +371,7 @@ fn replace_config_section(text: &str, section: &str, replacement: &str) -> AppRe
     };
 
     for line in text.lines() {
-        let content = line.split('#').next().unwrap_or("").trim();
+        let content = config_content(line).trim();
         if let Some(name) = content.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
             if active {
                 append_remaining(&mut output, &mut remaining);
@@ -293,7 +384,7 @@ fn replace_config_section(text: &str, section: &str, replacement: &str) -> AppRe
             if let Some((key, _)) = content.split_once('=') {
                 let key = key.trim().to_ascii_lowercase();
                 let canonical = canonical_config_key(section, &key);
-                let comment = line.find('#').map(|index| &line[index..]);
+                let comment = config_comment_index(line).map(|index| &line[index..]);
                 if let Some(value) = values.get(canonical) {
                     remaining.remove(canonical);
                     let prefix = line.split_once('=').expect("assignment checked above").0;
@@ -346,13 +437,28 @@ fn save_optimizer_settings(weights: &Weights, search: &SearchSettings) -> AppRes
     save_config_sections(&[
         ("weights", weights_text(weights)),
         ("mana2", weights.2.config_text()),
+        ("simple", weights.3.config_text()),
         ("rolls", rolls_config_text(weights.rolls())),
         ("search", search_settings_text(search)),
     ])
 }
 
 fn save_rank_columns(hidden: &[bool; RANK_COUNT]) -> AppResult<()> {
-    save_config_sections(&[("ranker", rank_config_text(hidden))])
+    let mut config = load_app_config()?;
+    config.rank_columns = *hidden;
+    save_config_sections(&[(
+        "ranker",
+        rank_config_text(&config.rank_columns, &config.rank_hidden_layouts)?,
+    )])
+}
+
+fn save_rank_hidden_layouts(hidden_layouts: &BTreeSet<PathBuf>) -> AppResult<()> {
+    let mut config = load_app_config()?;
+    config.rank_hidden_layouts = hidden_layouts.clone();
+    save_config_sections(&[(
+        "ranker",
+        rank_config_text(&config.rank_columns, &config.rank_hidden_layouts)?,
+    )])
 }
 
 #[cfg(test)]
@@ -365,11 +471,13 @@ mod config_tests {
         let parsed = parse_app_config(&app_config_text(&defaults)).unwrap();
         assert_eq!(parsed.weights.0, defaults.weights.0);
         assert_eq!(parsed.weights.2, defaults.weights.2);
+        assert_eq!(parsed.weights.3, defaults.weights.3);
         assert_eq!(
             search_settings_text(&parsed.search),
             search_settings_text(&defaults.search)
         );
         assert_eq!(parsed.rank_columns, defaults.rank_columns);
+        assert_eq!(parsed.rank_hidden_layouts, defaults.rank_hidden_layouts);
         assert_eq!(parsed.ngrams, defaults.ngrams);
     }
 
@@ -379,6 +487,9 @@ mod config_tests {
         legacy.weights = weights_from_text("fsb = 9\nsfs = 2\n").unwrap();
         legacy.search = search_from_text("method = sweep\nseconds = 17\ncorpus.books = 2\n").unwrap();
         legacy.rank_columns = parse_rank_columns("SCORE SFB SKB SKS").unwrap();
+        legacy
+            .rank_hidden_layouts
+            .extend([PathBuf::from("layouts/a b.jsonc"), PathBuf::from("layouts/#quoted\\\".dat")]);
 
         let parsed = parse_app_config(&app_config_text(&legacy)).unwrap();
         assert_eq!(parsed.weights.0, legacy.weights.0);
@@ -389,13 +500,14 @@ mod config_tests {
             search_settings_text(&legacy.search)
         );
         assert_eq!(parsed.rank_columns, legacy.rank_columns);
+        assert_eq!(parsed.rank_hidden_layouts, legacy.rank_hidden_layouts);
     }
 
     #[test]
     fn unified_config_changes_only_explicit_values() {
         let parsed = parse_app_config(
             "[weights]\nsfb = 7\n[search]\nseconds = 15\ncorpus.reddit = 2\n\
-             [ranker]\ncolumns = SCORE SFB\n[ngrams]\n\
+             [ranker]\ncolumns = SCORE SFB\nhidden_layouts = [\"layouts/a b.dat\", \"layouts/c.dat\"]\n[ngrams]\n\
              trigrams = 2000\ntetragrams = 4000\npentagrams = all\n",
         )
         .unwrap();
@@ -404,6 +516,12 @@ mod config_tests {
         assert_eq!(parsed.search.seconds, 15.0);
         assert_eq!(parsed.search.mix.get("reddit"), Some(&2.0));
         assert_eq!(parsed.rank_columns, parse_rank_columns("SCORE SFB").unwrap());
+        assert_eq!(
+            parsed.rank_hidden_layouts,
+            [PathBuf::from("layouts/a b.dat"), PathBuf::from("layouts/c.dat")]
+                .into_iter()
+                .collect()
+        );
         assert_eq!(parsed.ngrams.for_order(3), Some(2000));
         assert_eq!(parsed.ngrams.for_order(4), Some(4000));
         assert_eq!(parsed.ngrams.for_order(5), None);
@@ -423,6 +541,10 @@ mod config_tests {
             "[search]\nseconds = -1",
             "[ranker]\ncolumns = SCORE INVALID",
             "[ranker]\ncolumns = ",
+            "[ranker]\nhidden_layouts = layouts/a.dat",
+            "[ranker]\nhidden_layouts = [\"unterminated]",
+            "[ranker]\nhidden_layouts = [\"a\" \"b\"]",
+            "[ranker]\nhidden_layouts = [\"bad\\q\"]",
             "[ngrams]\ntrigrams = 0",
             "[ngrams]\ntrigrams = -1",
             "[ngrams]\ntrigrams = 1.5",
@@ -468,6 +590,7 @@ mod config_tests {
         for value in [0.1_f64, 0.25, 1.0, 1.5, 2.0] {
             let mut stats = mana2_metrics::Stats {
                 values: [0.0; mana2_metrics::N_STATS],
+                speed: crate::finger_speed::Normalized::default(),
             };
             stats.values[sfbw] = value;
             stats.values[pinky] = 20.0;
@@ -491,6 +614,20 @@ mod config_tests {
         assert_eq!(parse_app_config(&reset).unwrap().weights.2, Weights::default().2);
         assert!(reset.contains("# keep Mana2 notes"));
         assert!(reset.contains("# custom schedule"));
+
+        let mut edited = parsed.weights.2.clone();
+        assert!(edited.set_schedule_text(sfbw, "[-11, 1.5, -9]").unwrap());
+        assert!(!edited.set_schedule_text(sfbw, "[-11, 1.5, -9]").unwrap());
+        let valid = edited.clone();
+        for bad in ["[-4, 1]", "[-4, 0, -8]", "[NaN]", "[-4, 2, -8, 1, -9]"] {
+            assert!(edited.set_schedule_text(sfbw, bad).is_err());
+            assert_eq!(edited, valid);
+        }
+        assert!(edited.set_schedule_text(sfbw, "-12").unwrap());
+        assert_eq!(edited.schedule_text(sfbw), "[-12]");
+        assert_eq!(edited.schedule_text(pinky), parsed.weights.2.schedule_text(pinky));
+        let saved = replace_config_section(source, "mana2", &edited.config_text()).unwrap();
+        assert_eq!(parse_app_config(&saved).unwrap().weights.2, edited);
     }
 
     #[test]

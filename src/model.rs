@@ -199,7 +199,7 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Concordant full jump bigram between adjacent fingers.",
     "Discordant full jump skipgram between adjacent fingers.",
     "Concordant full jump skipgram between adjacent fingers.",
-    "Clean hand alternation: LRL or RLR. The returning AC pair must use different fingers without a scissor, stretch or two-row change. No thumbs.",
+    "Hand alternation: LRL or RLR. Repeated keys/fingers, jumps and stretches still count. No thumbs; percentage of all no-thumb trigrams.",
     "Concordant two-row change between non-adjacent fingers, disjoint from caFJB.",
     "Concordant two-row skipgram between non-adjacent fingers, disjoint from caFJS.",
     "Main-finger distance from home, key units per 100 supported presses. Not a physical trajectory.",
@@ -262,7 +262,6 @@ fn aggregate(m: usize) -> bool {
 fn raw_positive(m: usize) -> Option<usize> {
     match m {
         SRAF => Some(RAW_SRAF),
-        ALT => Some(RAW_ALT),
         _ => None
     }
 }
@@ -538,13 +537,9 @@ struct PairFlags {
     main: bool
 }
 
-// Local movement events veto SRAF and ALT credit, but not basic rolls.
+// Local movement events veto SRAF credit. ALT uses hand order alone.
 // Finger load is an aggregate penalty, not a local movement veto.
 const BAD_BI: u128 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DAFJB)|(1<<CAFJB)|(1<<HSB)|(1<<DAHJB)|(1<<CAHJB)|(1<<LSB)|(1<<DNFJB)|(1<<CNFJB)|(1<<DNHJB)|(1<<CNHJB);
-
-const BAD_SK: u128 = (1<<SFS)|(1<<SKS)|(1<<FSS)|(1<<DAFJS)|(1<<CAFJS)|(1<<HSS)|(1<<DAHJS)|(1<<CAHJS)|(1<<LSS)|(1<<DNFJS)|(1<<CNFJS)|(1<<DNHJS)|(1<<CNHJS);
-
-const BAD_TRI: u128 = (1<<REDIR)|(1<<WRED)|(1<<WISH);
 
 fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     let mut f = PairFlags {
@@ -658,10 +653,6 @@ fn trigram_penalties(a: Key, b: Key, c: Key) -> u128 {
     bits
 }
 
-fn triple_blockers(a: Key, b: Key, c: Key, ab: PairFlags, bc: PairFlags, ac: PairFlags) -> u128 {
-    (ab.bi&BAD_BI)|(bc.bi&BAD_BI)|(ac.sk&BAD_SK)|(trigram_penalties(a, b, c)&BAD_TRI)
-}
-
 fn tri_flags(a: Key, b: Key, c: Key) -> TriFlags {
     tri_flags_with_settings(a, b, c, RollSettings::default())
 }
@@ -692,18 +683,14 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
         }
     }
 
-    // Thumb inclusion is specific to rolls. Preserve other rhythm metrics and
-    // their non-thumb denominator, including ALT's existing skip-pair veto.
+    // Thumb inclusion is specific to rolls. Other rhythm metrics, including
+    // ALT, retain their non-thumb population and denominator.
     if !main {
         return TriFlags { bits, main };
     }
     bits |= trigram_penalties(a, b, c);
-    let ac = pair_flags(a, c, a.row == c.row && a.col == c.col);
     if alternation_shape(a, b, c) {
-        bits |= bit(RAW_ALT);
-        if triple_blockers(a, b, c, ab, bc, ac) == 0 {
-            bits |= bit(ALT);
-        }
+        bits |= bit(ALT) | bit(RAW_ALT);
     }
 
     TriFlags { bits, main }
@@ -1873,15 +1860,24 @@ fn metrics_totals(raw: &Raw, totals: &[f64; 4]) -> Metrics {
 // Keep detailed weights, roll policy and Mana2 schedules in one immutable
 // objective snapshot for evaluations and worker threads.
 #[derive(Clone, Debug)]
-struct Weights([f64; N_WEIGHTS], RollSettings, mana2_metrics::Weights);
+struct Weights([f64; N_WEIGHTS], RollSettings, mana2_metrics::Weights, simple_metrics::Weights);
 
 impl Weights {
     fn new(values: [f64; N_WEIGHTS]) -> Self {
-        Self(values, RollSettings::default(), mana2_metrics::Weights::default())
+        Self(values, RollSettings::default(), mana2_metrics::Weights::default(), simple_metrics::Weights::default())
     }
 
     fn rolls(&self) -> RollSettings {
         self.1
+    }
+
+    // Both modes share physical counters; only their score functions differ.
+    fn physical_score(&self, stats: &mana2_metrics::Stats, mode: &str) -> f64 {
+        match mode {
+            "mana2" => -mana2_metrics::score(stats, &self.2),
+            "simple" => simple_metrics::score(stats, &self.3),
+            _ => unreachable!("physical score requires mana2 or simple mode"),
+        }
     }
 
     fn with_rolls(mut self, rolls: RollSettings) -> Self {
@@ -2157,12 +2153,8 @@ fn blocker_names(bits: u128) -> String {
 fn reward_blockers(g: &Gram, pos: &[usize], geometry: &Geometry) -> u128 {
     let a = pos[g.ids[0]];
     let b = pos[g.ids[1]];
-    if g.len == 2 {
-        return geometry.pair[a*geometry.n + b].bi&BAD_BI;
-    }
-    let c = pos[g.ids[2]];
-    triple_blockers(geometry.keys[a], geometry.keys[b], geometry.keys[c],
-        geometry.pair[a*geometry.n + b], geometry.pair[b*geometry.n + c], geometry.pair[a*geometry.n + c])
+    // Only SRAF retains a raw/rejected contribution view.
+    geometry.pair[a*geometry.n + b].bi&BAD_BI
 }
 
 #[derive(Clone,Debug)]

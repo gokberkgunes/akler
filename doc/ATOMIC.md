@@ -15,7 +15,7 @@ and `h` or Esc returns to the group list. Clicking a group row opens it;
 clicking a detail row selects it. `u` undoes the last swap. Space stays fixed.
 
 Use `/` to enter a query, `g` to group the matching rows, `Tab` to cycle
-bigrams, trigrams, and skip1, `?` for help and examples, `s` to save a new
+bigrams, trigrams, and skip1, `?` for a help popup and examples, `s` to save a new
 DAT/JSONC layout copy, `x` to export the full plain-text report to a separate
 new file, Page Up/Down or the wheel to scroll, and `q` to return. Neither save
 overwrites an existing file. Opening

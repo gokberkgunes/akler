@@ -302,7 +302,10 @@ when it repeats the finger used two presses back. When either action instead
 shares the other recent finger, it competes with the literal by lowest
 immediate effort, based on current weights. If all direct literal keys for the
 next character are on the action's finger, the choice also considers the cost
-of that next press. Evaluation is a bounded-context estimate;
+of that next press. Between alternative actions producing the same character,
+the choice considers the next direct literal's cost on any finger, including
+jumps and stretches. It cannot choose an action whose rules emit different text,
+and does not project following actions. Evaluation is a bounded-context estimate;
 optional n-gram limits additionally reduce its available history. See
 [corpora and limits](USAGE.md#corpora).
 DAT saving supports every action above. JSONC saving reports an error when the

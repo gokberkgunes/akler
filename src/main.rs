@@ -63,3 +63,7 @@ mod atomic_report;
 mod atomic_ui;
 
 mod mana2_metrics;
+
+mod simple_metrics;
+
+mod finger_speed;

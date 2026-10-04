@@ -432,7 +432,7 @@ fn concordant_jumps_and_nonadjacent_subsets() {
 }
 
 #[test]
-fn alternation_vetoes_and_unfiltered_roll_credit() {
+fn alternation_hand_order_and_unfiltered_roll_credit() {
     let keys: Vec<_> = (0..30)
         .map(|i| key(i / 10, i % 10))
         .chain([thumb_key(0), thumb_key(1)])
@@ -446,13 +446,7 @@ fn alternation_vetoes_and_unfiltered_roll_credit() {
                     assert!(!t.main);
                     continue;
                 }
-                let ab = pair_flags(a, b, a == b);
-                let bc = pair_flags(b, c, b == c);
-                let ac = pair_flags(a, c, a == c);
-                let blockers = triple_blockers(a, b, c, ab, bc, ac);
-                if t.bits & bit(ALT) != 0 {
-                    assert_eq!(blockers, 0);
-                }
+                assert_eq!(t.bits & bit(ALT) != 0, a.hand == c.hand && a.hand != b.hand);
                 if t.bits & bit(ROLL) != 0 {
                     assert_ne!(t.bits & (bit(INROLL) | bit(OUTROLL)), 0);
                 }
@@ -481,9 +475,10 @@ fn familiar_positive_examples() {
     assert!(is_roll(q(b'd'), q(b'g'), q(b'k')));
     assert!(!is_sraf(q(b'd'), q(b'g')));
     assert!(is_alternation(q(b'a'), q(b'j'), q(b's')));
-    assert!(!is_alternation(q(b'a'), q(b'j'), q(b'q')));
-    assert!(!is_alternation(q(b'e'), q(b'j'), q(b'v')));
-    assert!(!is_alternation(q(b'a'), q(b'j'), q(b'a')));
+    assert!(is_alternation(q(b'a'), q(b'j'), q(b'q')));
+    assert!(is_alternation(q(b'e'), q(b'j'), q(b'v')));
+    assert!(is_alternation(q(b'a'), q(b'j'), q(b'a')));
+    assert!(!is_alternation(q(b'a'), q(b's'), q(b'j')));
 }
 
 #[test]
@@ -878,28 +873,19 @@ fn same_key_repeats_and_thumb_denominators() {
     checked_rescore(&mut s, &p).unwrap();
     let thumb = pair_flags(thumb_key(0), thumb_key(1), false);
     assert_eq!(thumb.bi & bit(SFB), 0);
-    // The same-key skip in a_p_a remains a structural ALT veto.
+    // A repeated returning key remains an alternation and a same-key skip.
     let a = key(1, 0);
     let p_key = key(0, 9);
     let flags = tri_flags(a, p_key, a);
     assert_ne!(flags.bits & bit(RAW_ALT), 0);
-    assert_eq!(flags.bits & bit(ALT), 0);
-    assert_ne!(
-        triple_blockers(
-            a,
-            p_key,
-            a,
-            pair_flags(a, p_key, false),
-            pair_flags(p_key, a, false),
-            pair_flags(a, a, true),
-        ) & bit(SKS),
-        0
-    );
+    assert_ne!(flags.bits & bit(ALT), 0);
+    assert_ne!(pair_flags(a, a, true).sk & bit(SKS), 0);
+    assert!(raw_positive(ALT).is_none());
 }
 
 #[test]
 fn incremental_swaps_and_cycles_in_both_objectives() {
-    for mode in ["mana2", "detailed"] {
+    for mode in ["mana2", "detailed", "simple"] {
         let mut p = source_problem();
         p.settings.mode = mode.into();
         let mut s = State::new(p.model.original.clone(), &p);
@@ -1025,7 +1011,7 @@ fn config_round_trips_and_presets() {
     assert_eq!(r.travel_limit, Some(0.0));
     assert_eq!(r.design, "evolve");
     assert_eq!(r.mix, s.mix);
-    assert!(search_from_text("mode = simple").is_err());
+    assert_eq!(search_from_text("mode = simple").unwrap().mode, "simple");
     assert!(search_from_text("mode = basic").is_err());
     assert!(search_from_text("simple_sfb = 12").is_err());
     assert!(search_from_text("seconds = NaN").is_err());
@@ -1127,31 +1113,39 @@ fn search_respects_locks_and_relative_limits() {
 }
 
 #[test]
-fn mana2_ordinary_swap_matches_full_physical_recalculation() {
-    let mut problem = source_problem();
-    problem.settings.mode = "mana2".into();
-    problem.weights.2 =
-        mana2_metrics::Weights::from_text("sfbw = [-19]\npinkyringcurl = [0]\n").unwrap();
-    let before = State::new(problem.model.original.clone(), &problem);
-    let stats = mana2_metrics::stats(
-        before.raws[0].1.as_ref().unwrap(),
-        problem.corpora[0].totals,
-    );
-    close(
-        before.score,
-        -mana2_metrics::score(&stats, &problem.weights.2),
-    );
-    assert_ne!(
-        before.score,
-        -mana2_metrics::score(&stats, &Weights::default().2)
-    );
-    let mut trial = before.clone();
-    trial_into(&mut trial, &before, Move::pair(0, 1), &problem);
-    let rebuilt = State::new(trial.arr.clone(), &problem);
-    assert!((trial.score - rebuilt.score).abs() < 1e-9);
-    for (incremental, full) in trial.raws.iter().zip(&rebuilt.raws) {
-        for (left, right) in incremental.1.unwrap().0.iter().zip(full.1.unwrap().0) {
-            assert!((left - right).abs() < 1e-9);
+fn physical_objectives_swap_matches_full_physical_recalculation() {
+    for mode in ["mana2", "simple"] {
+        let mut problem = source_problem();
+        problem.settings.mode = mode.into();
+        problem.weights.2 =
+            mana2_metrics::Weights::from_text("sfbw = [-19]\npinkyringcurl = [0]\n").unwrap();
+        problem.weights.3 =
+            simple_metrics::Weights::from_text("sfb = 19\nscissor_bigrams = 2\nroll = -0.4\n")
+                .unwrap();
+        let before = State::new(problem.model.original.clone(), &problem);
+        let stats = mana2_metrics::stats(
+            before.raws[0].1.as_ref().unwrap(),
+            problem.corpora[0].totals,
+        );
+        close(before.score, problem.weights.physical_score(&stats, mode));
+        let mut trial = before.clone();
+        trial_into(&mut trial, &before, Move::pair(0, 1), &problem);
+        let rebuilt = State::new(trial.arr.clone(), &problem);
+        assert!((trial.score - rebuilt.score).abs() < 1e-9);
+        for (incremental, full) in trial.raws.iter().zip(&rebuilt.raws) {
+            let actual_speed = incremental.1.unwrap().1;
+            let full_speed = full.1.unwrap().1;
+            for (left, right) in actual_speed
+                .bigrams
+                .iter()
+                .chain(&actual_speed.skipgrams)
+                .zip(full_speed.bigrams.iter().chain(&full_speed.skipgrams))
+            {
+                assert!((left - right).abs() < 1e-9);
+            }
+            for (left, right) in incremental.1.unwrap().0.iter().zip(full.1.unwrap().0) {
+                assert!((left - right).abs() < 1e-9);
+            }
         }
     }
 }
@@ -1170,6 +1164,78 @@ fn rank_gradient_has_no_white_ties() {
     let left = rank_color(SFB, 0.21, r);
     let right = rank_color(SFB, 0.22, r);
     assert!((left as i32 - right as i32).abs() <= 2);
+
+    let p = source_problem();
+    let raw = full_raw(&p.model.original, &p.corpora[0], &p.model.geometry);
+    let values = metrics(&raw, &p.corpora[0]);
+    let rows: Vec<_> = (0..3)
+        .map(|_| RankRow::Plain {
+            model: p.model.clone(),
+            corpus: p.corpora[0].clone(),
+            raw: raw.clone(),
+            metrics: values.clone(),
+            score: 0.0,
+        })
+        .collect();
+    let mut columns = RankColumns::new();
+    let grid = RankGrid::new(108, 24, 10, &mut columns);
+    let ranges = rank_ranges(&rows, &BTreeSet::new());
+    for top in [0, 1] {
+        let mut c = Canvas::ranking(108, 1);
+        draw_rank_table(
+            &mut c,
+            &grid,
+            &rows,
+            &[0, 1, 2],
+            top,
+            0,
+            3 - top,
+            Some(RANK_SCORE),
+            true,
+            2,
+            &ranges,
+        );
+        for offset in 0..3 - top {
+            let y = RANK_DATA + offset;
+            let expected = if (top + offset) % 2 == 0 {
+                None
+            } else {
+                Some((28, 16, 18))
+            };
+            for cell in &c.cells[y * c.w + 1..y * c.w + grid.width - 1] {
+                assert_eq!(cell.background, expected);
+                assert_eq!(cell.bold, (top + offset) % 2 == 0);
+            }
+            assert_eq!(c.cells[y * c.w].background, None);
+            assert_eq!(c.cells[y * c.w + grid.width - 1].background, None);
+            assert!(!c.cells[y * c.w].bold);
+            assert!(!c.cells[y * c.w + grid.width - 1].bold);
+            // Updating text must preserve the row's background.
+            let old_color = c.cells[y * c.w + 1].color;
+            c.put(1, y, 'x', old_color);
+            assert_eq!(c.cells[y * c.w + 1].background, expected);
+            assert_eq!(c.cells[y * c.w + 1].bold, (top + offset) % 2 == 0);
+        }
+        assert!(c.cells[..RANK_DATA * c.w]
+            .iter()
+            .all(|cell| cell.background.is_none() && !cell.bold));
+        let help: Vec<_> = (0..30).map(|i| format!("Help line {i}")).collect();
+        let mut scroll = usize::MAX;
+        for size in [(64, 12), (108, 24), (80, 16)] {
+            let (popup, capacity, total) =
+                help_popup_frame(&c, "Ranker help", &help, size, &mut scroll);
+            assert_eq!((popup.w, popup.h), size);
+            assert_eq!(scroll, total.saturating_sub(capacity));
+            assert!(
+                popup.hits.is_empty(),
+                "background controls must not respond through help"
+            );
+            assert!(popup.cells.iter().any(|cell| cell.ch == '┌'));
+            scroll = usize::MAX;
+        }
+    }
+    assert_eq!(ansi_background(Some((28, 16, 18))), "\x1b[48;2;28;16;18m");
+    assert_eq!(ansi_background(None), "\x1b[49m");
 }
 
 #[test]
@@ -1184,13 +1250,30 @@ fn rank_hide_history_and_hitboxes() {
     columns.hide(SFB);
     columns.hide_row(PathBuf::from("packet.dat"));
     columns.hide(SFS);
-    columns.undo(6);
+    assert!(!columns.undo(6));
     assert!(!columns.hidden[SFS]);
     assert!(columns.hidden[SFB]);
-    columns.undo(6);
+    assert!(columns.undo(6));
     assert!(columns.rows.is_empty());
-    columns.undo(6);
+    assert!(!columns.undo(6));
     assert!(!columns.hidden[SFB]);
+    assert!(!columns.redo());
+    assert!(columns.hidden[SFB]);
+    assert!(columns.redo());
+    assert!(columns.rows.contains(Path::new("packet.dat")));
+    assert!(!columns.redo());
+    assert!(columns.hidden[SFS]);
+    assert!(columns.redo.is_empty());
+    assert!(!columns.undo(6));
+    columns.hide(SKB);
+    assert!(
+        columns.redo.is_empty(),
+        "new changes must clear redo history"
+    );
+    assert!(!columns.undo(6));
+    assert!(columns.restore());
+    assert!(columns.history.is_empty());
+    assert!(columns.redo.is_empty());
     for width in [64, 80, 108, 240] {
         let g = RankGrid::new(width, 24, 10, &mut columns);
         assert!(g.width <= width);
@@ -1205,7 +1288,7 @@ fn metric_grid_has_room_for_values_and_deltas() {
     let p = source_problem();
     let raw = full_raw(&p.model.original, &p.corpora[0], &p.model.geometry);
     let m = metrics(&raw, &p.corpora[0]);
-    for width in [64, 80, 108] {
+    for width in [64, 80, 108, 240] {
         for dp in [2, 4] {
             let mut c = Canvas::new(width, 1);
             let end = grouped_metric_cards(&mut c, 0, &m, &m, &raw, &p.corpora[0], dp);
@@ -1214,9 +1297,82 @@ fn metric_grid_has_room_for_values_and_deltas() {
                 if let Action::Metric(_) = a {
                     assert!(r.x + r.w <= width);
                     assert!(r.y + r.h <= c.h);
+                    assert_eq!(
+                        c.cells[r.y * c.w + r.x - 1].ch,
+                        '│',
+                        "text crossed a table separator"
+                    );
                 }
             }
             assert!(!c.cells.iter().any(|cell| cell.ch == '…'));
+            let rect = |metric| {
+                c.hits
+                    .iter()
+                    .find_map(|&(rect, action)| {
+                        if matches!(action, Action::Metric(m) if m == metric) {
+                            Some(rect)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap()
+            };
+            for (bigram, skipgram) in [
+                (SFB, SFS),
+                (SKB, SKS),
+                (DAFJB, DAFJS),
+                (CAFJB, CAFJS),
+                (DAHJB, DAHJS),
+                (CAHJB, CAHJS),
+                (DNFJB, DNFJS),
+                (CNFJB, CNFJS),
+                (DNHJB, DNHJS),
+                (CNHJB, CNHJS),
+                (FSB, FSS),
+                (HSB, HSS),
+                (LSB, LSS),
+            ] {
+                let (left, right) = (rect(bigram), rect(skipgram));
+                if left.x == right.x {
+                    assert_eq!(right.y, left.y + 1);
+                } else {
+                    assert!(right.x > left.x);
+                    assert_eq!(right.y, left.y);
+                }
+            }
+            let (discordant, concordant) = (rect(DAFJB), rect(CAFJB));
+            assert_eq!(discordant.x, concordant.x);
+            assert_eq!(
+                concordant.y,
+                discordant.y + if rect(DAFJS).x == discordant.x { 2 } else { 1 }
+            );
+            // Each family has one joined separator, with no clickable metric
+            // on it. Full and half aliases remain within their jump families.
+            let separators: Vec<_> = c
+                .cells
+                .chunks(c.w)
+                .enumerate()
+                .filter_map(|(y, row)| row.iter().position(|cell| cell.ch == '├').map(|x| (x, y)))
+                .collect();
+            assert_eq!(separators.len(), 5);
+            for (index, &(x, y)) in separators.iter().enumerate() {
+                let row = &c.cells[y * c.w..(y + 1) * c.w];
+                let right = row.iter().position(|cell| cell.ch == '┤').unwrap();
+                assert!(row[x + 1..right]
+                    .iter()
+                    .all(|cell| matches!(cell.ch, '─' | '┼')));
+                assert_eq!(
+                    row.iter().filter(|cell| cell.ch == '┼').count(),
+                    if rect(SFB).x == rect(SFS).x { 1 } else { 2 }
+                );
+                assert!(!c.hits.iter().any(|(rect, _)| rect.y == y));
+                for &metric in TABLE_GROUPS[index].1 {
+                    assert!(rect(metric).y < y);
+                }
+                for &metric in TABLE_GROUPS[index + 1].1 {
+                    assert!(rect(metric).y > y);
+                }
+            }
             let text = c
                 .cells
                 .chunks(c.w)
@@ -1233,10 +1389,16 @@ fn metric_grid_has_room_for_values_and_deltas() {
     let editor_text: String = editor.cells.iter().map(|cell| cell.ch).collect();
     assert_eq!(editor.cells[0].ch, ' ');
     assert_ne!(editor.cells[1].ch, ' ');
+    assert_eq!(editor.cells.iter().filter(|cell| cell.ch == '├').count(), 5);
     assert!(editor
         .hits
         .iter()
         .any(|(_, action)| matches!(action, Action::Metric(_))));
+    for &(rect, action) in &editor.hits {
+        if matches!(action, Action::Metric(_)) {
+            assert_eq!(editor.cells[rect.y * editor.w + rect.x - 1].ch, '│');
+        }
+    }
     for label in ["SRAF", "ROLL", "daFJB", "caFJB", "daHJB", "caHJB"] {
         assert!(editor_text.contains(label));
     }
@@ -1288,6 +1450,8 @@ fn numeric_metric_panel_matches_corpus_panel() {
 #[test]
 fn mouse_decoder_distinguishes_middle_press_release() {
     let mut d = Decoder::default();
+    d.push(b"\x12");
+    assert_eq!(d.next(false), Some(Event::Redo));
     d.push(b"\x1b[<1;12;9M\x1b[<1;12;9m");
     assert_eq!(
         d.next(false),

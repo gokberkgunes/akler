@@ -11,8 +11,11 @@ hides columns/rows with middle mouse button.
 
 ```sh
 cargo build --release
-./target/release/akler
+ln -sf target/release/akler akler
+./akler
 ```
+
+The root executable link stays current whenever you rebuild the release binary.
 
 This program comes with a corpus. You may generate ngrams from a corpus you
 want located at `corpus/raw/` with **Corpora -> Import text corpus** if you

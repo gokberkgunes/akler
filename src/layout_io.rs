@@ -189,7 +189,9 @@ fn key_token(token: &str) -> ak::Result<String> {
     if chars.next().is_some() || ch.is_control() || ch.is_whitespace() {
         return Err(format!("JSON key {token:?}: expected one character, space, or skip; tap-holds and directional keys are not supported"));
     }
-    Ok(ch.to_ascii_lowercase().to_string())
+    // This is a physical label, not corpus text: y and Y can be separate
+    // adaptive actions. Text emissions are normalized when imported below.
+    Ok(ch.to_string())
 }
 
 pub(crate) fn dedicated_magic_label(label: &str) -> bool {
@@ -292,7 +294,7 @@ fn import_wildcard_magic(
     let mut explicit = Vec::new();
     for (position, value) in rules.iter().enumerate() {
         let rule = object(value, "magic rule")?;
-        let input = string(required(rule, "inputs")?, "magic rule inputs")?.to_ascii_lowercase();
+        let input = string(required(rule, "inputs")?, "magic rule inputs")?.to_string();
         let label = key_labels
             .iter()
             .find(|label| input.ends_with(label.as_str()))
@@ -358,18 +360,23 @@ fn import_wildcard_magic(
                     "magic skip rule {input:?} refers to missing physical key {context:?}"
                 ));
             }
-            context
+            context.to_string()
         } else {
             if prefix.is_empty() || !prefix.bytes().all(|byte| (32..=126).contains(&byte)) {
                 return Err(format!(
                     "magic rule {input:?} needs printable text before its key"
                 ));
             }
-            prefix
+            prefix.to_ascii_lowercase()
         };
         let output = match (rule.get("output"), rule.get("call")) {
             (Some(value), None) => {
-                let output = string(value, "magic rule output")?.to_ascii_lowercase();
+                let output = string(value, "magic rule output")?;
+                let output = if definition.basis == "skip-magic" {
+                    output.to_string()
+                } else {
+                    output.to_ascii_lowercase()
+                };
                 let expected = if definition.basis == "skip-magic" {
                     format!("{context}_")
                 } else {
@@ -383,7 +390,7 @@ fn import_wildcard_magic(
                         "magic rule {input:?} must append one printable ASCII character"
                     ));
                 }
-                RuleOutput::Text(emitted.as_bytes().to_vec())
+                RuleOutput::Text(emitted.to_ascii_lowercase().into_bytes())
             }
             (None, Some(value)) if definition.basis == "skip-magic" => {
                 RuleOutput::CallKey(physical_key(value, "magic rule call", labels)?)
@@ -529,8 +536,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             {
                 for rule in array(value, "magic.rules")? {
                     let rule = object(rule, "magic rule")?;
-                    let input = string(required(rule, "inputs")?, "magic rule inputs")?
-                        .to_ascii_lowercase();
+                    let input = string(required(rule, "inputs")?, "magic rule inputs")?;
                     let output = string(required(rule, "output")?, "magic rule output")?
                         .to_ascii_lowercase();
                     let (last, ch) = input
@@ -549,12 +555,14 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
                             "magic rule refers to missing physical key {label:?}"
                         ));
                     }
-                    let context = &input[..last];
+                    // Only the suffix names a physical key. Its preceding
+                    // context and emitted character follow corpus normalization.
+                    let context = input[..last].to_ascii_lowercase();
                     if context.is_empty() || !context.bytes().all(|byte| (32..=126).contains(&byte))
                     {
                         return Err("magic rule must have a nonempty printable ASCII text context before its final physical key".into());
                     }
-                    let Some(emitted) = output.strip_prefix(context) else {
+                    let Some(emitted) = output.strip_prefix(context.as_str()) else {
                         return Err(format!(
                         "magic rule {input:?}: output must preserve its text context {context:?}"
                     ));
@@ -568,7 +576,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
                     // Mana's loader replaces earlier rules with the same input.
                     grouped.entry(label).or_default().insert(
                         context.as_bytes().to_vec(),
-                        RuleOutput::Text(emitted.as_bytes().to_vec()),
+                        RuleOutput::Text(emitted.to_ascii_lowercase().into_bytes()),
                     );
                 }
             }
@@ -588,7 +596,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
                 let default = if dedicated_magic_label(&label) {
                     "repeat-output".to_string()
                 } else {
-                    ak::quote(label.as_bytes())
+                    ak::quote(label.to_ascii_lowercase().as_bytes())
                 };
                 let fallback = fallback_text(magic.get("fallback"), &default, "magic.fallback")?;
                 action_defs.insert(
@@ -621,8 +629,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         {
             for value in array(value, "skip.rules")? {
                 let rule = object(value, "skip rule")?;
-                let input =
-                    string(required(rule, "inputs")?, "skip rule inputs")?.to_ascii_lowercase();
+                let input = string(required(rule, "inputs")?, "skip rule inputs")?;
                 let Some(prefix) = input.strip_suffix(&key) else {
                     return Err(format!(
                         "skip rule {input:?} must end with skip.key {key:?}"
@@ -645,7 +652,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
                 }
                 let output = match (rule.get("output"), rule.get("call")) {
                     (Some(output), None) => {
-                        let output = string(output, "skip rule output")?.to_ascii_lowercase();
+                        let output = string(output, "skip rule output")?;
                         let expected = format!("{context}_");
                         let Some(emitted) = output.strip_prefix(&expected) else {
                             return Err(format!(
@@ -660,7 +667,7 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
                                 "skip rule {input:?}: output must append exactly one printable ASCII character"
                             ));
                         }
-                        RuleOutput::Text(emitted.as_bytes().to_vec())
+                        RuleOutput::Text(emitted.to_ascii_lowercase().into_bytes())
                     }
                     (None, Some(call)) => {
                         let call = physical_key(call, "skip rule call", &labels)?;

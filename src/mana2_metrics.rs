@@ -107,11 +107,14 @@ const T_GOODROLL: usize = TRIGRAM_START + 22;
 const T_GOODROLL_NO_THUMBS: usize = TRIGRAM_START + 23;
 
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct RawStats(pub(crate) [f64; N_STATS]);
+pub(crate) struct RawStats(
+    pub(crate) [f64; N_STATS],
+    pub(crate) crate::finger_speed::Raw,
+);
 
 impl Default for RawStats {
     fn default() -> Self {
-        Self([0.0; N_STATS])
+        Self([0.0; N_STATS], crate::finger_speed::Raw::default())
     }
 }
 
@@ -120,6 +123,7 @@ impl AddAssign for RawStats {
         for (left, right) in self.0.iter_mut().zip(rhs.0) {
             *left += right;
         }
+        self.1 += rhs.1;
     }
 }
 
@@ -137,6 +141,7 @@ impl SubAssign for RawStats {
         for (left, right) in self.0.iter_mut().zip(rhs.0) {
             *left -= right;
         }
+        self.1 -= rhs.1;
     }
 }
 
@@ -152,6 +157,7 @@ impl Sub for RawStats {
 #[derive(Clone, Debug)]
 pub(crate) struct Stats {
     pub(crate) values: [f64; N_STATS],
+    pub(crate) speed: crate::finger_speed::Normalized,
 }
 
 impl Stats {
@@ -194,6 +200,13 @@ pub(crate) fn add_gram(
             let a = PhysicalKey::from_key(keys[slot_ids[0]]);
             let b = PhysicalKey::from_key(keys[slot_ids[1]]);
             add_pair(raw, &a, &b, signed_frequency, kind == 2);
+            crate::finger_speed::accumulate(
+                &mut raw.1,
+                &keys[slot_ids[0]],
+                &keys[slot_ids[1]],
+                signed_frequency,
+                kind == 2,
+            );
         }
         3 => {
             let a = PhysicalKey::from_key(keys[slot_ids[0]]);
@@ -209,6 +222,7 @@ pub(crate) fn add_gram(
 /// averages. The four totals are monogram, bigram, skipgram, trigram masses.
 pub(crate) fn stats(raw: &RawStats, totals: [f64; 4]) -> Stats {
     Stats {
+        speed: crate::finger_speed::normalize(&raw.1, totals),
         values: std::array::from_fn(|index| {
             let denominator = if index < BIGRAM_START {
                 totals[0]
@@ -263,38 +277,8 @@ impl Weights {
                 .position(|id| id.eq_ignore_ascii_case(&key))
                 .ok_or_else(|| format!("line {}: unknown Mana2 stat {key}", line_index + 1))?;
             let value = value.trim();
-            let values = if value.starts_with('[') || value.ends_with(']') {
-                let body = value
-                    .strip_prefix('[')
-                    .and_then(|value| value.strip_suffix(']'))
-                    .ok_or_else(|| {
-                        format!(
-                            "line {}: schedule must use matching brackets",
-                            line_index + 1
-                        )
-                    })?;
-                if body.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    body.split(',')
-                        .map(|part| {
-                            part.trim().parse::<f64>().map_err(|_| {
-                                format!(
-                                    "line {}: {key} schedule contains an invalid number",
-                                    line_index + 1
-                                )
-                            })
-                        })
-                        .collect::<Result<Vec<_>, _>>()?
-                }
-            } else {
-                vec![value.parse::<f64>().map_err(|_| {
-                    format!(
-                        "line {}: {key} schedule contains an invalid number",
-                        line_index + 1
-                    )
-                })?]
-            };
+            let values = parse_schedule(value)
+                .map_err(|error| format!("line {}: {key} {error}", line_index + 1))?;
             validate_schedule(&key, &values)
                 .map_err(|error| format!("line {}: {error}", line_index + 1))?;
             result.0[index] = values;
@@ -302,20 +286,50 @@ impl Weights {
         Ok(result)
     }
 
+    pub(crate) fn schedule_text(&self, index: usize) -> String {
+        let values: Vec<_> = self.0[index].iter().map(f64::to_string).collect();
+        format!("[{}]", values.join(", "))
+    }
+
+    // Validate before replacing so a bad edit leaves the previous schedule intact.
+    pub(crate) fn set_schedule_text(&mut self, index: usize, text: &str) -> crate::AppResult<bool> {
+        let id = STAT_IDS.get(index).ok_or("unknown Mana2 weight")?;
+        let values = parse_schedule(text.trim()).map_err(|error| format!("{id} {error}"))?;
+        validate_schedule(id, &values)?;
+        let changed = self.0[index] != values;
+        self.0[index] = values;
+        Ok(changed)
+    }
+
     pub(crate) fn config_text(&self) -> String {
         let mut text = String::new();
-        for (id, schedule) in STAT_IDS.iter().zip(&self.0) {
-            text.push_str(id);
-            text.push_str(" = [");
-            for (index, value) in schedule.iter().enumerate() {
-                if index > 0 {
-                    text.push_str(", ");
-                }
-                text.push_str(&value.to_string());
-            }
-            text.push_str("]\n");
+        for (index, id) in STAT_IDS.iter().enumerate() {
+            text.push_str(&format!("{id} = {}\n", self.schedule_text(index)));
         }
         text
+    }
+}
+
+fn parse_schedule(value: &str) -> Result<Vec<f64>, String> {
+    if value.starts_with('[') || value.ends_with(']') {
+        let body = value
+            .strip_prefix('[')
+            .and_then(|value| value.strip_suffix(']'))
+            .ok_or("schedule must use matching brackets")?;
+        if body.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+        body.split(',')
+            .map(|part| {
+                part.trim()
+                    .parse::<f64>()
+                    .map_err(|_| "schedule contains an invalid number".to_string())
+            })
+            .collect()
+    } else {
+        Ok(vec![value
+            .parse::<f64>()
+            .map_err(|_| "schedule contains an invalid number")?])
     }
 }
 

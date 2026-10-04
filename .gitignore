@@ -1,5 +1,6 @@
 # Rust build output (keep Cargo.lock for this application)
 /target/
+/akler
 Cargo.lock
 
 # Local corpus text and generated n-gram caches

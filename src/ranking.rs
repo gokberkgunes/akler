@@ -261,12 +261,12 @@ fn plain_rank_row(
 ) -> AppResult<RankRow> {
     let model = Model::with_rolls(board, weights.rolls());
     let corpus = model.corpus(source)?;
-    let mana2 = mode == "mana2";
+    let mana2 = matches!(mode, "mana2" | "simple");
     let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, mana2);
     let metrics = metrics(&raw, &corpus);
     let score = if mana2 {
         let stats = mana2_metrics::stats(raw.1.as_ref().unwrap(), corpus.totals);
-        -mana2_metrics::score(&stats, &weights.2)
+        weights.physical_score(&stats, mode)
     } else {
         breakdown(&metrics, weights).net
     };
@@ -409,8 +409,10 @@ struct RankingData {
     errors: Vec<String>,
     warnings: Vec<String>,
     columns: [bool; RANK_COUNT],
+    hidden_layouts: BTreeSet<PathBuf>,
     weights: Weights,
     mana2: bool,
+    simple: bool,
 }
 
 fn load_ranking_progress(
@@ -483,8 +485,18 @@ fn load_ranking_progress(
         errors,
         warnings,
         columns: config.rank_columns,
+        hidden_layouts: config.rank_hidden_layouts,
         weights: config.weights,
-        mana2: config.search.mode == "mana2",
+        mana2: config.search.uses_mana2_stats(),
+        simple: config.search.mode == "simple",
+    })
+}
+
+fn persist_hidden_rows(rows: &BTreeSet<PathBuf>) -> Option<String> {
+    save_rank_hidden_layouts(rows).err().map(|error| {
+        format!(
+            "Row visibility changed for this session only; could not save {APP_CONFIG_FILE}: {error}"
+        )
     })
 }
 
@@ -607,6 +619,7 @@ struct RankColumns {
     hidden: [bool; RANK_COUNT],
     rows: BTreeSet<PathBuf>,
     history: Vec<Hidden>,
+    redo: Vec<Hidden>,
     first: usize,
 }
 
@@ -616,6 +629,7 @@ impl RankColumns {
             hidden: [false; RANK_COUNT],
             rows: BTreeSet::new(),
             history: Vec::new(),
+            redo: Vec::new(),
             first: 0,
         }
     }
@@ -639,6 +653,7 @@ impl RankColumns {
         }
         self.hidden[m] = true;
         self.history.push(Hidden::Column(m));
+        self.redo.clear();
         true
     }
 
@@ -647,18 +662,20 @@ impl RankColumns {
             return false;
         }
         self.history.push(Hidden::Row(path));
+        self.redo.clear();
         true
     }
 
-    fn undo(&mut self, capacity: usize) {
+    fn undo(&mut self, capacity: usize) -> bool {
         if let Some(last) = self.history.pop() {
-            match last {
+            let rows_changed = matches!(last, Hidden::Row(_));
+            match &last {
                 Hidden::Row(p) => {
-                    self.rows.remove(&p);
+                    self.rows.remove(p);
                 }
                 Hidden::Column(m) => {
-                    self.hidden[m] = false;
-                    if let Some(i) = self.visible().iter().position(|&id| id == m) {
+                    self.hidden[*m] = false;
+                    if let Some(i) = self.visible().iter().position(|&id| id == *m) {
                         if i < self.first {
                             self.first = i;
                         } else if i >= self.first + capacity.max(1) {
@@ -667,14 +684,44 @@ impl RankColumns {
                     }
                 }
             }
+            self.redo.push(last);
+            rows_changed
+        } else {
+            false
         }
     }
 
-    fn restore(&mut self) {
+    fn redo(&mut self) -> bool {
+        if let Some(next) = self.redo.pop() {
+            let rows_changed = matches!(next, Hidden::Row(_));
+            match &next {
+                Hidden::Row(p) => {
+                    self.rows.insert(p.clone());
+                }
+                Hidden::Column(m) => {
+                    if let Some(i) = self.visible().iter().position(|&id| id == *m) {
+                        if i < self.first {
+                            self.first = self.first.saturating_sub(1);
+                        }
+                    }
+                    self.hidden[*m] = true;
+                }
+            }
+            self.history.push(next);
+            rows_changed
+        } else {
+            false
+        }
+    }
+
+    fn restore(&mut self) -> bool {
+        let rows_changed = !self.rows.is_empty();
         self.hidden.fill(false);
         self.rows.clear();
         self.history.clear();
+        self.redo.clear();
         self.first = 0;
+        rows_changed
     }
 }
 
@@ -779,7 +826,7 @@ fn choose_rank_columns(
             "Ranker columns",
             "",
             "",
-            "Space toggle | d compact | a all | s save defaults | q cancel",
+            "Space toggle | d compact | a all | q save & back | Esc cancel",
         );
         for (index, &metric) in RANK_ORDER.iter().enumerate() {
             canvas.text(
@@ -820,7 +867,7 @@ fn choose_rank_columns(
             toggle_rank_column(&mut hidden, RANK_ORDER[selected]);
         }
         match event {
-            Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
+            Event::Escape | Event::Quit => return Ok(None),
             Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
             Event::Down | Event::Char('j') => selected = (selected + 1).min(RANK_ORDER.len() - 1),
             Event::Char(' ') | Event::Enter => {
@@ -828,7 +875,7 @@ fn choose_rank_columns(
             }
             Event::Char('d') => hidden = default_rank_columns(),
             Event::Char('a') => hidden.fill(false),
-            Event::Char('s') => {
+            Event::Char('q') | Event::Char('s') => {
                 if RANK_ORDER.iter().all(|&id| hidden[id]) {
                     status = "Select at least one column".into();
                     continue;
@@ -1123,6 +1170,15 @@ fn draw_rank_table(
                 value.map(|v| rank_color(m, v, ranges[m])).unwrap_or(MUTED),
             );
         }
+        // Stripe by table position so scrolling preserves the alternating rows.
+        // Plain dark rows are bold; alternating rows have a subtle red tint.
+        let plain = r % 2 == 0;
+        c.row_style(Rect {
+            x: 1,
+            y,
+            w: g.width - 2,
+            h: 1,
+        }, if plain { None } else { Some((28, 16, 18)) }, plain);
     }
     if order.is_empty() {
         c.text(2, RANK_DATA, "—", MUTED);
@@ -1138,6 +1194,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
     let mut ascending = true;
     let mut columns = RankColumns::new();
     columns.hidden = data.columns;
+    columns.rows = data.hidden_layouts.clone();
     let (mut selected, mut top) = (0, 0);
     let mut filter = String::new();
     let mut status = String::new();
@@ -1169,7 +1226,9 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         }
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
-        let title = if data.mana2 {
+        let title = if data.simple {
+            "Ranker · Simple SCORE"
+        } else if data.mana2 {
             "Ranker · Mana2 SCORE"
         } else {
             "Ranker"
@@ -1179,7 +1238,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             title,
             &data.name,
             "",
-            "v columns | c corpus | r reload | u restore | H all | q back",
+            "",
         );
         let bottom = draw_rank_table(
             &mut c,
@@ -1194,31 +1253,12 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             term.decimals(),
             &ranges,
         );
-        let mut footer = format!("{} layouts · travel u/100", order.len());
+        let mut footer = format!("{} layouts · ? help", order.len());
         if !errors.is_empty() {
-            footer.push_str(&format!(" · {} failed (e errors)", errors.len()));
+            footer.push_str(&format!(" · {} errors", errors.len()));
         }
-        if data
-            .warnings
-            .iter()
-            .any(|warning| warning.starts_with("Approximate"))
-        {
-            footer.push_str(" · limited n-grams (i info)");
-        }
-        let hidden = columns.hidden.iter().filter(|&&x| x).count();
-        if hidden > 0 {
-            footer.push_str(&format!(" · {hidden} columns hidden"));
-        }
-        if !columns.rows.is_empty() {
-            footer.push_str(&format!(" · {} rows hidden", columns.rows.len()));
-        }
-        if grid.total > grid.metrics.len() {
-            footer.push_str(&format!(
-                " · columns {}–{}/{}",
-                grid.first + 1,
-                grid.first + grid.metrics.len(),
-                grid.total
-            ));
+        if !data.warnings.is_empty() {
+            footer.push_str(" · notes");
         }
         c.text(0, bottom + 1, &short(&footer, width), MUTED);
         let selected_name = order.get(selected).map(|&i| rows[i].name()).unwrap_or("");
@@ -1226,11 +1266,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             0,
             bottom + 2,
             &short(
-                if status.is_empty() {
-                    selected_name
-                } else {
-                    &status
-                },
+                &status,
                 width,
             ),
             CYAN,
@@ -1248,9 +1284,10 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         {
             if let Some(offset) = grid.layout_at(x, y, shown) {
                 if let Some(&i) = order.get(top + offset) {
-                    columns.hide_row(rows[i].path().to_owned());
+                    if columns.hide_row(rows[i].path().to_owned()) {
+                        status = persist_hidden_rows(&columns.rows).unwrap_or_default();
+                    }
                 }
-                status.clear();
                 continue;
             }
             if let Some(m) = grid.metric_at(x, y, shown) {
@@ -1298,6 +1335,12 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         }
         match e {
             Event::Escape|Event::Quit|Event::Char('q') => return Ok(()),
+            Event::Char('R') => {
+                match term.request_restart() {
+                    Ok(()) => return Ok(()),
+                    Err(error) => status = error.to_string(),
+                }
+            },
             Event::Enter => if let Some(&i) = order.get(selected) {
                 inspect_row(term, &mut data.rows[i], &data.weights)?;
             },
@@ -1314,13 +1357,27 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             Event::Tab => columns.first = columns.first.saturating_add(grid.capacity),
             Event::Home => columns.first = 0,
             Event::End => columns.first = grid.total,
-            Event::Char('u') => columns.undo(grid.capacity),
-            Event::Char('H') => columns.restore(),
+            Event::Char('u') => {
+                if columns.undo(grid.capacity) {
+                    status = persist_hidden_rows(&columns.rows).unwrap_or_default();
+                }
+            }
+            Event::Redo => {
+                if columns.redo() {
+                    status = persist_hidden_rows(&columns.rows).unwrap_or_default();
+                }
+            }
+            Event::Char('H') => {
+                if columns.restore() {
+                    status = persist_hidden_rows(&columns.rows).unwrap_or_default();
+                }
+            }
             Event::Char('v') => {
                 if let Some(hidden) = choose_rank_columns(term, &columns.hidden)? {
                     columns.hidden = hidden;
                     columns.first = 0;
                     columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                    columns.redo.clear();
                     status = format!("Saved default columns to {APP_CONFIG_FILE}");
                 }
             }
@@ -1347,8 +1404,10 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                     Ok(Some(next)) => {
                         data = next;
                         columns.hidden = data.columns;
+                        columns.rows = data.hidden_layouts.clone();
                         columns.first = 0;
                         columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                        columns.redo.clear();
                         status.clear();
                         top = 0;
                         selected = 0;
@@ -1363,27 +1422,58 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                     Ok(Some(next)) => {
                         data = next;
                         columns.hidden = data.columns;
+                        columns.rows = data.hidden_layouts.clone();
                         columns.first = 0;
                         columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                        columns.redo.clear();
                         status.clear();
                     }
                     Ok(None) => {}
                     Err(error) => status = error.to_string(),
                 }
             },
-            Event::Char('?') => info_page(term, "Ranker", &[
-                    "Left-click header sorts. Middle-click a metric hides its column; middle-click a layout name hides its row.".into(),
-                    "u restores the last hidden item; H restores all for this session. Left/right scroll columns; wheel scrolls layouts.".into(),
-                    "v chooses columns; Space toggles; s saves defaults to akler.conf. d chooses compact defaults; a selects all.".into(),
-                    "Action layouts use their bounded n-gram evaluator. Their COVERAGE is n/a; open a row for physical presses and ignored text.".into(),
-                    "Colors use min/max of every non-hidden layout; green is preferable. Different key sets still require coverage checks.".into(),
-                    if data.mana2 {
-                        "SCORE is negative Mana2 score. Mana2 stat columns use their Mana2 IDs; remaining columns keep akler definitions.".into()
+            Event::Char('?') => {
+                let mut lines = vec![
+                    "CONTROLS".into(),
+                    "j/k or ↑/↓: select layout; Enter: open; q: back.".into(),
+                    "h/l or ←/→: scroll columns; Tab: next column page.".into(),
+                    "Mouse wheel / PgUp / PgDn: scroll layouts.".into(),
+                    "Click a header: sort; n: sort by name; /: filter; .: precision.".into(),
+                    "Middle-click: hide a row or column; u: undo; Ctrl+R: redo.".into(),
+                    "H: restore all rows and columns. Hidden layouts save automatically.".into(),
+                    "v: choose columns; q in the picker saves; Esc cancels.".into(),
+                    "c: choose corpus; r: reload files/config; R: restart rebuilt program.".into(),
+                    "e: layout errors; i: corpus/limit notes.".into(),
+                    String::new(),
+                    "CURRENT VIEW".into(),
+                    format!("Selected: {selected_name}"),
+                    format!("{} layouts hidden · {} columns hidden", columns.rows.len(),
+                        columns.hidden.iter().filter(|&&hidden| hidden).count()),
+                    format!("Columns {}–{} of {} · travel is in key units per 100 presses",
+                        grid.first + 1, grid.first + grid.metrics.len(), grid.total),
+                    if data.simple {
+                        "SCORE: [simple] weights on Mana2 patterns plus AKLER speed estimates; lower is better.".into()
+                    } else if data.mana2 {
+                        "SCORE: negative Mana2 score; lower is better.".into()
                     } else {
-                        "SCORE uses saved detailed weights on this corpus. Candidate comparison uses its actual training objective.".into()
+                        "SCORE: AKLER detailed weights; lower is better.".into()
                     },
-                    "Enter opens the selected layout; . changes precision; / filters names; e shows errors; i shows corpus/limit notes.".into()
-                ])?,
+                    "Other columns keep their own definitions. Green is preferable within each column.".into(),
+                    "Action layouts use bounded physical n-grams; COVERAGE is n/a.".into(),
+                ];
+                if !data.warnings.is_empty() {
+                    lines.extend([String::new(), "CORPUS / LIMIT NOTES".into()]);
+                    lines.extend(data.warnings.iter().cloned());
+                }
+                if !errors.is_empty() {
+                    lines.extend([String::new(), "LAYOUT ERRORS".into()]);
+                    lines.extend(errors.iter().cloned());
+                }
+                if !status.is_empty() {
+                    lines.extend([String::new(), status.clone()]);
+                }
+                help_popup(term, &c, "Ranker help", &lines)?;
+            },
             _ => {
             }
         }

@@ -71,7 +71,7 @@ fn from_counts(
         &counts.skip,
         &counts.tables[2],
     ];
-    let mana2 = mode == "mana2";
+    let mana2 = matches!(mode, "mana2" | "simple");
     let mut raw = if mana2 {
         Raw::with_mana2()
     } else {
@@ -112,10 +112,7 @@ fn from_counts(
 
     let metrics = metrics_totals(&raw, &totals);
     let score = if mana2 {
-        -mana2_metrics::score(
-            &mana2_metrics::stats(raw.1.as_ref().unwrap(), totals),
-            &weights.2,
-        )
+        weights.physical_score(&mana2_metrics::stats(raw.1.as_ref().unwrap(), totals), mode)
     } else {
         breakdown(&metrics, weights).net
     };
@@ -235,28 +232,30 @@ mod tests {
     }
 
     #[test]
-    fn mana2_summary_uses_native_stats_and_maximization_score() {
+    fn physical_summary_uses_selected_scoring_weights() {
         let stop = AtomicBool::new(false);
         let progress = AtomicU64::new(0);
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("summary-mana2.dat"),
+            Path::new("summary-physical.dat"),
         )
         .unwrap();
         let corpus = corpus(5);
         let mut weights = Weights::default();
         weights.2 = mana2_metrics::Weights::from_text("finger-usage-LP = [-2]\n").unwrap();
-        let summary =
-            evaluate_with_mode(&layout, &corpus, &weights, &stop, &progress, "mana2").unwrap();
-        let mana2 = summary.raw.1.as_ref().expect("Mana2 counters are enabled");
-        let stats = mana2_metrics::stats(mana2, summary.totals);
-        assert_eq!(
-            summary.score.to_bits(),
-            (-mana2_metrics::score(&stats, &weights.2)).to_bits()
-        );
-        assert_ne!(
-            summary.score,
-            -mana2_metrics::score(&stats, &Weights::default().2)
-        );
+        weights.3 = simple_metrics::Weights::from_text("sfb = 3\nsfs = 4\n").unwrap();
+        for mode in ["mana2", "simple"] {
+            let summary =
+                evaluate_with_mode(&layout, &corpus, &weights, &stop, &progress, mode).unwrap();
+            let stats = mana2_metrics::stats(summary.raw.1.as_ref().unwrap(), summary.totals);
+            assert_eq!(
+                summary.score.to_bits(),
+                weights.physical_score(&stats, mode).to_bits()
+            );
+            assert_ne!(
+                summary.score,
+                Weights::default().physical_score(&stats, mode)
+            );
+        }
     }
 }

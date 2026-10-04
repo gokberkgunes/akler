@@ -8,6 +8,11 @@ emitted characters and nested calls are not extra presses. Action skipgrams
 compare the first and third presses of a mapped three-press sequence; gaps
 reset that sequence.
 
+Single-character action IDs preserve case: `y` and `Y` can have separate rules.
+Imported text contexts and outputs are normalized to lowercase; the last rule
+wins when contexts normalize identically. A text context cannot distinguish the
+previous physical `y` from `Y` once both have emitted `y`.
+
 Ordinary evaluation uses stored text n-grams mapped to physical positions.
 Its skipgrams require only their endpoints: `a!b` contributes `a…b` when `a`
 and `b` are available, even if `!` is not. It does not create adjacent `ab`.
@@ -77,9 +82,11 @@ adjacent and nonadjacent columns.
 ## Triple metrics and preferences
 
 Rhythm metrics exclude thumbs by default; `[rolls] include_thumbs` can include
-them specifically in roll metrics. A *clean* SRAF/ALT pattern has no SFB/SFS,
-SKB/SKS, jumps, lateral stretch, or redirect across
-AB, BC, and skip AC.
+them specifically in roll metrics. A *clean* SRAF pair has no same-finger
+repeat, scissor, concordant or discordant one- or two-row jump, or lateral
+stretch. ALT counts every non-thumb LRL/RLR triple, including a returning
+AC pair on the same key or finger, or with a scissor, stretch, or row jump.
+Those movement penalties are still counted independently.
 
 | Metric | Meaning | Weight key | Default |
 |---|---|---|---:|
@@ -92,7 +99,7 @@ AB, BC, and skip AC.
 | INROLL / OUTROLL | IN2 + IN3 / OUT2 + OUT3. | `inroll` / `outroll` | 0.25 / 0.25 |
 | IN2 / OUT2 | Mixed-hand trigram (LLR/RRL/LRR/RLL); its consecutive same-hand pair moves inward / outward on different fingers. | Display only | — |
 | IN3 / OUT3 | Three distinct fingers on one hand, moving strictly inward / outward. | Display only | — |
-| ALT | Clean LRL/RLR triple; the returning AC pair uses different fingers. | `alt_reward` | 0.05 |
+| ALT | Hands alternate across three non-thumb presses: LRL or RLR. | `alt_reward` | 0.05 |
 
 L/R means left/right hand. **All four roll types are trigram metrics.** The
 “2” means two fingers on one hand within a three-press sequence, not a bigram
@@ -125,9 +132,10 @@ weights, while combined ROLL remains an unweighted display total.
 SRAF remains a pair metric. INSRAF moves from pinky toward index and OUTSRAF
 moves from index toward pinky, using the same anatomical order on each hand;
 physical left-to-right direction is irrelevant. SRAF is their unweighted
-display total. SRAF/ALT details can show `clean`, `raw` (shape before blockers),
+display total. SRAF details can show `clean`, `raw` (shape before blockers),
 or `rejected` (raw minus clean); directional SRAF scoring uses clean credit.
-Roll details show the directional physical trigrams directly.
+ALT details show all alternating physical trigrams. Roll details show the
+directional physical trigrams directly.
 
 ## Travel, usage, and score
 
@@ -161,8 +169,9 @@ Normalization uses supported physical events:
 - Skip penalties (including SKS): all mapped skipgrams, including thumbs.
 - SRAF, INSRAF, and OUTSRAF: mapped non-thumb bigrams; blocked pairs stay in
   their shared denominator.
-- RED/WRED/WISH and ALT: mapped non-thumb trigrams; nonmatching and blocked
-  triples stay in the denominator.
+- RED/WRED/WISH and ALT: mapped non-thumb trigrams; nonmatching triples stay
+  in the denominator. Thumb-containing triples are excluded from both the
+  numerator and denominator.
 - All roll types/totals: mapped non-thumb trigrams by default, or all mapped
   trigrams with `include_thumbs = true`. Rolls rejected by movement filters
   stay in the denominator. All roll columns share this denominator; none
@@ -198,7 +207,7 @@ and ignored text can differ from Mana2's input handling.
 
 All Mana2 stat IDs are available as ranker columns and support sorting. Select
 them in the ranker column picker (`v`) or list the IDs under `[ranker] columns`;
-they show `n/a` when the active mode is not `mana2`. Per-stat default sorting
+they show `n/a` when the active mode is neither `mana2` nor `simple`. Per-stat default sorting
 and colors follow the built-in schedules: reward columns sort high-to-low,
 and penalty or zero-weight columns sort low-to-high. Changing a schedule
 changes the objective; it does not change these per-stat display conventions. `SCORE` is
@@ -234,6 +243,50 @@ retain akler's stored-table normalization and skipgram semantics; action layouts
 use akler's bounded decoded physical-context counts. These are source/population
 limits, so the same layout may not match a Mana2 report produced by Mana2's own
 corpus loader and keyboard engine.
+
+## Simple scoring mode
+
+`[search] mode = simple` uses the same mapped physical Mana2 counters with flat
+weights in `[simple]`. Each contribution is `weight × stat value`; positive
+penalizes and negative rewards. The score is their sum, lower is better.
+No progressive schedules or custom pinky/curl penalties apply.
+
+SFB/SFS use Mana2's different-position same-finger definitions. Stretch bigrams
+and skipgrams map to `lsb`/`lss`; scissor bigrams and skipgrams map to `vsb`/`vss`.
+These four are averaged movement ratings, not percentages. Alternation, redirect,
+weak redirect and rolls use Mana2's All trigram definitions. `inroll` is
+`inroll2 + inroll3`; `outroll` is `outroll2 + outroll3`; all-roll is `roll`.
+These terms overlap, so their nonzero weights add. The same corpus normalization,
+spacegram setting, input limits and physical action mapping described above apply.
+Baseline caps retain AKLER's existing detailed definitions in all modes.
+
+### Finger speed
+
+The Simple speed model is an explicit available-pair motion estimate, inspired by
+[Oxeylyzer's distance/frequency/strength approach](https://github.com/o-x-e-y/oxeylyzer#fspeed).
+It is not a native Mana2 statistic or measured words per minute. For each finger:
+
+`Fspeed = 100 × bigram_distance_sum / bigram_total + speed_skip_ratio × 100 × skip1_distance_sum / skip1_total`
+
+Only same-finger pairs contribute; distance is Euclidean in physical key units,
+including row/column stagger and thumbs. Same-position repeats contribute zero.
+The sums are frequency-weighted and denominators include all available pairs,
+not only same-finger pairs. An empty category contributes zero. No spaces or
+thumbs are removed to construct skip pairs. Existing physical action mapping,
+reset boundaries, source limits and skip semantics are retained.
+
+`Weighted[finger] = Fspeed[finger] / speed_strength_finger`
+
+`fspeed` weights the sum of all ten Fspeed values; `weighted_speed` weights the
+sum of all ten Weighted values. Both positive weights penalize and both negative
+weights reward. Enabling both adds overlapping costs, as does weighting SFB/SFS
+alongside them. Defaults are editable starting preferences: `fspeed = 0`,
+`weighted_speed = 1`, `speed_skip_ratio = 0.11`. All ten strengths are editable
+in `[simple]` and optimizer setup; higher means less weighted cost.
+
+This model uses only available bigrams and skip1. It does not fabricate further
+skip populations, and cannot promise identical numbers to the screenshot.
+Detailed and native Mana2 score formulas are unchanged.
 
 ## Weight configuration
 

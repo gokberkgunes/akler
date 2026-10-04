@@ -34,7 +34,7 @@ impl Counts {
     }
 
     fn report_json(&self, layout: &ak::Layout) -> String {
-        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"safe magic before literal; action collisions with the other recent finger use local effort; following same-finger literals use two-press local effort; then greedy local effort within each cached context\",\n  \"keys\": [", self.order);
+        let mut out = format!("{{\n  \"kind\": \"physical-keystroke-ngram-estimate\",\n  \"context_order\": {},\n  \"policy\": \"safe magic before literal; action collisions with the other recent finger use local effort; following same-finger literals and alternative actions use two-press local effort; then greedy local effort within each cached context\",\n  \"keys\": [", self.order);
         for (i, slot) in layout.slots.iter().enumerate() {
             if i > 0 {
                 out.push(',');
@@ -773,6 +773,11 @@ impl Proposal {
         metrics_totals(&self.raw, &self.totals)
     }
 
+    pub(crate) fn physical_score(&self, weights: &Weights, mode: &str) -> f64 {
+        let raw = self.raw.1.as_ref().expect("physical stats must be enabled");
+        weights.physical_score(&mana2_metrics::stats(raw, self.totals), mode)
+    }
+
     pub(crate) fn mana2_score(&self, weights: &mana2_metrics::Weights) -> f64 {
         assert!(self.valid);
         let raw = self.raw.1.as_ref().expect("mana2 totals must be enabled");
@@ -842,6 +847,11 @@ impl Incremental {
         for (tail, window) in self.tails.iter().zip(self.corpus.windows.iter()) {
             add_tail_mana2(&mut self.raw, *tail, window.weight, &self.geometry);
         }
+    }
+
+    pub(crate) fn physical_score(&self, weights: &Weights, mode: &str) -> f64 {
+        let raw = self.raw.1.as_ref().expect("physical stats must be enabled");
+        weights.physical_score(&mana2_metrics::stats(raw, self.totals), mode)
     }
 
     pub(crate) fn mana2_score(&self, weights: &mana2_metrics::Weights) -> f64 {
@@ -1255,7 +1265,11 @@ impl Incremental {
         // Preserve the existing periodic rebase and its accumulation order.
         if self.commits % 128 == 0 {
             let rebase_start = clock::<PROFILE>();
-            self.raw = Raw::default();
+            self.raw = if self.raw.1.is_some() {
+                Raw::with_mana2()
+            } else {
+                Raw::default()
+            };
             self.totals = [0.0; 4];
             for (window, &tail) in self.corpus.windows.iter().zip(&self.tails) {
                 contribute(
@@ -1475,9 +1489,24 @@ mod tests {
             for (actual, expected) in proposal.metrics().v.iter().zip(fresh.metrics().v) {
                 assert!((actual - expected).abs() < 1e-8);
             }
-            assert!(
-                (proposal.mana2_score(&weights.2) - fresh.mana2_score(&weights.2)).abs() < 1e-8
-            );
+            for mode in ["mana2", "simple"] {
+                assert!(
+                    (proposal.physical_score(&weights, mode)
+                        - fresh.physical_score(&weights, mode))
+                    .abs()
+                        < 1e-8
+                );
+            }
+            let speed = proposal.raw.1.as_ref().unwrap().1;
+            let full_speed = fresh.raw.1.as_ref().unwrap().1;
+            for (actual, expected) in speed
+                .bigrams
+                .iter()
+                .chain(&speed.skipgrams)
+                .zip(full_speed.bigrams.iter().chain(&full_speed.skipgrams))
+            {
+                assert!((actual - expected).abs() < 1e-8);
+            }
             cache.commit(&mut proposal);
             assert_eq!(cache.tails, fresh.tails);
             cache
@@ -1496,30 +1525,55 @@ mod tests {
         let corpus = corpus(b"aa ai' abc", 5);
         let stop = AtomicBool::new(false);
         let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
-        let mut cache = Incremental::new(&corpus, &seed, geometry, &stop, |_, _, _| 0.0).unwrap();
-        cache.commits = 127;
-        let saved = cache.numeric_state();
-        let identity: Vec<_> = (0..seed.slots.len()).collect();
-        let mut proposal = Proposal::new();
-        let mut profile = Profile::default();
+        let weights = Weights::default();
+        let a = key(&seed, "a");
+        let i = key(&seed, "i");
+        let mut moved = seed.clone();
+        moved.swap(a, i);
+        for physical in [false, true] {
+            let make = |layout: &ak::Layout| {
+                let mut cache =
+                    Incremental::new(&corpus, layout, geometry.clone(), &stop, |_, _, _| 0.0)
+                        .unwrap();
+                if physical {
+                    cache.enable_mana2();
+                }
+                cache
+            };
+            let mut cache = make(&seed);
+            let fresh = make(&moved);
+            cache.commits = 127;
+            let saved = cache.numeric_state();
+            let identity: Vec<_> = (0..seed.slots.len()).collect();
+            let mut proposal = Proposal::new();
+            let mut profile = Profile::default();
 
-        for expected_rebases in 1..=2 {
-            cache
-                .propose_swap(
-                    key(&seed, "a"),
-                    key(&seed, "i"),
-                    &stop,
-                    |_, _, _| 0.0,
-                    &mut proposal,
-                )
-                .unwrap();
-            cache.commit_profiled::<true>(&mut proposal, &mut profile);
-            assert_eq!(cache.commits, 128);
-            assert_eq!(profile.rebases, expected_rebases);
-            cache
-                .restore(&identity, Some(&saved), &stop, |_, _, _| 0.0)
-                .unwrap();
-            assert_eq!(cache.commits, 127);
+            for expected_rebases in 1..=2 {
+                cache
+                    .propose_swap(a, i, &stop, |_, _, _| 0.0, &mut proposal)
+                    .unwrap();
+                cache.commit_profiled::<true>(&mut proposal, &mut profile);
+                assert_eq!(cache.commits, 128);
+                assert_eq!(profile.rebases, expected_rebases);
+                assert_eq!(cache.raw.1.is_some(), physical);
+                assert_contribution_bits(&cache.raw, &fresh.raw, &cache.totals, &fresh.totals);
+                if physical {
+                    for mode in ["simple", "mana2"] {
+                        assert_eq!(
+                            cache.physical_score(&weights, mode).to_bits(),
+                            fresh.physical_score(&weights, mode).to_bits(),
+                        );
+                    }
+                    let speed = cache.raw.1.as_ref().unwrap().1;
+                    let expected = fresh.raw.1.as_ref().unwrap().1;
+                    assert_eq!(speed.bigrams, expected.bigrams);
+                    assert_eq!(speed.skipgrams, expected.skipgrams);
+                }
+                cache
+                    .restore(&identity, Some(&saved), &stop, |_, _, _| 0.0)
+                    .unwrap();
+                assert_eq!(cache.commits, 127);
+            }
         }
     }
 
@@ -1914,7 +1968,7 @@ mod tests {
     }
 
     #[test]
-    fn following_literal_sfb_can_override_skip_action_priority() {
+    fn following_literal_effort_and_alternative_actions() {
         let layout = ak::Layout::parse(
             "q w e r @sk | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
             Path::new("following-skip-action.dat"),
@@ -1965,6 +2019,61 @@ mod tests {
         assert_eq!(
             reference.map(b"acav", &|_, _, _| 0.0).unwrap()[2],
             Some(action)
+        );
+
+        // Alternative actions must include the following movement too, even
+        // when that movement uses different fingers. The right action has
+        // cheaper incoming effort, but a full jump onto the period key.
+        let layout = ak::Layout::parse(
+            "@y w e r t | q u i o @Y\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction y = magic\nfallback y = \"y\"\nmap y \"a\" = \"#\"\naction Y = magic\nfallback Y = \"y\"\n",
+            Path::new("alternative-actions.dat"),
+        )
+        .unwrap();
+        let (left, right) = (action_key(&layout, "y"), action_key(&layout, "Y"));
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[DAHJB] = 1.0;
+        weights.0[DAFJB] = 4.0;
+        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
+        assert!(
+            effort.get(None, Some(key(&layout, "s")), right)
+                < effort.get(None, Some(key(&layout, "s")), left)
+        );
+        let program = crate::action_fast::Program::new(&layout, 3).unwrap();
+        let state = crate::action_fast::KeyState::new(&program);
+        let mut fast = crate::action_fast::Mapper::new(&program, &state);
+        let mut reference = ak::WindowMapper::new(&layout, 3).unwrap();
+        // Changing or removing the following key must invalidate the cached
+        // choice. Explicit rules still forbid alternatives with wrong output.
+        for (text, winner) in [
+            (b"sy.".as_slice(), left),
+            (b"syq".as_slice(), right),
+            (b"sy.".as_slice(), left),
+            (b"sy".as_slice(), right),
+            (b"ay.".as_slice(), right),
+        ] {
+            let expected = ak::WindowMapper::new(&layout, 3)
+                .unwrap()
+                .map(text, &|a, b, key| effort.get(a, b, key))
+                .unwrap();
+            assert_eq!(expected[1], Some(winner));
+            let mapped = reference
+                .map(text, &|a, b, key| effort.get(a, b, key))
+                .unwrap();
+            assert_eq!(&mapped[..text.len()], &expected[..text.len()]);
+            let mapped = fast.map(text, &|a, b, key| effort.get(a, b, key)).unwrap();
+            assert_eq!(&mapped[..text.len()], &expected[..text.len()]);
+        }
+        let counts = self::corpus(b"sy.", 3)
+            .evaluate(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                |a, b, key| effort.get(a, b, key),
+            )
+            .unwrap();
+        assert_eq!(
+            counts.tables[2].get(&vec![key(&layout, "s"), left, key(&layout, ".")]),
+            Some(&1.0)
         );
     }
 

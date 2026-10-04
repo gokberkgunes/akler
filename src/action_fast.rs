@@ -839,15 +839,15 @@ impl<'a> Mapper<'a> {
                         let literal =
                             matches!(self.program.keys[self.state.ids[*old_key]], Key::Byte(_));
                         let priority = literal.then(|| self.action_priority(key, m)).flatten();
-                        may_look_ahead |= literal && priority != Some(false);
-                        let projected = if literal && priority != Some(false) && at + 1 < text.len()
-                        {
+                        may_look_ahead |= priority != Some(false);
+                        let projected = if priority != Some(false) && at + 1 < text.len() {
                             let next = self.state.literals[text[at + 1] as usize];
                             if next != 0
-                                && (0..self.program.fingers.len()).all(|n| {
-                                    next & (1u64 << n) == 0
-                                        || self.program.fingers[n] == self.program.fingers[key]
-                                })
+                                && (!literal
+                                    || (0..self.program.fingers.len()).all(|n| {
+                                        next & (1u64 << n) == 0
+                                            || self.program.fingers[n] == self.program.fingers[key]
+                                    }))
                             {
                                 let mut next_cost = |current| {
                                     let mut mask = next;

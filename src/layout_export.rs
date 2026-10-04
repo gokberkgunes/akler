@@ -337,9 +337,16 @@ fn rule_json(
 
 fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Json>)> {
     let mut labels = BTreeMap::new();
-    let mut label_counts = BTreeMap::new();
+    let mut label_bindings = BTreeMap::new();
     for slot in &layout.slots {
-        *label_counts.entry(slot.label.clone()).or_insert(0_usize) += 1;
+        if let Some(previous) = label_bindings.insert(slot.label.clone(), &slot.binding) {
+            if previous != &slot.binding {
+                return Err(format!(
+                    "JSONC cannot represent different bindings for physical label {:?}",
+                    slot.label
+                ));
+            }
+        }
         if let Binding::Named(name) = &slot.binding {
             if slot.label.chars().count() != 1 || !slot.label.chars().all(|ch| !ch.is_control()) {
                 return Err(format!(
@@ -356,14 +363,18 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
             }
         }
     }
-    if let Some(label) = labels
-        .values()
-        .find(|label| label_counts.get(*label) != Some(&1))
-    {
-        return Err(format!(
-            "JSONC action key {label:?} must occur exactly once"
-        ));
-    }
+    // Adaptive keys use their normalized literal label as the fallback.
+    // Multiple physical slots may share one adaptive binding; ordinary
+    // magic.rules restores each slot while keeping distinct glyphs separate.
+    let adaptive = !labels.is_empty()
+        && labels.iter().all(|(name, label)| {
+            !crate::layout_io::dedicated_magic_label(label)
+                && matches!(layout.actions.get(name), Some(Action::Rules {
+                basis: Basis::Text,
+                fallback: Emission::Text(text),
+                ..
+            }) if text == label.to_ascii_lowercase().as_bytes())
+        });
 
     let mut wildcard_rules = Vec::new();
     let mut explicit_rules = BTreeMap::new();
@@ -396,19 +407,23 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
         keys.push_str(label);
         match basis {
             Basis::Text => {
-                if !matches!(
-                    fallback,
-                    Emission::Call(fallback_name)
-                        if matches!(layout.actions.get(fallback_name), Some(Action::RepeatOutput))
-                ) {
+                if !adaptive
+                    && !matches!(
+                        fallback,
+                        Emission::Call(fallback_name)
+                            if matches!(layout.actions.get(fallback_name), Some(Action::RepeatOutput))
+                    )
+                {
                     return Err(format!(
                         "JSONC wildcard magic key {label:?} requires a repeat-output fallback"
                     ));
                 }
-                wildcard_rules.push(object([
-                    ("inputs", string(format!("*{label}"))),
-                    ("output", string("**")),
-                ]));
+                if !adaptive {
+                    wildcard_rules.push(object([
+                        ("inputs", string(format!("*{label}"))),
+                        ("output", string("**")),
+                    ]));
+                }
                 for (context, emission) in rules {
                     let context = std::str::from_utf8(context)
                         .map_err(|_| "JSONC magic contexts must be UTF-8")?;
@@ -494,14 +509,16 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
         return Ok((labels, None));
     }
     wildcard_rules.extend(explicit_rules.into_values());
-    Ok((
-        labels,
-        Some(object([
+    let magic = if adaptive {
+        object([("rules", Json::Array(wildcard_rules))])
+    } else {
+        object([
             ("keys", string(keys)),
             ("wildcards", string("*")),
             ("rules", Json::Array(wildcard_rules)),
-        ])),
-    ))
+        ])
+    };
+    Ok((labels, Some(magic)))
 }
 
 fn token(binding: &Binding, action_labels: &BTreeMap<String, String>) -> Result<String> {
@@ -737,6 +754,82 @@ mod tests {
     }
 
     #[test]
+    fn edited_lead_saves_chiral_actions_and_their_geometry() {
+        let mut layout = Layout::parse(
+            r##"{
+                "layout": {
+                    "fingers": [
+                        "\\ y l d m v q f u o Y [",
+                        "/ n r t s g k b e a i '",
+                        "x j z w c skip p h , . ; skip"
+                    ],
+                    "thumbs": ["", ""]
+                },
+                "fingermap": [
+                    "0 0 1 2 2 3 6 6 7 8 9 9",
+                    "0 0 1 2 3 3 6 6 7 8 9 9",
+                    "0 1 2 3 3 0 6 6 7 8 9 9"
+                ],
+                "board": {
+                    "isRowStaggered": true,
+                    "rowOrColumnStagger": [0, 0.25, 0.75]
+                },
+                "magic": {"rules": [
+                    {"inputs": "hy", "output": "hy"},
+                    {"inputs": "hY", "output": "h#"},
+                    {"inputs": "dy", "output": "d#"},
+                    {"inputs": "dY", "output": "dy"}
+                ]}
+            }"##,
+            Path::new("lead.jsonc"),
+        )
+        .unwrap();
+        let key = |label: &str| {
+            layout
+                .slots
+                .iter()
+                .position(|slot| slot.label == label)
+                .unwrap()
+        };
+        let (y, right_y, h, b, d) = (key("y"), key("Y"), key("h"), key("b"), key("d"));
+        assert_eq!(layout.slots[y].binding, Binding::Named("y".into()));
+        assert_eq!(layout.slots[right_y].binding, Binding::Named("Y".into()));
+        let output = |layout: &Layout, presses: &[usize]| {
+            crate::action_keys::trace_keys(layout, presses)
+                .unwrap()
+                .into_iter()
+                .flat_map(|step| step.output)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(output(&layout, &[h, y]), b"hy");
+        assert_eq!(output(&layout, &[h, right_y]), b"h#");
+        assert_eq!(output(&layout, &[d, y]), b"d#");
+        assert_eq!(output(&layout, &[d, right_y]), b"dy");
+        // Both physical actions emit normalized text in unlisted contexts.
+        assert_eq!(output(&layout, &[y]), b"y");
+        assert_eq!(output(&layout, &[right_y]), b"y");
+        layout.swap(h, b);
+        let directory = test_directory();
+        layout.path = directory.join("lead.jsonc");
+        let saved = layout.save_new().unwrap();
+        for path in [saved.clone(), saved.with_extension("jsonc")] {
+            let restored = Layout::parse(&fs::read_to_string(&path).unwrap(), &path).unwrap();
+            assert_eq!(restored.slots, layout.slots);
+            assert_eq!(restored.actions, layout.actions);
+            for previous in 0..layout.slots.len() {
+                if matches!(layout.slots[previous].binding, Binding::Empty) {
+                    continue;
+                }
+                for action in [y, right_y] {
+                    let presses = [previous, action];
+                    assert_eq!(output(&restored, &presses), output(&layout, &presses));
+                }
+            }
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn column_stagger_export_declares_its_mode_and_keeps_physical_offsets() {
         let source = format!("{GRID}column-offsets: 0 -0.3 -0.4 -0.3 -0.2 -0.2 -0.3 -0.4 -0.3 0\n");
         let original = Layout::parse(&source, Path::new("columns.dat")).unwrap();
@@ -860,7 +953,7 @@ mod tests {
         layout.slots[0].binding = Binding::Text(b"n".to_vec());
         assert!(jsonc_text(&layout)
             .unwrap_err()
-            .contains("must occur exactly once"));
+            .contains("different bindings for physical label"));
     }
 
     #[test]

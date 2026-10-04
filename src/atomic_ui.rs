@@ -487,15 +487,7 @@ impl AtomicView {
             &short(&format!("Grouping: {}", self.grouping_text()), canvas.w),
             BLUE,
         );
-        canvas.text(
-            0,
-            4,
-            &short(
-                "Arrows/Space keys   j/k table   Enter/l open group   h back   u undo   g grouping   / query   ? help   q quit",
-                canvas.w,
-            ),
-            MUTED,
-        );
+        canvas.text(0, 4, &short("? help   q quit", canvas.w), MUTED);
         let highlights: Vec<_> = self.selected_key.into_iter().chain(self.drag).collect();
         let keyboard_end = match &self.drawing {
             Drawing::Plain { model, slots } => keyboard(
@@ -616,7 +608,6 @@ impl AtomicView {
                 },
                 MUTED,
             );
-            y += 1;
         } else {
             for (index, line) in row_lines.iter().enumerate() {
                 canvas.text(
@@ -641,16 +632,6 @@ impl AtomicView {
                 y += 1;
             }
         }
-        y += 1;
-        canvas.text(
-            0,
-            y,
-            &short(
-                "j/k table   Enter/l open   h/Esc group back   Arrows/Space keys   g group   s save   x report   Pg scroll   q quit",
-                canvas.w,
-            ),
-            MUTED,
-        );
         canvas
     }
 }
@@ -671,8 +652,8 @@ fn visible_item_cursor(canvas: &Canvas, scroll: usize, height: usize, last: bool
     }
 }
 
-fn help(term: &mut Terminal) -> AppResult<()> {
-    info_page(term, "Atomic editor help", &[
+fn help(term: &mut Terminal, frame: &Canvas) -> AppResult<()> {
+    help_popup(term, frame, "Atomic editor help", &[
         "The editor uses weighted physical slots and the same report as `akler atomic`. Tab cycles bigrams, trigrams, and skip1. A blank query selects all patterns.".into(),
         "Click two keys or drag one onto another to swap. Arrows move the physical cursor; Space selects and swaps. j/k move through table rows; Enter/l opens a selected group, and h/Esc returns. Click a group row to open it. u undoes the latest swap. Space stays fixed.".into(),
         "g opens a grouping checklist. Up/Down moves; Space or click toggles fields; Enter adds the highlighted field and applies all selected fields; c clears grouping immediately; q cancels. Grouping does not change the population denominator.".into(),
@@ -1040,7 +1021,7 @@ fn display(term: &mut Terminal, mut view: AtomicView) -> AppResult<()> {
                     view.submit_query(&text);
                 }
             }
-            Event::Char('?') => help(term)?,
+            Event::Char('?') => help(term, &canvas)?,
             Event::Char('x') => {
                 if let Some(path) = input_box(term, "Export atomic report to a new file", "", "")? {
                     view.export(Path::new(&path));

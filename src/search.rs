@@ -47,6 +47,12 @@ impl Default for SearchSettings {
     }
 }
 
+impl SearchSettings {
+    fn uses_mana2_stats(&self) -> bool {
+        matches!(self.mode.as_str(), "mana2" | "simple")
+    }
+}
+
 fn bounded_usize(s: &str, max: usize) -> AppResult<usize> {
     let n: usize = s.parse()?;
     if n == 0 || n>max {
@@ -97,8 +103,8 @@ fn validate_search_settings(s: &SearchSettings) -> AppResult<()> {
     if !["refine", "random", "evolve"].contains(&s.design.as_str()) {
         return Err("design must be refine, random or evolve".into());
     }
-    if !["detailed", "mana2"].contains(&s.mode.as_str()) {
-        return Err("mode must be detailed or mana2; simple/basic mode has been removed".into());
+    if !["detailed", "mana2", "simple"].contains(&s.mode.as_str()) {
+        return Err("mode must be detailed, mana2 or simple".into());
     }
     if !["custom", "balanced", "strict", "low-travel", "explore"].contains(&s.preset.as_str()) {
         return Err("unknown preset".into());
@@ -154,7 +160,7 @@ fn search_from_text(text: &str) -> AppResult<SearchSettings> {
             "preset" => s.preset = v.to_ascii_lowercase(),
             "min_distance" => s.diversity = v.parse()?,
             _ if k.starts_with("simple_") => {
-                return Err(format!("{k}: simple/basic mode has been removed; use [mana2] or [weights]").into());
+                return Err(format!("{k}: put Simple weights in [simple], without the simple_ prefix").into());
             },
             _ if k.starts_with("corpus.") => {
                 s.mix.insert(k[7..].to_ascii_lowercase(), finite_nonnegative(&v)?);
@@ -306,10 +312,10 @@ impl Problem {
     }
 
     fn breakdown(&self, raw: &Raw, c: &Corpus) -> Breakdown {
-        if self.settings.mode == "mana2" {
+        if self.settings.uses_mana2_stats() {
             let mana = raw.1.as_ref().expect("mana2 totals must be enabled");
             let mut result = Breakdown::default();
-            result.net = -mana2_metrics::score(&mana2_metrics::stats(mana, c.totals), &self.weights.2);
+            result.net = self.weights.physical_score(&mana2_metrics::stats(mana, c.totals), &self.settings.mode);
             result.penalty = result.net.max(0.0);
             result.bonus = (-result.net).max(0.0);
             return result;
@@ -358,7 +364,7 @@ struct State {
 impl State {
     fn new(arr: Vec<usize>, p: &Problem) -> Self {
         let pos = positions(&arr);
-        let raws = p.corpora.iter().map(|c|full_raw_with_mana2(&arr, c, &p.model.geometry, p.settings.mode == "mana2")).collect:: <Vec<_>>();
+        let raws = p.corpora.iter().map(|c|full_raw_with_mana2(&arr, c, &p.model.geometry, p.settings.uses_mana2_stats())).collect:: <Vec<_>>();
         let score = p.score(&raws);
         Self {
             arr,

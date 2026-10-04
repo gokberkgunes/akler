@@ -89,6 +89,13 @@ fn ansi_color(color: u8) -> String {
     }.into()
 }
 
+fn ansi_background(background: Option<(u8, u8, u8)>) -> String {
+    match background {
+        Some((r, g, b)) => format!("\x1b[48;2;{r};{g};{b}m"),
+        None => "\x1b[49m".into(),
+    }
+}
+
 fn gradient(t: f64) -> u8 {
     16 +(if t.is_finite() {
         t.clamp(0.0, 1.0)
@@ -101,7 +108,9 @@ fn gradient(t: f64) -> u8 {
 #[derive(Clone,Copy,PartialEq,Eq)]
 struct Cell {
     ch: char,
-    color: u8
+    color: u8,
+    background: Option<(u8, u8, u8)>,
+    bold: bool,
 }
 
 #[derive(Clone,Copy,Debug)]
@@ -123,9 +132,12 @@ enum Action {
     Key(usize),
     Metric(usize),
     Weight(usize),
+    Mana2Weight(usize),
+    SimpleWeight(usize),
+    SimpleSpeedSetting(usize),
     Setting(usize),
     Item(usize),
-    Command(char)
+    Command(char),
 }
 
 struct Canvas {
@@ -143,7 +155,9 @@ impl Canvas {
             h,
             cells: vec![Cell {
                 ch: ' ',
-                color: FG
+                color: FG,
+                background: None,
+                bold: false,
             }; w * h],
             hits: Vec::new()
         }
@@ -159,7 +173,9 @@ impl Canvas {
             h,
             cells: vec![Cell {
                 ch: ' ',
-                color: FG
+                color: FG,
+                background: None,
+                bold: false,
             }; w * h],
             hits: Vec::new()
         }
@@ -172,14 +188,15 @@ impl Canvas {
         if y >= self.h {
             self.cells.resize((y + 1) * self.w, Cell {
                 ch: ' ',
-                color: FG
+                color: FG,
+                background: None,
+                bold: false,
             });
             self.h = y + 1;
         }
-        self.cells[y * self.w + x] = Cell {
-            ch,
-            color
-        };
+        let cell = &mut self.cells[y * self.w + x];
+        cell.ch = ch;
+        cell.color = color;
     }
 
     fn text(&mut self, x: usize, y: usize, s: &str, color: u8) {
@@ -205,6 +222,16 @@ impl Canvas {
     fn line(&mut self, x: usize, y: usize, w: usize, color: u8) {
         for i in 0..w {
             self.put(x + i, y, '─', color);
+        }
+    }
+
+    fn row_style(&mut self, r: Rect, background: Option<(u8, u8, u8)>, bold: bool) {
+        for y in r.y..(r.y + r.h).min(self.h) {
+            for x in r.x..(r.x + r.w).min(self.w) {
+                let cell = &mut self.cells[y * self.w + x];
+                cell.background = background;
+                cell.bold = bold;
+            }
         }
     }
 
@@ -257,6 +284,7 @@ enum Event {
     Quit,
     Backspace,
     Clear,
+    Redo,
     Tab,
     Up,
     Down,
@@ -320,6 +348,7 @@ impl Decoder {
                 13 | 10 => Event::Enter,
                 127 | 8 => Event::Backspace,
                 21 => Event::Clear,
+                18 => Event::Redo,
                 9 => Event::Tab,
                 32..=126 => Event::Char(b as char),
                 _ => Event::Tick,
@@ -406,6 +435,7 @@ struct Terminal {
     offset_x: usize,
     precise: bool,
     quitting: bool,
+    restart_requested: bool,
     _reports: crate::profile_output::TerminalReports,
 }
 
@@ -432,6 +462,7 @@ impl Terminal {
             offset_x: 0,
             precise: false,
             quitting: false,
+            restart_requested: false,
             _reports: reports,
         };
         // Alternate screen, SGR drag events, bracketed paste, cursor off, wrap off.
@@ -457,6 +488,13 @@ impl Terminal {
                 }
             }
         }
+        Ok(())
+    }
+
+    fn request_restart(&mut self) -> AppResult<()> {
+        restart_program_path()?;
+        self.restart_requested = true;
+        self.quitting = true;
         Ok(())
     }
 
@@ -511,7 +549,9 @@ impl Terminal {
         self.offset_x = 0;
         let mut view = vec![Cell {
             ch: ' ',
-            color: FG
+            color: FG,
+            background: None,
+            bold: false,
         }; w * h];
         for y in 0..h {
             if y + scroll >= c.h {
@@ -524,12 +564,16 @@ impl Terminal {
         if w<64 || h<12 {
             view.fill(Cell {
                 ch: ' ',
-                color: FG
+                color: FG,
+                background: None,
+                bold: false,
             });
             for (i, ch) in "Resize terminal to at least 64 columns x 12 rows. Esc to back out.".chars().take(w).enumerate() {
                 view[i] = Cell {
                     ch,
-                    color: YELLOW
+                    color: YELLOW,
+                    background: None,
+                    bold: false,
                 };
             }
         }
@@ -544,7 +588,17 @@ impl Terminal {
             }
             out.push_str(&format!("\x1b[{};1H", y + 1));
             let mut color = 255;
+            let mut background = None;
+            let mut bold = None;
             for cell in &view[y * w..(y + 1) * w] {
+                if bold != Some(cell.bold) {
+                    out.push_str(if cell.bold { "\x1b[1m" } else { "\x1b[22m" });
+                    bold = Some(cell.bold);
+                }
+                if background != Some(cell.background) {
+                    out.push_str(&ansi_background(cell.background));
+                    background = Some(cell.background);
+                }
                 let shown = cell.color;
                 if color != shown {
                     out.push_str(&ansi_color(shown));
@@ -686,10 +740,13 @@ fn delta_color(m: usize, before: f64, after: f64) -> u8 {
 
 fn header(c: &mut Canvas, title: &str, corpus: &str, layout: &str, controls: &str) {
     c.text(0, 0, title, FG);
+    let context = [corpus, layout].into_iter().filter(|text| !text.is_empty())
+        .collect::<Vec<_>>().join(" · ");
+    let x = title.chars().count() + 2;
     c.text(
-        title.len() + 2,
+        x,
         0,
-        &short(&format!("{corpus}  ·  {layout}"), c.w.saturating_sub(title.len() + 2)),
+        &short(&context, c.w.saturating_sub(x)),
         CYAN
     );
     c.text(0, 1, &short(controls, c.w), MUTED);
@@ -857,19 +914,19 @@ fn config_number(value: f64) -> String {
     }
 }
 
-static OPT_GROUP_SAME: [usize; 4] = [SFB, SKB, SFS, SKS];
+static OPT_GROUP_SAME: [usize; 4] = [SFB, SFS, SKB, SKS];
 
-static OPT_GROUP_FULL: [usize; 4] = [DAFJB, CAFJB, DAFJS, CAFJS];
+static OPT_GROUP_FULL: [usize; 4] = [DAFJB, DAFJS, CAFJB, CAFJS];
 
-static OPT_GROUP_HALF: [usize; 4] = [DAHJB, CAHJB, DAHJS, CAHJS];
+static OPT_GROUP_HALF: [usize; 4] = [DAHJB, DAHJS, CAHJB, CAHJS];
 
-static OPT_GROUP_HALF_NONADJ: [usize; 4] = [DNHJB, CNHJB, DNHJS, CNHJS];
+static OPT_GROUP_HALF_NONADJ: [usize; 4] = [DNHJB, DNHJS, CNHJB, CNHJS];
 
 static OPT_GROUP_ADJACENT: [usize; 4] = [FSB, FSS, HSB, HSS];
 
 static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 
-static OPT_GROUP_NONADJ: [usize; 4] = [DNFJB, CNFJB, DNFJS, CNFJS];
+static OPT_GROUP_NONADJ: [usize; 4] = [DNFJB, DNFJS, CNFJB, CNFJS];
 
 static OPT_GROUP_RHYTHM: [usize; 3] = [REDIR, WRED, WISH];
 
@@ -899,34 +956,35 @@ static OPT_METRIC_GROUPS: [(&str, &[usize]); 13] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-static TABLE_GROUPS: [(&str, &[usize]); 13] = [
+// Display families are independent of the optimizer's weight controls.
+// Keep the adjacent discordant aliases (FSB/FSS and HSB/HSS) in their families.
+static TABLE_FULL_JUMPS: [usize; 10] = [DAFJB, DAFJS, CAFJB, CAFJS, DNFJB, DNFJS, CNFJB, CNFJS, FSB, FSS];
+
+static TABLE_HALF_JUMPS: [usize; 10] = [DAHJB, DAHJS, CAHJB, CAHJS, DNHJB, DNHJS, CNHJB, CNHJS, HSB, HSS];
+
+static EDITOR_HAND_PATTERNS: [usize; 6] = [REDIR, WRED, WISH, ALT, SRAF, ROLL];
+
+static TABLE_HAND_PATTERNS: [usize; 14] = [
+    REDIR, WRED, WISH, ALT, SRAF, ROLL, INSRAF, OUTSRAF, INROLL, OUTROLL, IN2, OUT2, IN3, OUT3,
+];
+
+static TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Adjacent full", &OPT_GROUP_FULL),
-    ("Adjacent half", &OPT_GROUP_HALF),
-    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
-    ("Adjacent D", &OPT_GROUP_ADJACENT),
+    ("Full jumps", &TABLE_FULL_JUMPS),
+    ("Half jumps", &TABLE_HALF_JUMPS),
     ("Stretch", &OPT_GROUP_STRETCH),
-    ("Nonadj. full", &OPT_GROUP_NONADJ),
-    ("Rhythm", &OPT_GROUP_RHYTHM),
-    ("Preferences", &OPT_GROUP_PREF),
-    ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
-    ("Roll directions", &OPT_GROUP_ROLL_TOTALS),
-    ("Roll types", &OPT_GROUP_ROLL_TYPES),
+    ("Hand patterns", &TABLE_HAND_PATTERNS),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
 // Editors favor a compact overview. Directional SRAF and roll totals remain
 // available in the detailed reports and optimizer views.
-static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 10] = [
+static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Same finger", &OPT_GROUP_SAME),
-    ("Adjacent full", &OPT_GROUP_FULL),
-    ("Adjacent half", &OPT_GROUP_HALF),
-    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
-    ("Adjacent D", &OPT_GROUP_ADJACENT),
+    ("Full jumps", &TABLE_FULL_JUMPS),
+    ("Half jumps", &TABLE_HALF_JUMPS),
     ("Stretch", &OPT_GROUP_STRETCH),
-    ("Nonadj. full", &OPT_GROUP_NONADJ),
-    ("Rhythm", &OPT_GROUP_RHYTHM),
-    ("Preferences", &OPT_GROUP_PREF),
+    ("Hand patterns", &EDITOR_HAND_PATTERNS),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
@@ -936,6 +994,7 @@ struct MetricGrid {
     label: usize,
     cell: usize,
     cols: usize,
+    name: usize,
     value: usize,
     delta: usize,
     rows: usize
@@ -952,18 +1011,23 @@ impl MetricGrid {
     ) -> Self {
         let value = values.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 4);
         let delta = deltas.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 3);
-        let label = if left_aligned { 14 } else { 13 };
-        // left/right padding around the longest group name
-        let cell = 1 + 7 + 1 + value + 2 + delta + 1;
+        // Size both label columns from the text actually rendered. Long group
+        // names must leave the separator intact, including in detailed views.
+        let label = groups.iter().map(|(name, _)|name.chars().count() + 2).max().unwrap_or(0)
+            .max(if left_aligned { 14 } else { 13 });
+        let name = groups.iter().flat_map(|(_, items)|items.iter())
+            .map(|&m|metric_short_name(m).chars().count()).max().unwrap_or(7).max(7);
+        let cell = 1 + name + 1 + value + 2 + delta + 1;
         let fit = w.saturating_sub(label + 2) /(cell + 1);
-        let cols = if fit >= 4 {
-            4
-        } else if fit >= 2 {
+        // Keep bigrams on the left and their skipgrams on the right, even
+        // when the terminal could fit additional columns.
+        let cols = if fit >= 2 {
             2
         } else {
             1
         };
-        let rows = groups.iter().map(|(_, g) |(g.len() + cols - 1) / cols).sum();
+        let rows = groups.iter().map(|(_, g) |(g.len() + cols - 1) / cols).sum::<usize>()
+            + groups.len().saturating_sub(1);
         let width = label + 2 + cols *(cell + 1);
         Self {
             x: if left_aligned && width<w { 1 } else { w.saturating_sub(width) / 2 },
@@ -971,6 +1035,7 @@ impl MetricGrid {
             label,
             cell,
             cols,
+            name,
             value,
             delta,
             rows
@@ -1054,13 +1119,24 @@ fn grouped_metric_table(
     }
     let mut row = 0;
     for (group_index, &(group, items)) in groups.iter().enumerate() {
+        if group_index > 0 {
+            let yy = y + 1 + row;
+            c.line(grid.x, yy, grid.width, BORDER);
+            c.put(grid.x, yy, '├', BORDER);
+            c.put(grid.x + grid.width - 1, yy, '┤', BORDER);
+            for col in 0..grid.cols {
+                let xx = grid.x + 1 + grid.label + col *(grid.cell + 1);
+                c.put(xx, yy, '┼', BORDER);
+            }
+            row += 1;
+        }
         let tint = group_tint(group_index);
-        c.text(grid.x + 2, y + 1 + row, group, tint);
+        c.text(grid.x + 2, y + 1 + row, &short(group, grid.label.saturating_sub(2)), tint);
         for (i, &m) in items.iter().enumerate() {
             let xx = grid.x + 2 + grid.label +(i % grid.cols) *(grid.cell + 1);
             let yy = y + 1 + row + i / grid.cols;
-            let vx = xx + 9;
-            c.text(xx + 1, yy, metric_short_name(m), tint);
+            let vx = xx + 1 + grid.name + 1;
+            c.text(xx + 1, yy, &short(metric_short_name(m), grid.name), tint);
             c.right(vx, yy, grid.value, &values[m], if values[m] == "n/a" {
                 MUTED
             } else {
@@ -1132,6 +1208,365 @@ fn grouped_weight_rows(c: &mut Canvas, mut y: usize, w: &Weights) -> usize {
         y += 1;
     }
     y
+}
+
+fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weights) -> usize {
+    c.text(0, y, "Mana2 weights · click to edit; s saves", FG);
+    y += 1;
+    c.text(
+        0,
+        y,
+        &short(
+            "[weight, boundary, ..., weight] · negative penalizes; positive rewards",
+            c.w,
+        ),
+        MUTED,
+    );
+    y += 1;
+    let groups = [
+        ("Finger usage", 0..10),
+        ("Pinky", 10..12),
+        ("Bigrams", 12..17),
+        ("Skipgrams", 17..22),
+        ("Alternations", 22..26),
+        ("Redirects", 26..34),
+        ("Rolls", 34..mana2_metrics::N_STATS),
+    ];
+    let left = if c.w >= 64 { 16 } else { 0 };
+    for (group_index, (group, indices)) in groups.into_iter().enumerate() {
+        let tint = group_tint(group_index);
+        c.text(0, y, group, tint);
+        if left == 0 {
+            y += 1;
+        }
+        let mut x = left;
+        for index in indices {
+            let name = mana2_metrics::STAT_IDS[index];
+            let value = weights.schedule_text(index);
+            let width = name.len() + 1 + value.len() + 2;
+            if x > left && x + width > c.w {
+                y += 1;
+                x = left;
+            }
+            let available = c.w.saturating_sub(x);
+            c.text(x, y, &short(name, available), tint);
+            if available > name.len() + 1 {
+                c.text(
+                    x + name.len() + 1,
+                    y,
+                    &short(&value, available - name.len() - 1),
+                    CYAN,
+                );
+            }
+            c.hit(
+                Rect {
+                    x,
+                    y,
+                    w: width.min(available),
+                    h: 1,
+                },
+                Action::Mana2Weight(index),
+            );
+            x += width;
+        }
+        y += 1;
+    }
+    y
+}
+
+fn simple_weight_rows(c: &mut Canvas, mut y: usize, weights: &simple_metrics::Weights) -> usize {
+    c.text(0, y, "Simple weights · click to edit; s saves", FG);
+    y += 1;
+    c.text(
+        0,
+        y,
+        "Positive penalizes; negative rewards · lower score is better",
+        MUTED,
+    );
+    y += 1;
+    let left = if c.w >= 64 { 16 } else { 0 };
+    c.text(0, y, "Metrics", group_tint(0));
+    if left == 0 {
+        y += 1;
+    }
+    let mut x = left;
+    for index in 0..simple_metrics::N_STATS {
+        let name = simple_metrics::STAT_IDS[index];
+        let value = config_number(weights.get(index));
+        let width = name.len() + 1 + value.len() + 2;
+        if x > left && x + width > c.w {
+            y += 1;
+            x = left;
+        }
+        let available = c.w.saturating_sub(x);
+        c.text(x, y, &short(name, available), group_tint(0));
+        if available > name.len() + 1 {
+            c.text(
+                x + name.len() + 1,
+                y,
+                &short(&value, available - name.len() - 1),
+                CYAN,
+            );
+        }
+        c.hit(
+            Rect {
+                x,
+                y,
+                w: width.min(available),
+                h: 1,
+            },
+            Action::SimpleWeight(index),
+        );
+        x += width;
+    }
+    y += 2;
+    c.text(0, y, "Speed settings", group_tint(1));
+    if left == 0 {
+        y += 1;
+    }
+    let mut x = left;
+    for (index, name) in simple_metrics::SPEED_SETTING_IDS.iter().enumerate() {
+        let value = config_number(weights.get_speed_setting(index));
+        let width = name.len() + 1 + value.len() + 2;
+        if x > left && x + width > c.w {
+            y += 1;
+            x = left;
+        }
+        let available = c.w.saturating_sub(x);
+        c.text(x, y, &short(name, available), group_tint(1));
+        if available > name.len() + 1 {
+            c.text(
+                x + name.len() + 1,
+                y,
+                &short(&value, available - name.len() - 1),
+                CYAN,
+            );
+        }
+        c.hit(
+            Rect {
+                x,
+                y,
+                w: width.min(available),
+                h: 1,
+            },
+            Action::SimpleSpeedSetting(index),
+        );
+        x += width;
+    }
+    y + 1
+}
+
+fn simple_stats_rows(
+    c: &mut Canvas,
+    mut y: usize,
+    before: Option<&mana2_metrics::Stats>,
+    after: &mana2_metrics::Stats,
+    weights: &simple_metrics::Weights,
+    decimals: usize,
+) -> usize {
+    let before_values = before.map(|stats| simple_metrics::values(stats, weights));
+    let after_values = simple_metrics::values(after, weights);
+    let columns = if c.w >= 80 { 2 } else { 1 };
+    let column_width = c.w / columns;
+    for index in 0..simple_metrics::N_STATS {
+        // Mana2's stretch and scissor terms are geometry ratings; the other
+        // Simple terms are normalized frequencies in percentage points.
+        let suffix = if (2..=5).contains(&index) || index >= 16 {
+            ""
+        } else {
+            "%"
+        };
+        let text = if let Some(values) = before_values.as_ref() {
+            format!(
+                "{} {}{} → {}{}",
+                simple_metrics::LABELS[index],
+                number(values[index], decimals),
+                suffix,
+                number(after_values[index], decimals),
+                suffix,
+            )
+        } else {
+            format!(
+                "{} {}{}",
+                simple_metrics::LABELS[index],
+                number(after_values[index], decimals),
+                suffix,
+            )
+        };
+        let x = index % columns * column_width;
+        let row = y + index / columns;
+        c.text(x, row, &short(&text, column_width.saturating_sub(1)), FG);
+    }
+    y += (simple_metrics::N_STATS + columns - 1) / columns;
+    y
+}
+
+fn simple_speed_table(
+    c: &mut Canvas,
+    mut y: usize,
+    before: Option<&mana2_metrics::Stats>,
+    after: &mana2_metrics::Stats,
+    weights: &simple_metrics::Weights,
+    decimals: usize,
+) -> usize {
+    const LEFT: [usize; 5] = [0, 1, 2, 3, 8];
+    const RIGHT: [usize; 5] = [7, 6, 5, 4, 9];
+    const USAGE_IDS: [&str; 10] = [
+        "finger-usage-LP",
+        "finger-usage-LR",
+        "finger-usage-LM",
+        "finger-usage-LI",
+        "finger-usage-RI",
+        "finger-usage-RM",
+        "finger-usage-RR",
+        "finger-usage-RP",
+        "finger-usage-LT",
+        "finger-usage-RT",
+    ];
+
+    let before_speeds = before.map(|stats| simple_metrics::speeds(stats, weights));
+    let after_speeds = simple_metrics::speeds(after, weights);
+    let usage = |stats: &mana2_metrics::Stats, index: usize| {
+        stats
+            .get(USAGE_IDS[index])
+            .expect("Simple finger usage stat is defined")
+    };
+    let value = |before: Option<f64>, after: f64| {
+        if let Some(before) = before {
+            format!("{}→{}", number(before, decimals), number(after, decimals))
+        } else {
+            number(after, decimals)
+        }
+    };
+    let row = |indices: &[usize], label: &str| {
+        let after_usage: f64 = indices.iter().map(|&i| usage(after, i)).sum();
+        let after_fspeed: f64 = indices.iter().map(|&i| after_speeds.per_finger[i]).sum();
+        let after_weighted: f64 = indices.iter().map(|&i| after_speeds.weighted[i]).sum();
+        let before_usage = before.map(|stats| indices.iter().map(|&i| usage(stats, i)).sum());
+        let before_fspeed = before_speeds
+            .as_ref()
+            .map(|speeds| indices.iter().map(|&i| speeds.per_finger[i]).sum::<f64>());
+        let before_weighted = before_speeds
+            .as_ref()
+            .map(|speeds| indices.iter().map(|&i| speeds.weighted[i]).sum::<f64>());
+        (
+            label.to_string(),
+            value(before_usage, after_usage),
+            value(before_fspeed, after_fspeed),
+            value(before_weighted, after_weighted),
+        )
+    };
+    let finger_row = |index: usize| row(&[index], FINGER_NAMES[index]);
+
+    let mut left = LEFT.map(finger_row).to_vec();
+    let mut right = RIGHT.map(finger_row).to_vec();
+    left.push(row(&LEFT, "Left"));
+    right.push(row(&RIGHT, "Right"));
+    let both = row(&(0..10).collect::<Vec<_>>(), "Both");
+
+    let before_width = if before.is_some() { 13 } else { 8 };
+    let side_width = 7 + before_width * 3;
+    let render_header = |c: &mut Canvas, x: usize, y: usize| {
+        c.text(x, y, "Finger", MUTED);
+        c.right(x + 7, y, before_width - 1, "Usage %", MUTED);
+        c.right(x + 7 + before_width, y, before_width - 1, "Fspeed", MUTED);
+        c.right(
+            x + 7 + before_width * 2,
+            y,
+            before_width - 1,
+            "Weighted",
+            MUTED,
+        );
+    };
+    let render_row = |c: &mut Canvas,
+                      x: usize,
+                      y: usize,
+                      entry: &(String, String, String, String),
+                      color: u8| {
+        c.text(x, y, &entry.0, color);
+        c.right(x + 7, y, before_width - 1, &entry.1, FG);
+        c.right(x + 7 + before_width, y, before_width - 1, &entry.2, FG);
+        c.right(x + 7 + before_width * 2, y, before_width - 1, &entry.3, FG);
+    };
+
+    c.text(
+        0,
+        y,
+        "Finger speed · available bigrams + skip1",
+        group_tint(1),
+    );
+    y += 1;
+    if c.w >= side_width * 2 + 3 {
+        render_header(c, 0, y);
+        render_header(c, side_width + 3, y);
+        y += 1;
+        for row_index in 0..left.len() {
+            let left_color = if row_index < 5 {
+                finger_tint(LEFT[row_index])
+            } else {
+                MUTED
+            };
+            let right_color = if row_index < 5 {
+                finger_tint(RIGHT[row_index])
+            } else {
+                MUTED
+            };
+            render_row(c, 0, y, &left[row_index], left_color);
+            render_row(c, side_width + 3, y, &right[row_index], right_color);
+            y += 1;
+        }
+    } else {
+        render_header(c, 0, y);
+        y += 1;
+        for &index in LEFT.iter().chain(RIGHT.iter()) {
+            let entry = finger_row(index);
+            render_row(c, 0, y, &entry, finger_tint(index));
+            y += 1;
+        }
+        render_row(c, 0, y, &row(&LEFT, "Left"), MUTED);
+        y += 1;
+        render_row(c, 0, y, &row(&RIGHT, "Right"), MUTED);
+        y += 1;
+    }
+    render_row(c, 0, y, &both, CYAN);
+    y + 1
+}
+
+fn simple_score_line(
+    c: &mut Canvas,
+    y: usize,
+    before: Option<f64>,
+    after: f64,
+    objective: Option<f64>,
+    decimals: usize,
+) -> usize {
+    let score = if let Some(before) = before {
+        format!(
+            "Simple score {} → {} (lower is better)",
+            number(before, decimals),
+            number(after, decimals),
+        )
+    } else {
+        format!("Simple score {} (lower is better)", number(after, decimals))
+    };
+    c.text(0, y, &short(&score, c.w), CYAN);
+    if let Some(objective) = objective {
+        c.text(
+            0,
+            y + 1,
+            &short(
+                &format!(
+                    "Training objective {} (weighted corpus mixture; lower is better)",
+                    number(objective, decimals),
+                ),
+                c.w,
+            ),
+            MUTED,
+        );
+        y + 2
+    } else {
+        y + 1
+    }
 }
 
 fn finger_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metrics, decimals: usize) -> usize {
@@ -1298,6 +1733,76 @@ fn info_page(term: &mut Terminal, title: &str, lines: &[String]) -> AppResult<()
     }
 }
 
+fn help_popup_frame(
+    base: &Canvas,
+    title: &str,
+    lines: &[String],
+    size: (usize, usize),
+    scroll: &mut usize,
+) -> (Canvas, usize, usize) {
+    let (w, h) = (size.0.max(1), size.1.max(1));
+    let mut c = Canvas::ranking(w, h);
+    for y in 0..h.min(base.h) {
+        for x in 0..w.min(base.w) {
+            let mut cell = base.cells[y * base.w + x];
+            cell.color = MUTED;
+            cell.bold = false;
+            c.cells[y * w + x] = cell;
+        }
+    }
+    let width = w.saturating_sub(4).max(4).min(80).min(w);
+    let lines = wrap_lines(lines, width.saturating_sub(4).max(1));
+    let height = (lines.len() + 4).min(h.saturating_sub(2)).max(4).min(h);
+    let capacity = height.saturating_sub(4);
+    *scroll = (*scroll).min(lines.len().saturating_sub(capacity));
+    let r = Rect { x: (w - width) / 2, y: (h - height) / 2, w: width, h: height };
+    for y in r.y..r.y + r.h {
+        for x in r.x..r.x + r.w {
+            c.cells[y * w + x] = Cell {
+                ch: ' ', color: FG, background: None, bold: false,
+            };
+        }
+    }
+    c.boxed(r, BORDER);
+    c.text(r.x + 2, r.y, &short(title, width.saturating_sub(4)), CYAN);
+    for (index, line) in lines.iter().skip(*scroll).take(capacity).enumerate() {
+        c.text(r.x + 2, r.y + 2 + index, &short(line, width.saturating_sub(4)), FG);
+    }
+    if height >= 4 {
+        c.text(r.x + 2, r.y + height - 2,
+            &short("↑↓ scroll · Esc / ? close", width.saturating_sub(4)), MUTED);
+    }
+    (c, capacity, lines.len())
+}
+
+pub(crate) fn help_popup(term: &mut Terminal, base: &Canvas, title: &str, lines: &[String]) -> AppResult<()> {
+    let mut scroll = 0usize;
+    // Use the visible frame, including the caller's scrolling, as the backdrop.
+    let snapshot = if term.previous.len() == term.size.0 * term.size.1 {
+        Some(Canvas {
+            w: term.size.0, h: term.size.1,
+            cells: term.previous.clone(), hits: Vec::new(),
+        })
+    } else { None };
+    let base = snapshot.as_ref().unwrap_or(base);
+    loop {
+        term.refresh_size()?;
+        let (c, capacity, total) = help_popup_frame(base, title, lines, term.size, &mut scroll);
+        term.present(&c, 0)?;
+        match term.event()? {
+            Event::Escape | Event::Quit | Event::Enter | Event::Char('q' | '?') => return Ok(()),
+            Event::Up | Event::Char('k') => scroll = scroll.saturating_sub(1),
+            Event::Down | Event::Char('j') => scroll = scroll.saturating_add(1),
+            Event::PageUp => scroll = scroll.saturating_sub(capacity),
+            Event::PageDown => scroll = scroll.saturating_add(capacity),
+            Event::Wheel(delta) => scroll = (scroll as i64 + i64::from(delta)).max(0) as usize,
+            Event::Home => scroll = 0,
+            Event::End => scroll = total.saturating_sub(capacity),
+            _ => {}
+        }
+    }
+}
+
 fn input_box(term: &mut Terminal, title: &str, hint: &str, initial: &str) -> AppResult<Option<String>> {
     let mut text = initial.to_string();
     let mut replace = true;
@@ -1445,6 +1950,7 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
                 h: 1
             }, Action::Item(i));
         }
+        c.text(0, filtered.len() + top, "? help", MUTED);
         term.present(&c, scroll)?;
         let e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
@@ -1458,6 +1964,23 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
                 return Ok(Some(i));
             },
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
+            Event::Char('R') if title == "akler" => {
+                match term.request_restart() {
+                    Ok(()) => return Ok(None),
+                    Err(error) => help_popup(term, &c, "Reload program", &[error.to_string()])?,
+                }
+            },
+            Event::Char('?') => {
+                let mut lines = vec![
+                    "j/k or ↑/↓: select; Enter or click: open.".into(),
+                    "/: filter; mouse wheel / PgUp / PgDn: scroll.".into(),
+                    "q or Esc: back.".into(),
+                ];
+                if title == "akler" {
+                    lines.push("R or Reload program: restart into the rebuilt executable.".into());
+                }
+                help_popup(term, &c, title, &lines)?;
+            },
             Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
             Event::Down | Event::Char('j') => selected = (selected + 1).min(filtered.len().saturating_sub(1)),
             Event::Char('/') => {
@@ -1582,12 +2105,12 @@ fn contributor_view(
         } else {
             METRIC_NAMES[m].to_string()
         };
-        let controls = if raw_positive(m).is_some() {
+        let _controls = if raw_positive(m).is_some() {
             "x view | d sort | b pair | ? help | q back"
         } else {
             "d sort | b pair | ? help | q back"
         };
-        header(&mut c, &title, &corpus.name, &model.board.name, controls);
+        header(&mut c, &title, &corpus.name, &model.board.name, "? help");
         let mut y = keyboard(&mut c, 2, model, after, before, None, None, &[]) + 1;
         c.text(0, y, &format!("{} → {} {}", number(v0, dp), number(v1, dp), metric_unit(m)), FG);
         c.text(32, y, &format!("○ before  ● after   {}", if sort_change {
@@ -1707,10 +2230,11 @@ fn contributor_view(
                 view = view.next();
                 scroll = 0;
             },
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &c,
                 METRIC_NAMES[m],
-                &[ METRIC_HELP[m].into(), "D/C describe finger placement, not keystroke order. Finger-length order is a model assumption.".into(), "For SRAF/ALT: x cycles clean, raw and rejected. Raw = clean + rejected, with the SAME denominator.".into(), "The veto is structural, even for a zero-weight penalty. SRAF checks its pair; ALT checks AB, BC and skip AC. Roll filters follow [rolls] in akler.conf.".into(), "Roll thumb inclusion follows [rolls]; other preference metrics exclude thumbs. Excluded presses are never spliced out.".into(), "Only stored pairs/trigrams are known: no claim about four-key or longer sequences.".into(),]
+                &[_controls.into(), METRIC_HELP[m].into(), "D/C describe finger placement, not keystroke order. Finger-length order is a model assumption.".into(), "For SRAF: x cycles clean, raw and rejected. Raw = clean + rejected, with the SAME denominator.".into(), "SRAF checks its pair; the veto is structural, even for a zero-weight penalty. ALT counts all non-thumb LRL/RLR triples. Roll filters follow [rolls] in akler.conf.".into(), "Roll thumb inclusion follows [rolls]; other preference metrics exclude thumbs. Excluded presses are never spliced out.".into(), "Only stored pairs/trigrams are known: no claim about four-key or longer sequences.".into(),]
             )?,
             _ => {
             }
@@ -1835,6 +2359,60 @@ fn mana2_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppR
     info_page(term, "Mana2 objective audit", &lines)
 }
 
+fn simple_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
+    let mut old_values = [0.0; simple_metrics::N_STATS];
+    let mut new_values = [0.0; simple_metrics::N_STATS];
+    let mut old_terms = [0.0; simple_metrics::N_STATS];
+    let mut new_terms = [0.0; simple_metrics::N_STATS];
+    let mut lines = vec![
+        "Simple score is minimized; positive weights penalize and negative weights reward.".into(),
+    ];
+    for (i, corpus) in p.corpora.iter().enumerate() {
+        let before = mana2_stats_for(&p.model.original, corpus, &p.model);
+        let after = mana2_stats_for(arr, corpus, &p.model);
+        lines.push(format!(
+            "{} (share {:.3}): score {:.4} → {:.4}",
+            corpus.name,
+            p.shares[i],
+            simple_metrics::score(&before, &p.weights.3),
+            simple_metrics::score(&after, &p.weights.3),
+        ));
+        let before_values = simple_metrics::values(&before, &p.weights.3);
+        let after_values = simple_metrics::values(&after, &p.weights.3);
+        let before_terms = simple_metrics::score_contributions(&before, &p.weights.3);
+        let after_terms = simple_metrics::score_contributions(&after, &p.weights.3);
+        for index in 0..simple_metrics::N_STATS {
+            old_values[index] += p.shares[i] * before_values[index];
+            new_values[index] += p.shares[i] * after_values[index];
+            old_terms[index] += p.shares[i] * before_terms[index];
+            new_terms[index] += p.shares[i] * after_terms[index];
+        }
+    }
+    lines.push(String::new());
+    lines.push(format!(
+        "Training objective {:.4} → {:.4}",
+        old_terms.iter().sum::<f64>(),
+        new_terms.iter().sum::<f64>(),
+    ));
+    lines.push(String::new());
+    lines.push(
+        "Simple stat              Weight   Before value  After value   Before term   After term"
+            .into(),
+    );
+    for index in 0..simple_metrics::N_STATS {
+        lines.push(format!(
+            "{:<24} {:>7.3}  {:>12.4}  {:>11.4}  {:+12.4}  {:+11.4}",
+            simple_metrics::LABELS[index],
+            p.weights.3.get(index),
+            old_values[index],
+            new_values[index],
+            old_terms[index],
+            new_terms[index],
+        ));
+    }
+    info_page(term, "Simple objective audit", &lines)
+}
+
 fn validation_view(term: &mut Terminal, model: &Model, before: &[usize], after: &[usize]) -> AppResult<()> {
     let paths = corpus_paths()?;
     let mut lines = vec!["Corpus              SFB before → after    SFS before → after    Bi coverage".into()];
@@ -1902,7 +2480,7 @@ fn dashboard(
     if optimizer_ui {
         c.h = y + 2;
     } else {
-        c.text(0, y + 1, &short(controls, c.w), MUTED);
+        c.text(0, y + 1, "? help", MUTED);
         c.h = y + 3;
     }
     c
@@ -1925,12 +2503,74 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     Ok(())
 }
 
+fn edit_mana2_weight(term: &mut Terminal, weights: &mut Weights, index: usize) -> AppResult<bool> {
+    let title = format!(
+        "Mana2 {}: [weight, boundary, ..., weight]",
+        mana2_metrics::STAT_IDS[index]
+    );
+    let initial = weights.2.schedule_text(index);
+    match input_box(term, &title, "", &initial)? {
+        Some(value) => weights.2.set_schedule_text(index, &value),
+        None => Ok(false),
+    }
+}
+
+fn edit_simple_weight(term: &mut Terminal, weights: &mut Weights, index: usize) -> AppResult<bool> {
+    let id = simple_metrics::STAT_IDS
+        .get(index)
+        .ok_or("unknown Simple weight")?;
+    let title = format!("Simple weight: {id}");
+    let initial = weights.3.get(index).to_string();
+    match input_box(
+        term,
+        &title,
+        "Positive penalizes; negative rewards.",
+        &initial,
+    )? {
+        Some(value) => {
+            let value = value
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("{id} weight must be a number"))?;
+            weights.3.set(index, value)
+        }
+        None => Ok(false),
+    }
+}
+
+fn edit_simple_speed_setting(
+    term: &mut Terminal,
+    weights: &mut Weights,
+    index: usize,
+) -> AppResult<bool> {
+    let id = simple_metrics::SPEED_SETTING_IDS
+        .get(index)
+        .ok_or("unknown Simple speed setting")?;
+    let title = format!("Simple speed setting: {id}");
+    let initial = weights.3.get_speed_setting(index).to_string();
+    match input_box(
+        term,
+        &title,
+        "Skip ratio is nonnegative; finger strengths are positive.",
+        &initial,
+    )? {
+        Some(value) => {
+            let value = value
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("{id} must be a number"))?;
+            weights.3.set_speed_setting(index, value)
+        }
+        None => Ok(false),
+    }
+}
+
 fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
     let mut timing = crate::load_profile::LoadProfile::new("ordinary editor initialization");
     let w = load_weights(Path::new(WEIGHTS_FILE))?;
     let model = Model::with_rolls(board, w.rolls());
     timing.mark("Weights and geometry");
-    let c = model.corpus(source)?;
+    let mut c = model.corpus(source)?;
     timing.mark("Metric corpus and postings");
 
     let mut arr = model.original.clone();
@@ -1951,7 +2591,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
             "Layout editor"
         } else {
             "Layout editor *"
-        }, "Click stat for details | Space swap | u undo | U redo | r reset | s save | . digits | ? help | q back", &model, &arr, &baseline, &c, &w, None, if keyboard_mode {
+        }, "Click stat for details | Space swap | u undo | U redo | r reset | s save | c corpus | . digits | ? help | q back", &model, &arr, &baseline, &c, &w, None, if keyboard_mode {
             Some(cursor)
         } else {
             None
@@ -2088,13 +2728,31 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                 let p = save_new_layout(&model.board, &model.symbols(&arr))?;
                 status = saved_layout_message(&p);
             },
+            Event::Char('c') => {
+                if let Some(path) = select_source_path(term, false)? {
+                    let next = crate::session::CorpusSession::new()
+                        .plain_tui(term, &path)
+                        .and_then(|source| source.map(|source| model.corpus(&source)).transpose());
+                    match next {
+                        Ok(Some(corpus)) => {
+                            c = corpus;
+                            selected = None;
+                            drag = None;
+                            status = format!("Corpus changed to {}", c.name);
+                        },
+                        Ok(None) => {},
+                        Err(error) => status = format!("Corpus change failed: {error}"),
+                    }
+                }
+            },
             Event::Char('v') => validation_view(term, &model, &baseline, &arr)?,
             Event::Char('i') => show_corpus_info(term, &c)?,
             Event::Char('a') => objective_view(term, &model, &baseline, &arr, &c, &w)?,
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &frame,
                 "Editor controls",
-                &["Click a stat for its contributing patterns.".into(), "Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
+                &["Click a stat for its contributing patterns.".into(), "Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "c changes corpus and keeps your edits and undo history.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
             )?,
             Event::Escape if selected.is_some() || drag.is_some() => {
                 selected = None;
@@ -2272,7 +2930,12 @@ fn choose_design(
 }
 
 fn cycle_metrics(s: &mut SearchSettings) {
-    s.mode = if s.mode == "mana2" { "detailed" } else { "mana2" }.into();
+    s.mode = match s.mode.as_str() {
+        "detailed" => "mana2",
+        "mana2" => "simple",
+        _ => "detailed",
+    }
+    .into();
     s.preset = "custom".into();
 }
 
@@ -2298,69 +2961,89 @@ fn edit_mix(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
 }
 
 fn optimizer_setup_frame(
-    term: &Terminal,
+    width: usize,
     model: &Model,
     source: &Source,
     arr: &[usize],
     locks: &[bool],
     w: &Weights,
     s: &SearchSettings,
-    status: &str
+    status: &str,
 ) -> Canvas {
-    let mut c = Canvas::optimizer(term.width(), 96);
+    let mut c = Canvas::optimizer(width, 96);
     header(
         &mut c,
         "Optimizer",
         &source.name,
         &model.board.name,
-        "Space run | s save | r reload | p preset | q back"
+        "? help",
     );
-    let mut y = keyboard(&mut c, 3, model, arr, &model.original, Some(locks), None, &[]) + 1;
+    let mut y = keyboard(
+        &mut c,
+        3,
+        model,
+        arr,
+        &model.original,
+        Some(locks),
+        None,
+        &[],
+    ) + 1;
     c.text(
         0,
         y,
-        &format!("Locked {}   Free {}", locks.iter().filter(| && v | v).count(), locks.iter().filter(| && v|!v).count()),
-        MUTED
+        &format!(
+            "Locked {}   Free {}",
+            locks.iter().filter(|&&v| v).count(),
+            locks.iter().filter(|&&v| !v).count()
+        ),
+        MUTED,
     );
     y += 2;
-    if s.mode == "detailed" {
-        y = grouped_weight_rows(&mut c, y, w) + 1;
-    } else {
-        c.text(0, y, "Mana2 weights: [mana2] in akler.conf", MUTED);
-        y += 2;
+    match s.mode.as_str() {
+        "detailed" => y = grouped_weight_rows(&mut c, y, w) + 1,
+        "mana2" => y = mana2_weight_rows(&mut c, y, &w.2) + 1,
+        "simple" => y = simple_weight_rows(&mut c, y, &w.3) + 1,
+        _ => unreachable!("validated search mode"),
     }
     let labels = settings_labels(s);
-    let cols = if c.w >= 80 {
-        4
-    } else {
-        2
-    };
+    let cols = if c.w >= 80 { 4 } else { 2 };
     let width = c.w / cols;
-    for (i,(name, value)) in labels.iter().enumerate() {
+    for (i, (name, value)) in labels.iter().enumerate() {
         let x = i % cols * width;
         let yy = y + i / cols * 2;
         c.text(x, yy, name, MUTED);
         c.text(x, yy + 1, &short(value, width - 1), CYAN);
-        c.hit(Rect {
-            x,
-            y: yy,
-            w: width - 1,
-            h: 2
-        }, Action::Setting(i));
+        c.hit(
+            Rect {
+                x,
+                y: yy,
+                w: width - 1,
+                h: 2,
+            },
+            Action::Setting(i),
+        );
     }
-    y +=(labels.len() + cols - 1) / cols * 2 + 1;
-    let mix = if s.mix.values().any(| v|*v>0.0) {
-        s.mix.iter().filter(|(_, v)|**v>0.0).map(|(k, v) | format!("{k}:{v}")).collect:: <Vec<_>>().join(" ")
+    y += (labels.len() + cols - 1) / cols * 2 + 1;
+    let mix = if s.mix.values().any(|v| *v > 0.0) {
+        s.mix
+            .iter()
+            .filter(|(_, v)| **v > 0.0)
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join(" ")
     } else {
         source.name.clone()
     };
     c.text(0, y, &short(&mix, c.w), MUTED);
-    c.hit(Rect {
-        x: 0,
-        y,
-        w: c.w,
-        h: 1
-    }, Action::Command('x'));
+    c.hit(
+        Rect {
+            x: 0,
+            y,
+            w: c.w,
+            h: 1,
+        },
+        Action::Command('x'),
+    );
     y += 2;
     c.text(0, y, &short(status, c.w), CYAN);
     c.h = y + 2;
@@ -2374,12 +3057,13 @@ fn optimizer_setup(
     arr: &mut Vec<usize>,
     locks: &mut Vec<bool>,
     w: &mut Weights,
-    s: &mut SearchSettings
+    s: &mut SearchSettings,
 ) -> AppResult<bool> {
     let mut scroll = 0;
     let mut status = String::new();
     loop {
-        let c = optimizer_setup_frame(term, model, source, arr, locks, w, s, &status);
+        let c = optimizer_setup_frame(term.width(), model, source, arr, locks, w, s, &status);
+        scroll = scroll.min(c.h.saturating_sub(term.size.1));
         term.present(&c, scroll)?;
         let mut e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
@@ -2388,30 +3072,66 @@ fn optimizer_setup(
         if let Some(action) = action_press(term, &c, &e, scroll) {
             match action {
                 Action::Key(i) => {
-                    locks[i]=!locks[i];
+                    locks[i] = !locks[i];
                     continue;
-                },
+                }
                 Action::Weight(i) => {
                     if let Err(err) = edit_single_weight(term, w, i) {
                         status = err.to_string();
                     }
                     continue;
-                },
+                }
+                Action::Mana2Weight(i) => {
+                    match edit_mana2_weight(term, w, i) {
+                        Ok(true) => {
+                            s.preset = "custom".into();
+                            status = format!("Updated Mana2 {}", mana2_metrics::STAT_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(err) => status = err.to_string(),
+                    }
+                    continue;
+                }
+                Action::SimpleWeight(i) => {
+                    match edit_simple_weight(term, w, i) {
+                        Ok(true) => {
+                            s.preset = "custom".into();
+                            status = format!("Updated Simple {}", simple_metrics::STAT_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(err) => status = err.to_string(),
+                    }
+                    continue;
+                }
+                Action::SimpleSpeedSetting(i) => {
+                    match edit_simple_speed_setting(term, w, i) {
+                        Ok(true) => {
+                            s.preset = "custom".into();
+                            status =
+                                format!("Updated Simple {}", simple_metrics::SPEED_SETTING_IDS[i]);
+                        }
+                        Ok(false) => {}
+                        Err(err) => status = err.to_string(),
+                    }
+                    continue;
+                }
                 Action::Setting(i) => {
                     let res = match i {
                         14 => choose_design(term, s, model, arr, locks),
-                        16 => { cycle_metrics(s); Ok(()) },
+                        16 => {
+                            cycle_metrics(s);
+                            Ok(())
+                        }
                         17 => choose_preset(term, s),
-                        _ => edit_setting(term, s, i)
+                        _ => edit_setting(term, s, i),
                     };
                     if let Err(err) = res {
                         status = err.to_string();
                     }
                     continue;
-                },
-                Action::Command(ch) => e = Event::Char(ch),
-                _ => {
                 }
+                Action::Command(ch) => e = Event::Char(ch),
+                _ => {}
             }
         }
         match e {
@@ -2450,10 +3170,11 @@ fn optimizer_setup(
                     Err(err) => status = err.to_string()
                 }
             },
-            Event::Char('?') => info_page(
+            Event::Char('?') => help_popup(
                 term,
+                &c,
                 "Optimizer",
-                &["Space run; s save configuration; r reload; d defaults; o original.".into(), "g design; m detailed/Mana2; p preset; n new seed; x corpus mixture.".into(), "H home/thumb locks; U unlock all; L lock all. Mouse toggles locks.".into(), "Limits are increases relative to the original on each training corpus.".into(), "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into()]
+                &["Space run; s save configuration; r reload; d defaults; o reset layout to original.".into(), "g design; m detailed/Mana2/Simple; p preset; n new seed; x corpus mixture.".into(), "Click a Mana2 schedule or Simple scalar weight to edit it. s saves the active weight sections.".into(), "H home/thumb locks; U unlock all; L lock all. Mouse toggles locks.".into(), "Limits are increases relative to the original on each training corpus.".into(), "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into()]
             )?,
             _ => {
             }
@@ -2483,45 +3204,134 @@ fn optimizer_dashboard(
     locks: &[bool],
     title: &str,
     controls: &str,
-    status: &str
+    status: &str,
 ) -> Canvas {
-    let co=&p.corpora[0];
-    let mana2 = p.settings.mode == "mana2";
-    let r0 = full_raw_with_mana2(&p.model.original, co, &p.model.geometry, mana2);
-    let r1 = full_raw_with_mana2(arr, co, &p.model.geometry, mana2);
+    let co = &p.corpora[0];
+    let physical = p.settings.uses_mana2_stats();
+    let r0 = full_raw_with_mana2(&p.model.original, co, &p.model.geometry, physical);
+    let r1 = full_raw_with_mana2(arr, co, &p.model.geometry, physical);
     let a = metrics(&r0, co);
     let b = metrics(&r1, co);
     let mut cv = Canvas::new(term.width(), 96);
-    header(&mut cv, title, &co.name, &p.model.board.name, controls);
-    let mut y = keyboard(&mut cv, 2, &p.model, arr, &p.model.original, Some(locks), None, &[]) + 1;
-    let mix = if p.corpora.len()>1 {
-        Some((State::new(p.model.original.clone(), p).score, State::new(arr.to_vec(), p).score))
+    header(&mut cv, title, &co.name, &p.model.board.name,
+        if title == "Optimizer result" { "? help" } else { controls });
+    let mut y = keyboard(
+        &mut cv,
+        2,
+        &p.model,
+        arr,
+        &p.model.original,
+        Some(locks),
+        None,
+        &[],
+    ) + 1;
+    let mix = if p.corpora.len() > 1 {
+        Some((
+            State::new(p.model.original.clone(), p).score,
+            State::new(arr.to_vec(), p).score,
+        ))
     } else {
         None
     };
-    if mana2 {
+    if p.settings.mode == "mana2" {
         let before = mana2_metrics::stats(r0.1.as_ref().unwrap(), co.totals);
         let after = mana2_metrics::stats(r1.1.as_ref().unwrap(), co.totals);
-        for (label, id) in [("SFBW", "sfbw"), ("SFSW", "sfsw"), ("Stretch", "lsb"), ("Scissor", "vsb"), ("Weak RED", "redirectweak"), ("Roll", "roll")] {
+        for (label, id) in [
+            ("SFBW", "sfbw"),
+            ("SFSW", "sfsw"),
+            ("Stretch", "lsb"),
+            ("Scissor", "vsb"),
+            ("Weak RED", "redirectweak"),
+            ("Roll", "roll"),
+        ] {
             let left = before.get(id).unwrap_or(0.0);
             let right = after.get(id).unwrap_or(0.0);
-            let suffix = if matches!(id, "redirectweak" | "roll") { "%" } else { "" };
-            cv.text(0, y, &short(&format!("{label:12} {left:.2}{suffix} → {right:.2}{suffix}"), cv.w), FG);
+            let suffix = if matches!(id, "redirectweak" | "roll") {
+                "%"
+            } else {
+                ""
+            };
+            cv.text(
+                0,
+                y,
+                &short(
+                    &format!("{label:12} {left:.2}{suffix} → {right:.2}{suffix}"),
+                    cv.w,
+                ),
+                FG,
+            );
             y += 1;
         }
         y += 1;
-        cv.text(0, y, &short(&format!("Mana2 score {:.2} → {:.2} (higher is better)", mana2_metrics::score(&before, &p.weights.2), mana2_metrics::score(&after, &p.weights.2)), cv.w), CYAN);
+        cv.text(
+            0,
+            y,
+            &short(
+                &format!(
+                    "Mana2 score {:.2} → {:.2} (higher is better)",
+                    mana2_metrics::score(&before, &p.weights.2),
+                    mana2_metrics::score(&after, &p.weights.2)
+                ),
+                cv.w,
+            ),
+            CYAN,
+        );
         y += 1;
         if let Some((old, new)) = mix {
-            cv.text(0, y, &short(&format!("Training objective {:.2} → {:.2} (lower is better)", old, new), cv.w), MUTED);
+            cv.text(
+                0,
+                y,
+                &short(
+                    &format!(
+                        "Training objective {:.2} → {:.2} (lower is better)",
+                        old, new
+                    ),
+                    cv.w,
+                ),
+                MUTED,
+            );
             y += 1;
         }
+    } else if p.settings.mode == "simple" {
+        let before = mana2_metrics::stats(r0.1.as_ref().unwrap(), co.totals);
+        let after = mana2_metrics::stats(r1.1.as_ref().unwrap(), co.totals);
+        y = simple_stats_rows(
+            &mut cv,
+            y,
+            Some(&before),
+            &after,
+            &p.weights.3,
+            term.decimals(),
+        );
+        y = simple_speed_table(
+            &mut cv,
+            y + 1,
+            Some(&before),
+            &after,
+            &p.weights.3,
+            term.decimals(),
+        );
+        y = simple_score_line(
+            &mut cv,
+            y,
+            Some(simple_metrics::score(&before, &p.weights.3)),
+            simple_metrics::score(&after, &p.weights.3),
+            mix.map(|(_, new)| new),
+            term.decimals(),
+        );
     } else {
         y = grouped_metric_cards(&mut cv, y, &a, &b, &r1, co, term.decimals());
         y = finger_table(&mut cv, y + 1, &a, &b, term.decimals());
     }
-    if !mana2 {
-        y = score_panel(&mut cv, y + 1, &p.breakdown(&r0, co), &p.breakdown(&r1, co), mix, term.decimals());
+    if p.settings.mode == "detailed" {
+        y = score_panel(
+            &mut cv,
+            y + 1,
+            &p.breakdown(&r0, co),
+            &p.breakdown(&r1, co),
+            mix,
+            term.decimals(),
+        );
     }
     cv.text(0, y, &short(status, cv.w), CYAN);
     cv.h = y + 2;
@@ -2531,7 +3341,7 @@ fn optimizer_dashboard(
 fn search_live(
     term: &mut Terminal,
     p: &Problem,
-    arr: &[usize],
+    arr: &mut Vec<usize>,
     locks: &[bool]
 ) -> AppResult<Option<Snapshot>> {
     let problem = p.clone();
@@ -2593,7 +3403,7 @@ fn search_live(
                 &snap.best.arr,
                 locks,
                 "Optimizing",
-                "p pause | q back",
+                "p pause | q setup (keep changes)",
                 &status
             );
             term.present(&c, scroll)?;
@@ -2622,6 +3432,9 @@ fn search_live(
         return Err("search worker panicked".into());
     }
     if leave {
+        if snap.has_best {
+            *arr = snap.best.arr;
+        }
         Ok(None)
     } else {
         result
@@ -2646,7 +3459,7 @@ fn save_result(
     arr: &[usize],
     start: &[usize],
     locks: &[bool],
-    progress: &Progress
+    progress: &Progress,
 ) -> AppResult<PathBuf> {
     let symbols = p.model.symbols(arr);
     let mut b = p.model.board.clone();
@@ -2655,20 +3468,23 @@ fn save_result(
         b.path = parent.join(format!("{}-{}.dat", b.name, p.settings.design));
     }
     let path = save_new_layout(&b, &symbols)?;
-    let mana2 = if p.settings.mode == "mana2" {
+    let physical_weights = if p.settings.mode == "mana2" {
         format!("[mana2]\n{}\n", p.weights.2.config_text())
+    } else if p.settings.mode == "simple" {
+        format!("[simple]\n{}\n", p.weights.3.config_text())
     } else {
         String::new()
     };
 
     let mut report = format!(
-        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
+        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
         progress.seed,
         progress.evaluations,
         progress.elapsed,
+        State::new(arr.to_vec(), p).score,
         weights_text(&p.weights),
         rolls_config_text(p.weights.rolls()),
-        mana2,
+        physical_weights,
         search_settings_text(&p.settings),
         board_text(&p.model.board, &p.model.board.symbols),
         board_text(&p.model.board, &p.model.symbols(start)),
@@ -2679,28 +3495,50 @@ fn save_result(
         let old = metrics(&full_raw(&p.model.original, c, &p.model.geometry), c);
         let new = metrics(&full_raw(arr, c, &p.model.geometry), c);
         report.push_str(&format!(
-                "\n[corpus {}]\nfingerprint = {:016x}\nshare = {}\n",
-                c.name,
-                c.fingerprint,
-                p.shares[i]
-            ));
+            "\n[corpus {}]\nfingerprint = {:016x}\nshare = {}\n",
+            c.name, c.fingerprint, p.shares[i]
+        ));
         for j in 0..N_METRICS {
-            report.push_str(&format!("{} = {:.9} -> {:.9}\n", METRIC_NAMES[j], old.v[j], new.v[j]));
+            report.push_str(&format!(
+                "{} = {:.9} -> {:.9}\n",
+                METRIC_NAMES[j], old.v[j], new.v[j]
+            ));
         }
         for j in 0..SIMPLE_KEYS.len() {
             report.push_str(&format!(
-                    "simple_{} = {:.9} -> {:.9}\n",
-                    SIMPLE_KEYS[j],
-                    old.simple[j],
-                    new.simple[j]
-                ));
+                "simple_{} = {:.9} -> {:.9}\n",
+                SIMPLE_KEYS[j], old.simple[j], new.simple[j]
+            ));
         }
         if p.settings.mode == "mana2" {
             let before = mana2_stats_for(&p.model.original, c, &p.model);
             let after = mana2_stats_for(arr, c, &p.model);
-            report.push_str(&format!("mana2_score = {:.9} -> {:.9}\n", mana2_metrics::score(&before, &p.weights.2), mana2_metrics::score(&after, &p.weights.2)));
+            report.push_str(&format!(
+                "mana2_score = {:.9} -> {:.9}\n",
+                mana2_metrics::score(&before, &p.weights.2),
+                mana2_metrics::score(&after, &p.weights.2)
+            ));
             for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
-                report.push_str(&format!("mana2_{id} = {:.9} -> {:.9}\n", before.values[index], after.values[index]));
+                report.push_str(&format!(
+                    "mana2_{id} = {:.9} -> {:.9}\n",
+                    before.values[index], after.values[index]
+                ));
+            }
+        } else if p.settings.mode == "simple" {
+            let before = mana2_stats_for(&p.model.original, c, &p.model);
+            let after = mana2_stats_for(arr, c, &p.model);
+            report.push_str(&format!(
+                "simple_score = {:.9} -> {:.9}\n",
+                simple_metrics::score(&before, &p.weights.3),
+                simple_metrics::score(&after, &p.weights.3),
+            ));
+            let before_values = simple_metrics::values(&before, &p.weights.3);
+            let after_values = simple_metrics::values(&after, &p.weights.3);
+            for (index, id) in simple_metrics::STAT_IDS.iter().enumerate() {
+                report.push_str(&format!(
+                    "simple_metric_{id} = {:.9} -> {:.9}\n",
+                    before_values[index], after_values[index],
+                ));
             }
         }
     }
@@ -2729,29 +3567,43 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
         for id in mana2_metrics::STAT_IDS {
             out.push_str(&format!(",mana2_{id}"));
         }
+    } else if p.settings.mode == "simple" {
+        out.push_str(",simple_score");
+        for id in simple_metrics::STAT_IDS {
+            out.push_str(&format!(",simple_metric_{id}"));
+        }
     }
     out.push('\n');
     for (j, candidate) in res.archive.iter().enumerate() {
         for (i, co) in p.corpora.iter().enumerate() {
             let m = metrics(&full_raw(&candidate.arr, co, &p.model.geometry), co);
             out.push_str(&format!(
-                    "{},{},{},{},0x{:x},{},{:016x},{},{:.9}",
-                    csv_field(&paths[j].display().to_string()),
-                    p.settings.design,
-                    p.settings.mode,
-                    p.settings.preset,
-                    p.settings.seed,
-                    csv_field(&co.name),
-                    co.fingerprint,
-                    p.shares[i],
-                    candidate.score
-                ));
+                "{},{},{},{},0x{:x},{},{:016x},{},{:.9}",
+                csv_field(&paths[j].display().to_string()),
+                p.settings.design,
+                p.settings.mode,
+                p.settings.preset,
+                p.settings.seed,
+                csv_field(&co.name),
+                co.fingerprint,
+                p.shares[i],
+                candidate.score
+            ));
             for v in m.v.into_iter().chain(m.simple) {
                 out.push_str(&format!(",{v:.9}"));
             }
             if p.settings.mode == "mana2" {
                 let stats = mana2_stats_for(&candidate.arr, co, &p.model);
                 for value in stats.values {
+                    out.push_str(&format!(",{value:.9}"));
+                }
+            } else if p.settings.mode == "simple" {
+                let stats = mana2_stats_for(&candidate.arr, co, &p.model);
+                out.push_str(&format!(
+                    ",{:.9}",
+                    simple_metrics::score(&stats, &p.weights.3)
+                ));
+                for value in simple_metrics::values(&stats, &p.weights.3) {
                     out.push_str(&format!(",{value:.9}"));
                 }
             }
@@ -2765,10 +3617,9 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
                 f.write_all(out.as_bytes())?;
                 f.sync_all()?;
                 return Ok(path);
-            },
-            Err(e)if e.kind() == io::ErrorKind::AlreadyExists => {
-            },
-            Err(e) => return Err(e.into())
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e.into()),
         }
     }
     Err("no unused batch filename".into())
@@ -2777,6 +3628,9 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
 fn objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
     if p.settings.mode == "mana2" {
         return mana2_objective_view(term, p, arr);
+    }
+    if p.settings.mode == "simple" {
+        return simple_objective_view(term, p, arr);
     }
     problem_objective_view(term, p, arr)
 }
@@ -2806,9 +3660,9 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
         let mut problem = Problem::new(model.clone(), &sources, 0, weights.clone(), settings.clone())?;
         'runs: loop {
             let start = arr.clone();
-            let result = match search_live(term, &problem, &arr, &locks)? {
+            let result = match search_live(term, &problem, &mut arr, &locks)? {
                 Some(r) => r,
-                None => return Ok(())
+                None => break 'runs
             };
             if !result.has_best || result.archive.is_empty() {
                 break 'runs;
@@ -2837,7 +3691,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     &arr,
                     &locks,
                     "Optimizer result",
-                    "r setup | Space refine | b compare | [ ] | a stats | s save | S batch | q back",
+                    "r setup | Space refine | b compare | [ ] | a stats | s save | S batch | q setup",
                     &text
                 );
                 term.present(&frame, scroll)?;
@@ -2861,12 +3715,15 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     }
                 }
                 match e {
-                    Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
+                    Event::Escape | Event::Char('q') | Event::Char('r') => break 'runs,
+                    Event::Quit => return Ok(()),
+                    Event::Char('?') => help_popup(term, &frame, "Optimizer result", &[
+                        "q or r: return to setup with this candidate; Space: refine again.".into(),
+                        "[ / ]: previous / next candidate; b: compare candidates.".into(),
+                        "s: save a copy; S: save all candidates.".into(),
+                        "a: score contributions; i: corpus notes; v: validation; .: precision.".into(),
+                    ])?,
                     Event::Char('.') => term.precise=!term.precise,
-                    Event::Char('r') => {
-                        arr = model.original.clone();
-                        break 'runs;
-                    },
                     Event::Char(' ') => {
                         problem.settings.design = "refine".into();
                         problem.settings.seed = problem.settings.seed.wrapping_add(1);
@@ -2970,8 +3827,107 @@ mod saved_layout_identity_tests {
 
         settings.preset = "strict".into();
         cycle_metrics(&mut settings);
+        assert_eq!(settings.mode, "simple");
+        assert_eq!(settings.preset, "custom");
+
+        settings.preset = "balanced".into();
+        cycle_metrics(&mut settings);
         assert_eq!(settings.mode, "detailed");
         assert_eq!(settings.preset, "custom");
+
+        let source = Source::from_text(
+            r#"{"letters":{"q":4,"w":2},"bigrams":{"qw":2},"trigrams":{"qwe":1}}"#,
+            Path::new("inline.json"),
+        )
+        .unwrap();
+        let model = Model::new(board("thumbs: space\n"));
+        let locks = default_locks(&model.board);
+        let mut weights = Weights::default();
+        let sfbw = mana2_metrics::STAT_IDS
+            .iter()
+            .position(|id| *id == "sfbw")
+            .unwrap();
+        weights.2.set_schedule_text(sfbw, "[-11, 1.5, -9]").unwrap();
+        settings.mode = "mana2".into();
+        for width in [64, 108] {
+            let canvas = optimizer_setup_frame(
+                width,
+                &model,
+                &source,
+                &model.original,
+                &locks,
+                &weights,
+                &settings,
+                "ready",
+            );
+            let text: String = canvas.cells.iter().map(|cell| cell.ch).collect();
+            assert!(text.contains("[-11, 1.5, -9]"));
+            for id in 0..mana2_metrics::N_STATS {
+                let hits: Vec<_> = canvas
+                    .hits
+                    .iter()
+                    .filter(
+                        |(_, action)| matches!(action, Action::Mana2Weight(index) if *index == id),
+                    )
+                    .collect();
+                assert_eq!(hits.len(), 1);
+                let rect = hits[0].0;
+                assert!(rect.x + rect.w <= canvas.w);
+                assert!(rect.y < canvas.h);
+                assert!(
+                    matches!(canvas.action(rect.x, rect.y), Some(Action::Mana2Weight(index)) if index == id)
+                );
+            }
+            assert!(!canvas
+                .hits
+                .iter()
+                .any(|(_, action)| matches!(action, Action::Weight(_))));
+        }
+
+        cycle_metrics(&mut settings);
+        let canvas = optimizer_setup_frame(
+            108,
+            &model,
+            &source,
+            &model.original,
+            &locks,
+            &weights,
+            &settings,
+            "ready",
+        );
+        assert!(!canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Mana2Weight(_))));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::SimpleWeight(0))));
+        assert!(!canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Weight(_))));
+
+        cycle_metrics(&mut settings);
+        let canvas = optimizer_setup_frame(
+            108,
+            &model,
+            &source,
+            &model.original,
+            &locks,
+            &weights,
+            &settings,
+            "ready",
+        );
+        assert!(!canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::SimpleWeight(_))));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Weight(SFB))));
+        assert_eq!(weights.2.schedule_text(sfbw), "[-11, 1.5, -9]");
     }
 
     #[test]
@@ -2979,7 +3935,11 @@ mod saved_layout_identity_tests {
         let original = board("thumbs: space\n");
         let staggered = board("thumbs: space\nrow-stagger: standard\n");
         assert_eq!(original.symbols, staggered.symbols);
-        assert!(!same_layout_for_save(&original, &original.symbols, &staggered));
+        assert!(!same_layout_for_save(
+            &original,
+            &original.symbols,
+            &staggered
+        ));
     }
 
     #[test]
@@ -2993,7 +3953,11 @@ mod saved_layout_identity_tests {
         let mut reassigned = standard.clone();
         reassigned.keys[0].finger = 1;
         reassigned.keys[0].rank = 1;
-        assert!(!same_layout_for_save(&standard, &standard.symbols, &reassigned));
+        assert!(!same_layout_for_save(
+            &standard,
+            &standard.symbols,
+            &reassigned
+        ));
     }
 
     #[test]
@@ -3006,8 +3970,8 @@ mod saved_layout_identity_tests {
 
     #[test]
     fn equivalent_aliases_names_and_blank_ids_share_save_identity() {
-        let text = format!("{ROWS}thumbs: space\nrow-stagger: standard\n")
-            .replacen("q w", "~ blank", 1);
+        let text =
+            format!("{ROWS}thumbs: space\nrow-stagger: standard\n").replacen("q w", "~ blank", 1);
         let original = board_from_text(&text, Path::new("original.dat")).unwrap();
         let alias = text
             .replacen("~ blank", "· ~", 1)

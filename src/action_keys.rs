@@ -148,11 +148,19 @@ fn literal(text: &str) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+// Single glyph identifiers describe physical bindings, so y and Y may emit
+// the same normalized text through different rules. Longer action names keep
+// their legacy case-insensitive spelling.
 fn action_name(text: &str) -> String {
-    if text == "@" {
-        text.into()
+    let name = if text == "@" {
+        text
     } else {
-        text.strip_prefix('@').unwrap_or(text).to_ascii_lowercase()
+        text.strip_prefix('@').unwrap_or(text)
+    };
+    if name.chars().count() == 1 {
+        name.to_string()
+    } else {
+        name.to_ascii_lowercase()
     }
 }
 
@@ -183,7 +191,7 @@ fn emission(text: &str) -> Result<Emission> {
         return Ok(Emission::None);
     }
     if let Some(name) = s.strip_prefix('@') {
-        return Ok(Emission::Call(name.to_ascii_lowercase()));
+        return Ok(Emission::Call(action_name(name)));
     }
     if matches!(
         s,
@@ -502,7 +510,7 @@ fn binding(token: &str) -> Result<(Binding, String)> {
     let Some(name) = s.strip_prefix('@') else {
         return err(format!("key {s:?}: use one printable ASCII character, a single action symbol, ~, space, or an explicit @action"));
     };
-    let name = name.to_ascii_lowercase();
+    let name = action_name(name);
     if name.chars().count() == 1 && !name.is_ascii() && !name.chars().any(char::is_control) {
         return Ok((Binding::Named(name.clone()), name));
     }
@@ -684,7 +692,7 @@ fn compact_key(token: &str, adaptive: bool) -> Result<String> {
     if !adaptive && bytes[0].is_ascii_alphanumeric() {
         return err("use adaptive for an ordinary letter/digit key");
     }
-    Ok(token.to_ascii_lowercase())
+    Ok(token.to_string())
 }
 
 fn compact_pair(token: &str) -> Result<(u8, u8)> {
@@ -787,7 +795,7 @@ fn compact_table_line(line: &str, tables: &mut BTreeMap<String, CompactTable>) -
         return err("compact table requires at least one context/output pair");
     }
     let fallback = if adaptive {
-        Emission::Text(key.as_bytes().to_vec())
+        Emission::Text(key.to_ascii_lowercase().into_bytes())
     } else {
         Emission::Call("repeat-output".into())
     };
@@ -856,8 +864,8 @@ fn short_table_text(name: &str, action: &Action) -> Option<String> {
     if rules.is_empty() {
         return None;
     }
-    let adaptive =
-        compact_key(name, true).is_ok() && *fallback == Emission::Text(name.as_bytes().to_vec());
+    let adaptive = compact_key(name, true).is_ok()
+        && *fallback == Emission::Text(name.to_ascii_lowercase().into_bytes());
     let expected_fallback = Emission::Call("repeat-output".into());
     let magic = compact_key(name, false).is_ok() && *fallback == expected_fallback;
     if !adaptive && !magic {
@@ -1332,7 +1340,7 @@ impl Layout {
                         ..
                     }) = actions.get(name)
                     {
-                        if bytes.as_slice() == name.as_bytes() {
+                        if bytes.as_slice() == name.to_ascii_lowercase().as_bytes() {
                             slot.label = name.clone();
                         }
                     }
@@ -1424,7 +1432,7 @@ impl Layout {
                     || crate::layout_io::dedicated_magic_label(name);
                 let adaptive = !dedicated
                     && matches!(fallback, Emission::Text(bytes)
-                    if bytes.len() == 1 && (bytes.as_slice() == slot.label.as_bytes() || bytes.as_slice() == name.as_bytes()));
+                    if bytes.len() == 1 && (bytes.as_slice() == slot.label.to_ascii_lowercase().as_bytes() || bytes.as_slice() == name.to_ascii_lowercase().as_bytes()));
                 if !adaptive {
                     *fallback = Emission::Call(repeat.clone());
                 }
@@ -1459,9 +1467,13 @@ impl Layout {
         let token = |s: &Slot| match &s.binding {
             Binding::Empty => "~".into(),
             Binding::Named(n) => {
-                if self.actions.get(n).is_some_and(|a| {
-                    short_table_text(n, a).is_some() || compact_action_text(n, a).is_some()
-                }) {
+                // Bare uppercase letters retain legacy lowercase typing. Use
+                // explicit action syntax to preserve a chiral physical key.
+                if !n.bytes().any(|b| b.is_ascii_uppercase())
+                    && self.actions.get(n).is_some_and(|a| {
+                        short_table_text(n, a).is_some() || compact_action_text(n, a).is_some()
+                    })
+                {
                     n.clone()
                 } else {
                     action_slot_token(n)
@@ -1915,8 +1927,10 @@ struct Node {
 /// or the press two back for skip actions. If an action shares the other
 /// recent finger, compare its local effort with the literal instead of forcing
 /// the action. When every direct literal for the next character uses the
-/// action's finger, compare the local cost through that press as well. This is
-/// not whole-text pathfinding.
+/// action's finger, compare the local cost through that press as well. Also
+/// compare that two-press cost between alternative actions, including jumps
+/// and stretches onto different fingers. Following actions are not projected.
+/// This is not whole-text pathfinding.
 pub(crate) struct WindowMapper<'a> {
     layout: &'a Layout,
     literals: [Vec<usize>; 256],
@@ -2089,12 +2103,13 @@ impl<'a> WindowMapper<'a> {
                 if let Some((old_key, _, old_cost)) = &best {
                     let literal = matches!(self.layout.slots[*old_key].binding, Binding::Text(_));
                     let priority = literal.then(|| self.action_priority(key, mem)).flatten();
-                    may_look_ahead |= literal && priority != Some(false);
-                    let projected = if literal && priority != Some(false) && at + 1 < text.len() {
+                    may_look_ahead |= priority != Some(false);
+                    let projected = if priority != Some(false) && at + 1 < text.len() {
                         let next = &self.literals[text[at + 1] as usize];
-                        if next
-                            .iter()
-                            .all(|&n| self.layout.slots[n].finger == self.layout.slots[key].finger)
+                        if (!literal
+                            || next.iter().all(|&n| {
+                                self.layout.slots[n].finger == self.layout.slots[key].finger
+                            }))
                             && !next.is_empty()
                         {
                             let mut nonfinite = false;
@@ -3440,7 +3455,7 @@ mod format_policy_tests {
 
     #[test]
     fn reachable_overridden_builtin_is_serialized() {
-        let source = format!("{ROWS}thumbs: @magic space\naction repeat = text \"x\"\naction magic = magic\nmap magic \"q\" = @repeat\n");
+        let source = format!("{ROWS}thumbs: @MAGIC space\naction Repeat = text \"x\"\naction Magic = magic\nmap MAGIC \"q\" = @REPEAT\n");
         let layout = Layout::parse(&source, Path::new("inline")).unwrap();
         let round = Layout::parse(&layout.text(), Path::new("round")).unwrap();
         assert_eq!(round.actions["repeat"], Action::Text(b"x".to_vec()));
