@@ -6,6 +6,10 @@ Cargo.lock
 # Local corpus text and generated n-gram caches
 /corpus/raw/*.txt
 
+# Local keyboard-layout reference document
+/doc/keyboard-layouts-doc-3rd-edition.txt
+/doc/Keyboard layouts doc (3rd edition).txt
+
 # Generated optimizer reports; keep saved .dat layouts
 /layouts/*.run.txt
 /layouts/*-batch-*.csv

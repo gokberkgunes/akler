@@ -1,0 +1,163 @@
+{
+    "layout": {
+        "fingers": [
+            "\\ y l d m v q f u o y [",
+            " / n r t s g k h e a i '",
+            "  x j z w c skip p b , . ; skip",
+        ],
+        "thumbs": ["", ""],
+    },
+    "fingermap": [
+        "0 0 1 2 2 3 6 6 7 8 9 9",
+        " 0 0 1 2 3 3 6 6 7 8 9 9",
+        "  0 1 2 3 3 0 6 6 7 8 9 9",
+    ],
+    "board": {
+        "isRowStaggered": true,
+        "isColumnStaggered": false,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0.25, 0.75],
+    },
+    "layers": null,
+    "magic": {
+        "rules": [
+            {
+                "inputs": "'y",
+                "output": "'#",
+            },
+            {
+                "inputs": ",y",
+                "output": ",#",
+            },
+            {
+                "inputs": ".y",
+                "output": ".#",
+            },
+            {
+                "inputs": "/y",
+                "output": "/y",
+            },
+            {
+                "inputs": ";y",
+                "output": ";#",
+            },
+            {
+                "inputs": "[y",
+                "output": "[#",
+            },
+            {
+                "inputs": "\\y",
+                "output": "\\y",
+            },
+            {
+                "inputs": "]y",
+                "output": "]#",
+            },
+            {
+                "inputs": "ay",
+                "output": "a#",
+            },
+            {
+                "inputs": "by",
+                "output": "b#",
+            },
+            {
+                "inputs": "cy",
+                "output": "cy",
+            },
+            {
+                "inputs": "dy",
+                "output": "dy",
+            },
+            {
+                "inputs": "ey",
+                "output": "e#",
+            },
+            {
+                "inputs": "fy",
+                "output": "f#",
+            },
+            {
+                "inputs": "gy",
+                "output": "gy",
+            },
+            {
+                "inputs": "hy",
+                "output": "h#",
+            },
+            {
+                "inputs": "iy",
+                "output": "i#",
+            },
+            {
+                "inputs": "jy",
+                "output": "jy",
+            },
+            {
+                "inputs": "ky",
+                "output": "k#",
+            },
+            {
+                "inputs": "ly",
+                "output": "ly",
+            },
+            {
+                "inputs": "my",
+                "output": "my",
+            },
+            {
+                "inputs": "ny",
+                "output": "ny",
+            },
+            {
+                "inputs": "oy",
+                "output": "o#",
+            },
+            {
+                "inputs": "py",
+                "output": "p#",
+            },
+            {
+                "inputs": "qy",
+                "output": "q#",
+            },
+            {
+                "inputs": "ry",
+                "output": "ry",
+            },
+            {
+                "inputs": "sy",
+                "output": "sy",
+            },
+            {
+                "inputs": "ty",
+                "output": "ty",
+            },
+            {
+                "inputs": "uy",
+                "output": "u#",
+            },
+            {
+                "inputs": "vy",
+                "output": "vy",
+            },
+            {
+                "inputs": "wy",
+                "output": "wy",
+            },
+            {
+                "inputs": "xy",
+                "output": "xy",
+            },
+            {
+                "inputs": "yy",
+                "output": "yy",
+            },
+            {
+                "inputs": "zy",
+                "output": "zy",
+            },
+        ],
+    },
+}

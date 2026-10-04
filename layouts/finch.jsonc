@@ -4,14 +4,15 @@
 // adaptive swaps
 //   after g, the next s and x trade places
 //   after c, the next x and c trade places
-//   after y, the next s and l trade places
 //   after g, the next y and d trade places
 //   after s, the next y and r trade places
-//   after e, the next e and u trade places
 //   after l, the next l and w trade places
 //   after r, the next h and l trade places
 //   after t, the next w and g trade places
 //   after f, the next w and f trade places
+//   after p, the next w and p trade places
+//   after y, the next l and s trade places
+//   after u, the next ' and h trade places
 //
 {
   "layout": {
@@ -36,8 +37,8 @@
     "splitAngle": 0,
     "rowOrColumnStagger": [
       0,
-      0,
-      0
+      0.25,
+      0.75
     ]
   },
   "layers": null,
@@ -61,14 +62,6 @@
         "output": "cx"
       },
       {
-        "inputs": "ys",
-        "output": "yl"
-      },
-      {
-        "inputs": "yl",
-        "output": "ys"
-      },
-      {
         "inputs": "gy",
         "output": "gd"
       },
@@ -83,14 +76,6 @@
       {
         "inputs": "sr",
         "output": "sy"
-      },
-      {
-        "inputs": "ee",
-        "output": "eu"
-      },
-      {
-        "inputs": "eu",
-        "output": "ee"
       },
       {
         "inputs": "ll",
@@ -123,6 +108,30 @@
       {
         "inputs": "ff",
         "output": "fw"
+      },
+      {
+        "inputs": "pw",
+        "output": "pp"
+      },
+      {
+        "inputs": "pp",
+        "output": "pw"
+      },
+      {
+        "inputs": "yl",
+        "output": "ys"
+      },
+      {
+        "inputs": "ys",
+        "output": "yl"
+      },
+      {
+        "inputs": "u'",
+        "output": "uh"
+      },
+      {
+        "inputs": "uh",
+        "output": "u'"
       }
     ]
   }
