@@ -13,7 +13,7 @@ Cargo.lock
 # Generated optimizer reports; keep saved .dat layouts
 /layouts/*.run.txt
 /layouts/*-batch-*.csv
-
+/optimized/
 # Local patch handoffs and logs
 /*.patch
 *.log
@@ -22,3 +22,21 @@ Cargo.lock
 *.swo
 
 mana2/
+
+# Imported local reference project
+/cmini-master/
+
+# Local editor backups and ranker session state
+*~
+/ranker-hidden.json
+
+# Generated reports alongside saved optimizer layouts
+/layouts/**/*.run.txt
+/layouts/**/*-batch-*.csv
+
+# Local external reference material
+/packet-spacegram-on-alts-on-ortho-board.png
+/spark.md
+
+# Separate local Mana2 application
+/akler-mana2/
