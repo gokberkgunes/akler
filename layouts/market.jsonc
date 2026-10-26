@@ -1,0 +1,170 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// magic keys
+//   *   default repeat
+//         c* -> cr
+//         m* -> mb
+//         n* -> ng
+//         r* -> rc
+//         u* -> ui
+//         y* -> ys
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9 0",
+    "0 1 2 3 3 6 6 7 8 9 9",
+    "0 1 2 3 3 6 6 7 8 9 0"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "b c l g v j p ' u q skip",
+      "n r h s f * t a i o /",
+      "x w m y z k d . , ; skip"
+    ],
+    "thumbs": [
+      "space",
+      "e"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "b*",
+        "output": "bb"
+      },
+      {
+        "inputs": "c*",
+        "output": "cr"
+      },
+      {
+        "inputs": "l*",
+        "output": "ll"
+      },
+      {
+        "inputs": "g*",
+        "output": "gg"
+      },
+      {
+        "inputs": "v*",
+        "output": "vv"
+      },
+      {
+        "inputs": "j*",
+        "output": "jj"
+      },
+      {
+        "inputs": "p*",
+        "output": "pp"
+      },
+      {
+        "inputs": "'*",
+        "output": "''"
+      },
+      {
+        "inputs": "u*",
+        "output": "ui"
+      },
+      {
+        "inputs": "q*",
+        "output": "qq"
+      },
+      {
+        "inputs": "n*",
+        "output": "ng"
+      },
+      {
+        "inputs": "r*",
+        "output": "rc"
+      },
+      {
+        "inputs": "h*",
+        "output": "hh"
+      },
+      {
+        "inputs": "s*",
+        "output": "ss"
+      },
+      {
+        "inputs": "/*",
+        "output": "//"
+      },
+      {
+        "inputs": "t*",
+        "output": "tt"
+      },
+      {
+        "inputs": "a*",
+        "output": "aa"
+      },
+      {
+        "inputs": "i*",
+        "output": "ii"
+      },
+      {
+        "inputs": "o*",
+        "output": "oo"
+      },
+      {
+        "inputs": "x*",
+        "output": "xx"
+      },
+      {
+        "inputs": "w*",
+        "output": "ww"
+      },
+      {
+        "inputs": "m*",
+        "output": "mb"
+      },
+      {
+        "inputs": "y*",
+        "output": "ys"
+      },
+      {
+        "inputs": "z*",
+        "output": "zz"
+      },
+      {
+        "inputs": "k*",
+        "output": "kk"
+      },
+      {
+        "inputs": "d*",
+        "output": "dd"
+      },
+      {
+        "inputs": ".*",
+        "output": ".."
+      },
+      {
+        "inputs": ",*",
+        "output": ",,"
+      },
+      {
+        "inputs": ";*",
+        "output": ";;"
+      },
+      {
+        "inputs": "e*",
+        "output": "ee"
+      },
+      {
+        "inputs": "f*",
+        "output": "ff"
+      }
+    ]
+  }
+}

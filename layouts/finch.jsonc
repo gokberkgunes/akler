@@ -3,45 +3,43 @@
 //
 // adaptive swaps
 //   after g, the next s and x trade places
-//   after c, the next x and c trade places
 //   after g, the next y and d trade places
 //   after s, the next y and r trade places
-//   after l, the next l and w trade places
 //   after r, the next h and l trade places
 //   after t, the next w and g trade places
-//   after f, the next w and f trade places
-//   after p, the next w and p trade places
-//   after y, the next l and s trade places
 //   after u, the next ' and h trade places
+//   after l, the next w and l trade places
+//   after p, the next h and d trade places
+//   after n, the next ' and r trade places
 //
 {
-  "layout": {
-    "fingers": [
-      "v l y w j q f o , ;",
-      "c r s t m p n a i u",
-      "z x g d k b h ' . /"
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
     ],
-    "thumbs": [
-      "",
-      "e"
-    ]
+    "splitAngle": 0
   },
   "fingermap": [
     "0 1 2 3 3 6 6 7 8 9",
     "0 1 2 3 3 6 6 7 8 9",
     "0 1 2 3 3 6 6 7 8 9"
   ],
-  "board": {
-    "isRowStaggered": true,
-    "mirrorLeftRowStagger": false,
-    "splitAngle": 0,
-    "rowOrColumnStagger": [
-      0,
-      0.25,
-      0.75
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "v l y w j q f o . ;",
+      "c r s t m p n a i u",
+      "z x g d k b h ' , /"
+    ],
+    "thumbs": [
+      "space",
+      "e"
     ]
   },
-  "layers": null,
   "magic": {
     "magicKeys": [],
     "rules": [
@@ -52,14 +50,6 @@
       {
         "inputs": "gx",
         "output": "gs"
-      },
-      {
-        "inputs": "cx",
-        "output": "cc"
-      },
-      {
-        "inputs": "cc",
-        "output": "cx"
       },
       {
         "inputs": "gy",
@@ -78,14 +68,6 @@
         "output": "sy"
       },
       {
-        "inputs": "ll",
-        "output": "lw"
-      },
-      {
-        "inputs": "lw",
-        "output": "ll"
-      },
-      {
         "inputs": "rh",
         "output": "rl"
       },
@@ -102,36 +84,36 @@
         "output": "tw"
       },
       {
-        "inputs": "fw",
-        "output": "ff"
-      },
-      {
-        "inputs": "ff",
-        "output": "fw"
-      },
-      {
-        "inputs": "pw",
-        "output": "pp"
-      },
-      {
-        "inputs": "pp",
-        "output": "pw"
-      },
-      {
-        "inputs": "yl",
-        "output": "ys"
-      },
-      {
-        "inputs": "ys",
-        "output": "yl"
-      },
-      {
         "inputs": "u'",
         "output": "uh"
       },
       {
         "inputs": "uh",
         "output": "u'"
+      },
+      {
+        "inputs": "lw",
+        "output": "ll"
+      },
+      {
+        "inputs": "ll",
+        "output": "lw"
+      },
+      {
+        "inputs": "ph",
+        "output": "pd"
+      },
+      {
+        "inputs": "pd",
+        "output": "ph"
+      },
+      {
+        "inputs": "n'",
+        "output": "nr"
+      },
+      {
+        "inputs": "nr",
+        "output": "n'"
       }
     ]
   }

@@ -1,11 +1,11 @@
 {
     "layout": {
         "fingers": [
-            "q b g . z v w o y f",
-            "r n s t m k * a i h",
-            "l p d c j x u ; , '",
+            "p l m b v z y o h .",
+            "n r t d g ' s a e i",
+            "q j k c w x f u ; ,",
         ],
-        "thumbs": ["space", "e"],
+        "thumbs": ["space", "*"],
     },
     "fingermap": [
         "0 1 2 3 3 6 6 7 8 9",
@@ -13,31 +13,52 @@
         "0 1 2 3 3 6 6 7 8 9",
     ],
     "board": {
-        "isRowStaggered": true,
+        "isRowStaggered": false,
+        "isColumnStaggered": false,
         "mirrorLeftRowStagger": false,
         "splitAngle": 0,
         "rowOrColumnStagger": [0, 0, 0],
     },
     "layers": null,
     "magic": {
-	"keys": "*",
-        "magicKeys": null,
+        "keys": "*",
+        "wildcards": "%",
         "rules": [
             {
+                "inputs": "%*",
+                "output": "%%",
+            },
+            {
+                "inputs": "'*",
+                "output": "'s",
+            },
+            {
+                "inputs": ",*",
+                "output": ",,",
+            },
+            {
+                "inputs": ".*",
+                "output": "..",
+            },
+            {
+                "inputs": ";*",
+                "output": ";;",
+            },
+            {
                 "inputs": "a*",
-                "output": "aa",
+                "output": "au",
             },
             {
                 "inputs": "b*",
-                "output": "bb",
+                "output": "bl",
             },
             {
                 "inputs": "c*",
-                "output": "ct",
+                "output": "cc",
             },
             {
                 "inputs": "d*",
-                "output": "ds",
+                "output": "dd",
             },
             {
                 "inputs": "e*",
@@ -49,11 +70,11 @@
             },
             {
                 "inputs": "g*",
-                "output": "gs",
+                "output": "gl",
             },
             {
                 "inputs": "h*",
-                "output": "hh",
+                "output": "he",
             },
             {
                 "inputs": "i*",
@@ -73,7 +94,7 @@
             },
             {
                 "inputs": "m*",
-                "output": "mm",
+                "output": "mp",
             },
             {
                 "inputs": "n*",
@@ -101,11 +122,11 @@
             },
             {
                 "inputs": "t*",
-                "output": "t.",
+                "output": "tt",
             },
             {
                 "inputs": "u*",
-                "output": "uu",
+                "output": "ua",
             },
             {
                 "inputs": "v*",
@@ -113,7 +134,7 @@
             },
             {
                 "inputs": "w*",
-                "output": "ww",
+                "output": "wl",
             },
             {
                 "inputs": "x*",
@@ -121,19 +142,11 @@
             },
             {
                 "inputs": "y*",
-                "output": "y,",
+                "output": "ys",
             },
             {
                 "inputs": "z*",
                 "output": "zz",
-            },
-            {
-                "inputs": ".*",
-                "output": "..",
-            },
-            {
-                "inputs": "**",
-                "output": "*w",
             },
         ],
     },

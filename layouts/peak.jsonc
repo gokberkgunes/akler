@@ -1,0 +1,53 @@
+{
+    "layout": {
+        "fingers": [
+            "j p l * k z u o y q",
+            "n s t h m , r a c i",
+            "b g v d f x w . ' /"
+        ],
+        "thumbs": ["e", "space"]
+    },
+    "fingermap": [
+        "0 1 2 3 3 6 6 7 8 9",
+        "0 1 2 3 3 6 6 7 8 9",
+        "0 1 2 3 3 6 6 7 8 9"
+    ],
+    "board": {
+        "isRowStaggered": false,
+        "isColumnStaggered": false,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "layers": null,
+    "magic": {
+        "keys": "*",
+        "wildcards": "%",
+        "rules": [
+            {
+                "inputs": "%*",
+                "output": "%%"
+            },
+            {
+                "inputs": "n*",
+                "output": "ng"
+            },
+            {
+                "inputs": "r*",
+                "output": "ru"
+            },
+            {
+                "inputs": "s*",
+                "output": "sp"
+            },
+            {
+                "inputs": "u*",
+                "output": "ur"
+            },
+            {
+                "inputs": "y*",
+                "output": "y."
+            }
+        ]
+    }
+}

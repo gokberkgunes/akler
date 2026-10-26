@@ -5,42 +5,44 @@
 //   *   default repeat
 //         '* -> 's
 //         a* -> au
+//         b* -> bl
 //         g* -> gl
 //         h* -> he
 //         m* -> mp
 //         o* -> ou
 //         r* -> rl
 //         u* -> ua
+//         w* -> wl
 //         y* -> ys
 //
 {
-  "layout": {
-    "fingers": [
-      "x v j g w z y a h ,",
-      "n t r d m ' s o e i",
-      "b k l c p q f u ; ."
+  "board": {
+    "isRowStaggered": false,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
     ],
-    "thumbs": [
-      "space",
-      "*"
-    ]
+    "splitAngle": 0
   },
   "fingermap": [
     "0 1 2 3 3 6 6 7 8 9",
     "0 1 2 3 3 6 6 7 8 9",
     "0 1 2 3 3 6 6 7 8 9"
   ],
-  "board": {
-    "isRowStaggered": true,
-    "mirrorLeftRowStagger": false,
-    "splitAngle": 0,
-    "rowOrColumnStagger": [
-      0,
-      0.25,
-      0.75
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "x k l c p z y o h ,",
+      "n t r d m ' s a e i",
+      "b v j g w q f u ; ."
+    ],
+    "thumbs": [
+      "space",
+      "*"
     ]
   },
-  "layers": null,
   "magic": {
     "magicKeys": [],
     "rules": [
@@ -49,20 +51,20 @@
         "output": "xx"
       },
       {
-        "inputs": "v*",
-        "output": "vv"
+        "inputs": "k*",
+        "output": "kk"
       },
       {
-        "inputs": "j*",
-        "output": "jj"
+        "inputs": "l*",
+        "output": "ll"
       },
       {
-        "inputs": "g*",
-        "output": "gl"
+        "inputs": "c*",
+        "output": "cc"
       },
       {
-        "inputs": "w*",
-        "output": "ww"
+        "inputs": "p*",
+        "output": "pp"
       },
       {
         "inputs": "z*",
@@ -126,23 +128,23 @@
       },
       {
         "inputs": "b*",
-        "output": "bb"
+        "output": "bl"
       },
       {
-        "inputs": "k*",
-        "output": "kk"
+        "inputs": "v*",
+        "output": "vv"
       },
       {
-        "inputs": "l*",
-        "output": "ll"
+        "inputs": "j*",
+        "output": "jj"
       },
       {
-        "inputs": "c*",
-        "output": "cc"
+        "inputs": "g*",
+        "output": "gl"
       },
       {
-        "inputs": "p*",
-        "output": "pp"
+        "inputs": "w*",
+        "output": "wl"
       },
       {
         "inputs": "q*",
