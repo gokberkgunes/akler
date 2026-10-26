@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
@@ -25,6 +24,8 @@ include!("ui.rs");
 
 include!("ranking.rs");
 
+include!("weakness.rs");
+
 include!("app.rs");
 
 #[cfg(test)]
@@ -46,6 +47,8 @@ mod profile_output;
 
 mod action_search;
 
+mod action_rule_delta;
+mod action_rule_eval;
 mod action_summary;
 
 mod session;
@@ -54,16 +57,24 @@ mod layout_io;
 
 mod layout_export;
 
-mod atomic_metrics;
-
-mod atomic_analysis;
-
-mod atomic_report;
-
-mod atomic_ui;
+mod alt_fingers;
+mod combo_fit;
+mod combos;
+mod layout_rules;
+mod swap_fit;
 
 mod mana2_metrics;
 
-mod simple_metrics;
-
 mod finger_speed;
+
+mod bench;
+
+mod magic_design;
+mod magic_optimizer;
+mod magic_rule_fit;
+
+include!("magic_ui.rs");
+
+include!("scissor_test.rs");
+
+mod magic_archive;

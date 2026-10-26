@@ -7,12 +7,14 @@ use crate::*;
 
 #[derive(Clone)]
 pub(crate) struct Evaluated {
+    // Presentation belongs to this evaluated layout, not the current editor.
+    labels: Vec<String>,
     pub(crate) model: Model,
     pub(crate) corpus: Corpus,
     pub(crate) raw: Raw,
     pub(crate) metrics: Metrics,
     pub(crate) score: f64,
-    counts: ng::Counts,
+    pub(crate) counts: Arc<ng::Counts>,
 }
 
 pub(crate) fn physical_keys(l: &ak::Layout) -> Vec<Key> {
@@ -73,6 +75,25 @@ impl LocalEffort {
             + b.map(|v| self.bi[v * self.n + next]).unwrap_or(0.0)
             + a.map(|v| self.sk[v * self.n + next]).unwrap_or(0.0)
     }
+
+    /// The dedicated optimizer can omit effort evaluation for an unambiguous
+    /// literal history only when every lookup and two-press projection is
+    /// finite. Check once per search; retain the usual mapper if even an
+    /// unused history could overflow.
+    pub(crate) fn all_finite(&self) -> bool {
+        for a in 0..=self.n {
+            for b in 0..=self.n {
+                for next in 0..self.n {
+                    let value =
+                        self.get((a < self.n).then_some(a), (b < self.n).then_some(b), next);
+                    if !value.is_finite() || value.abs() > f64::MAX / 2.0 {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
 }
 
 fn evaluate(
@@ -94,7 +115,10 @@ pub(crate) fn evaluate_progress(
     let mut timing = crate::load_profile::LoadProfile::new("action evaluation");
     let effort = LocalEffort::new(l, w);
     timing.mark("Physical effort tables");
-    let counts = c.evaluate(l, stop, progress, |a, b, k| effort.get(a, b, k))?;
+    let counts =
+        c.evaluate_with_policy(l, stop, progress, w.alts(), w.combo_policy(), |a, b, k| {
+            effort.get(a, b, k)
+        })?;
     timing.mark("Detailed mapper and physical counts (nested report)");
 
     evaluate_counts(l, c, w, counts, &mut timing)
@@ -107,6 +131,16 @@ fn evaluate_counts(
     counts: ng::Counts,
     timing: &mut crate::load_profile::LoadProfile,
 ) -> ak::Result<Evaluated> {
+    evaluate_counts_shared(l, c, w, Arc::new(counts), timing)
+}
+
+fn evaluation_adapter(
+    l: &ak::Layout,
+    c: &ng::NgramCorpus,
+    w: &Weights,
+    counts: &ng::Counts,
+    timing: &mut crate::load_profile::LoadProfile,
+) -> ak::Result<(Model, Corpus)> {
     if counts.presses == 0.0 {
         return Err("no decoded keypresses".into());
     }
@@ -144,30 +178,82 @@ fn evaluate_counts(
     let masses = std::array::from_fn(|i| tables[i].iter().map(|(_, f)| *f).sum());
     let source = Source {
         name: c.name.clone(),
-        path: PathBuf::new(),
+        path: c.path.clone(),
+        include_spacegrams: c.include_spacegrams,
         tables,
-        available: [true; 4],
         masses,
         warnings: std::iter::once(format!("{}-gram bounded-context magic estimate", c.order))
+            .chain(l.source_warnings.iter().cloned())
+            .chain((!l.alt_fingers.is_empty()).then(|| {
+                if w.3 {
+                    "Contextual alternate fingers affect physical statistics after root-key mapping; they do not choose magic winners.".to_string()
+                } else {
+                    "Contextual alternate-finger effects are disabled.".to_string()
+                }
+            }))
+            .chain((!l.combos.is_empty()).then(|| {
+                if w.4 {
+                    "Combos enabled: each combo is one chord press of both keys, with movement to and from it once per key. Requires order-4 corpus tables; capped contexts fall back to shorter ones.".into()
+                } else {
+                    "Combos disabled: ordinary and magic typing is used.".into()
+                }
+            }))
             .chain(c.warnings.iter().cloned())
             .collect(),
         fingerprint: 0,
     };
     let corpus = model.corpus(&source).map_err(|e| e.to_string())?;
     timing.mark("Physical count adapter and metric corpus");
-    // Keep Mana2's native counters with action evaluations so optimizer views
-    // can report the same physical stats as its objective and ranker.
-    let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, true);
-    let metrics = metrics(&raw, &corpus);
+    Ok((model, corpus))
+}
+
+fn evaluate_counts_shared(
+    l: &ak::Layout,
+    c: &ng::NgramCorpus,
+    w: &Weights,
+    counts: Arc<ng::Counts>,
+    timing: &mut crate::load_profile::LoadProfile,
+) -> ak::Result<Evaluated> {
+    let (model, corpus) = evaluation_adapter(l, c, w, &counts, timing)?;
+    // Normal editing collects only AKLER counters.
+    let (raw, totals) = ng::raw_from_counts(l, &counts, w, false);
+    debug_assert_eq!(totals.map(f64::to_bits), corpus.totals.map(f64::to_bits));
+    let metrics = metrics_totals(&raw, &totals);
     let score = breakdown(&metrics, w).net;
     timing.mark("Raw metrics and score");
     Ok(Evaluated {
+        labels: l.slots.iter().map(|slot| slot.label.clone()).collect(),
         model,
         corpus,
         raw,
         metrics,
         score,
         counts,
+    })
+}
+
+pub(crate) fn evaluate_ranked(
+    l: &ak::Layout,
+    c: &ng::NgramCorpus,
+    w: &Weights,
+    summary: &crate::action_summary::Summary,
+) -> ak::Result<Evaluated> {
+    let mut timing = crate::load_profile::LoadProfile::new("ranked action editor adapter");
+    let (model, corpus) = evaluation_adapter(l, c, w, &summary.counts, &mut timing)?;
+    debug_assert_eq!(
+        corpus.totals.map(f64::to_bits),
+        summary.totals.map(f64::to_bits)
+    );
+    let score = breakdown(&summary.metrics, w).net;
+    timing.mark("Reuse ranked physical metrics and counts");
+    Ok(Evaluated {
+        labels: l.slots.iter().map(|slot| slot.label.clone()).collect(),
+        model,
+        corpus,
+        raw: summary.raw.clone(),
+        metrics: summary.metrics.clone(),
+        score,
+        counts: Arc::clone(&summary.counts),
     })
 }
 
@@ -241,8 +327,17 @@ fn evaluate_tui(
     c: &ng::NgramCorpus,
     w: &Weights,
 ) -> AppResult<Option<Arc<Evaluated>>> {
+    evaluate_tui_shared(term, l, &Arc::new(c.clone()), w)
+}
+
+fn evaluate_tui_shared(
+    term: &mut Terminal,
+    l: &ak::Layout,
+    c: &Arc<ng::NgramCorpus>,
+    w: &Weights,
+) -> AppResult<Option<Arc<Evaluated>>> {
     let layout = l.clone();
-    let corpus = c.clone();
+    let corpus = Arc::clone(c);
     let weights = w.clone();
     ngram_job(
         term,
@@ -253,6 +348,198 @@ fn evaluate_tui(
             evaluate_progress(&layout, &corpus, &weights, stop, progress).map(Arc::new)
         },
     )
+}
+
+/// One line naming a layout's magic rules, adaptive swaps and combos, if it
+/// has any. Plain repeats such as `e→e` only restate the repeat fallback and
+/// are left out.
+pub(crate) fn rules_and_combos(layout: &ak::Layout) -> Option<String> {
+    rules_line(layout, true)
+}
+
+fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    for (slot, key) in layout.slots.iter().enumerate() {
+        if !matches!(&key.binding, ak::Binding::Named(_))
+            || crate::swap_fit::is_adaptive_key(layout, slot)
+        {
+            continue;
+        }
+        let Some((rules, _)) = crate::magic_design::original(layout, slot) else {
+            continue;
+        };
+        let text: Vec<_> = rules
+            .iter()
+            .filter_map(|(context, emission)| match emission {
+                ak::Emission::Text(output) if output != context => Some(format!(
+                    "{}→{}",
+                    String::from_utf8_lossy(context),
+                    String::from_utf8_lossy(output)
+                )),
+                _ => None,
+            })
+            .collect();
+        if !text.is_empty() {
+            parts.push(format!("Magic {}: {}", key.label, text.join(" ")));
+        }
+    }
+    let swaps: Vec<_> = crate::swap_fit::swaps_of(layout)
+        .iter()
+        .map(|swap| {
+            format!(
+                "{}:{}{}",
+                swap.context as char, swap.a as char, swap.b as char
+            )
+        })
+        .collect();
+    if with_swaps && !swaps.is_empty() {
+        parts.push(format!("Swaps: {}", swaps.join(" ")));
+    }
+    let combos: Vec<_> = layout
+        .combos
+        .iter()
+        .filter_map(|value| {
+            let Json::Object(fields) = value else {
+                return None;
+            };
+            let Some(Json::String(output)) = fields.get("output") else {
+                return None;
+            };
+            let keys: Vec<String> = match (fields.get("keys"), fields.get("inputs")) {
+                (Some(Json::Array(keys)), _) => keys
+                    .iter()
+                    .filter_map(|key| match key {
+                        Json::String(label) => Some(label.clone()),
+                        _ => None,
+                    })
+                    .collect(),
+                (None, Some(Json::Array(inputs))) => match inputs.first() {
+                    Some(Json::String(text)) => text.chars().map(String::from).collect(),
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            Some(format!("{}={output}", keys.join("+")))
+        })
+        .collect();
+    if !combos.is_empty() {
+        parts.push(format!("Combos: {}", combos.join(" ")));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+/// Draw `rules_and_combos` at `y`, returning the next free row.
+/// Under the optimizer's board: magic rules and combos, then the adaptive
+/// swaps and alternate fingers as lines a click turns off (red) or on (green)
+/// for this session. `stashed` holds the swaps while they are off; `fit` is
+/// how many swaps a run may fit.
+fn optimizer_toggle_rows(
+    c: &mut Canvas,
+    mut y: usize,
+    l: &ak::Layout,
+    w: &Weights,
+    stashed: Option<&[crate::swap_fit::Swap]>,
+    fit: usize,
+    exact: bool,
+) -> usize {
+    let toggle = |c: &mut Canvas, y: usize, text: &str, on: bool, command: char| {
+        c.text(0, y, &short(text, c.w), if on { GREEN } else { RED });
+        let w = text.chars().count().min(c.w);
+        c.hit(Rect { x: 0, y, w, h: 1 }, Action::Command(command));
+    };
+    if let Some(line) = rules_line(l, false) {
+        c.text(0, y, &short(&line, c.w), CYAN);
+        y += 1;
+    }
+    let swaps = stashed.map_or_else(|| crate::swap_fit::swaps_of(l), <[_]>::to_vec);
+    if !swaps.is_empty() || fit > 0 || stashed.is_some() {
+        let names: Vec<_> = swaps
+            .iter()
+            .map(|swap| {
+                format!(
+                    "{}:{}{}",
+                    swap.context as char, swap.a as char, swap.b as char
+                )
+            })
+            .collect();
+        let names = if names.is_empty() {
+            "none".into()
+        } else {
+            names.join(" ")
+        };
+        let text = match (stashed, fit) {
+            (Some(_), _) => format!("Swaps off: {names} · none used or fitted"),
+            (None, 0) => format!("Swaps: {names}"),
+            (None, fit) => format!("Swaps: {names} · fit {} {fit}", count_bound(exact)),
+        };
+        toggle(c, y, &text, stashed.is_none(), 'a');
+        y += 1;
+    }
+    let alts = alts_text(l, w);
+    if let Some(alts) = alts {
+        let text = alts_label(w.3, &alts);
+        toggle(c, y, &text, w.3, 'f');
+        y += 1;
+    }
+    y + 1
+}
+
+/// The alternate fingers `l` is scored with: its own rules, or else the
+/// `[alts]` rules named by the letters on those keys.
+fn alts_text(l: &ak::Layout, w: &Weights) -> Option<String> {
+    if !l.alt_fingers.is_empty() {
+        let mut own = l.clone();
+        crate::alt_fingers::unpin(&mut own);
+        return Some(format!(
+            "{} (the layout's own)",
+            crate::alt_fingers::AltRules::letters(&own.alt_fingers)
+        ));
+    }
+    let rules = w.1.alts?.for_layout(l);
+    let names = crate::alt_fingers::position_names(
+        l.slots
+            .iter()
+            .filter(|s| s.main)
+            .map(|s| (s.row, s.col, s.label.clone())),
+    );
+    (!rules.is_empty()).then(|| crate::alt_fingers::AltRules::text_with(rules, names))
+}
+
+/// The optimizer's alternate-finger switch: green while on, red while off.
+pub(crate) fn alts_label(on: bool, source: &str) -> String {
+    format!("Alts {}: {source}", if on { "on" } else { "off" })
+}
+
+fn rules_and_combos_row(canvas: &mut Canvas, y: usize, layout: &ak::Layout) -> usize {
+    match rules_and_combos(layout) {
+        Some(line) => {
+            canvas.text(0, y, &short(&line, canvas.w), CYAN);
+            y + 2
+        }
+        None => y,
+    }
+}
+
+/// `rules_and_combos_row` plus the alternate fingers the run scores with,
+/// for the running and result screens.
+fn rules_and_alts_rows(canvas: &mut Canvas, y: usize, layout: &ak::Layout, w: &Weights) -> usize {
+    let Some(alts) = alts_text(layout, w) else {
+        return rules_and_combos_row(canvas, y, layout);
+    };
+    let y = match rules_and_combos(layout) {
+        Some(line) => {
+            canvas.text(0, y, &short(&line, canvas.w), CYAN);
+            y + 1
+        }
+        None => y,
+    };
+    canvas.text(
+        0,
+        y,
+        &short(&alts_label(w.3, &alts), canvas.w),
+        if w.3 { GREEN } else { RED },
+    );
+    y + 2
 }
 
 pub(crate) fn action_keyboard(
@@ -279,8 +566,17 @@ pub(crate) fn action_keyboard(
         .unwrap_or(9);
     let cols = (max - min + 1) as usize;
     let physical = physical_keys(l);
+    let column_shift = i8::from(l.left_outer && !original.left_outer);
+    let original_slot = |i: usize| {
+        let slot = &l.slots[i];
+        original.slots.iter().find(|old| {
+            old.main == slot.main
+                && old.row == slot.row
+                && old.col.checked_add(column_shift) == Some(slot.col)
+        })
+    };
     let right_col = right_main_column(&physical, |i| {
-        original.slots[i].binding != ak::Binding::Empty
+        original_slot(i).is_some_and(|slot| slot.binding != ak::Binding::Empty)
     });
     let min_offset = l
         .slots
@@ -353,8 +649,8 @@ pub(crate) fn action_keyboard(
             thumb_index[hand] += 1;
             position
         };
-        let locked = locks.is_some_and(|v| v[i]);
-        let color = if s.binding != original.slots[i].binding {
+        let locked = locks.is_some_and(|v| v.get(i).copied().unwrap_or(true));
+        let color = if original_slot(i).is_none_or(|slot| s.binding != slot.binding) {
             BLUE
         } else if locked {
             YELLOW
@@ -376,7 +672,7 @@ pub(crate) fn action_keyboard(
             },
         );
         let label = if s.binding == ak::Binding::Text(vec![b' ']) {
-            "SP".to_owned()
+            "␣".to_owned()
         } else {
             short(&s.label, kw - 2)
         };
@@ -394,12 +690,22 @@ pub(crate) fn action_keyboard(
         }
 }
 
-fn action_controls(optimize: bool) -> &'static str {
-    if optimize {
-        "Space run | Tab setup/results | U unlock | w weights | s save copy | q back"
-    } else {
-        "Click stat for details | Click/drag swap | u undo | s save copy | r original | c corpus | . digits | q back"
-    }
+fn action_mana_stats(
+    layout: &ak::Layout,
+    evaluation: &Evaluated,
+    weights: &Weights,
+) -> mana2_metrics::Stats {
+    // The winning physical presses are already present in `counts`. Rebuild
+    // only Mana's compact counters; changing a weight or display mode must not
+    // run the action mapper again.
+    let (raw, totals) = ng::raw_from_counts(layout, &evaluation.counts, weights, true);
+    ng::mana_stats(
+        raw.1
+            .as_ref()
+            .expect("Mana counters requested while collecting Mana statistics"),
+        totals,
+        evaluation.counts.speed_populations,
+    )
 }
 
 fn action_frame(
@@ -413,22 +719,76 @@ fn action_frame(
     locks: Option<&[bool]>,
     selected: Option<usize>,
     status: &str,
+    latest_comparison: Option<bool>,
+    scoring_mode: Option<&str>,
+    toggles: Option<(Option<&[crate::swap_fit::Swap]>, usize, bool)>,
 ) -> Canvas {
     let mut c = Canvas::new(term.width(), 150);
-    let controls = "? help | q back";
+    let controls = match latest_comparison {
+        Some(true) => format!(
+            "m stats: {} | ? help | q back | compare: latest edit (d)",
+            term.stats_view_name()
+        ),
+        Some(false) => format!(
+            "m stats: {} | ? help | q back | compare: baseline (d)",
+            term.stats_view_name()
+        ),
+        None if title == "Optimizer" => "Space run | m magic | ? help | q back".to_owned(),
+        None => "? help | q back".to_owned(),
+    };
     header(&mut c, title, &a.corpus.name, &l.name, "");
     let mut y = action_keyboard(&mut c, 2, l, base, locks, selected) + 1;
-    let limited = if a
-        .corpus
-        .warnings
-        .iter()
-        .any(|warning| warning.starts_with("Approximate"))
-    {
+    y = match toggles {
+        Some((stashed, fit, exact)) => optimizer_toggle_rows(&mut c, y, l, w, stashed, fit, exact),
+        None => rules_and_combos_row(&mut c, y, l),
+    };
+    let limited = if a.corpus.warnings.iter().any(|warning| {
+        warning.starts_with("Approximate")
+            || warning.starts_with("Combos")
+            || warning.starts_with("spark/1")
+    }) {
         " · limited contexts (i info)"
     } else {
         ""
     };
-    if title == "Editor" {
+    let aklgg_scoring = scoring_mode == Some("aklgg");
+    if title == "Optimizer" && term.optimizer_weights {
+        if aklgg_scoring {
+            y = physical_weight_rows(&mut c, y, &w.2);
+        } else {
+            y = optimizer_metric_cards(
+                &mut c,
+                y,
+                &b.metrics,
+                &a.metrics,
+                &a.raw,
+                &a.corpus,
+                w,
+                term.decimals(),
+                term.simple_stats,
+                true,
+            );
+        }
+    } else if title == "Optimizer" {
+        if aklgg_scoring {
+            let before = action_mana_stats(base, b, w);
+            let after = action_mana_stats(l, a, w);
+            y = aklgg_stat_table(&mut c, y, &before, &after, term.decimals());
+        } else {
+            y = optimizer_metric_cards(
+                &mut c,
+                y,
+                &b.metrics,
+                &a.metrics,
+                &a.raw,
+                &a.corpus,
+                w,
+                term.decimals(),
+                term.simple_stats,
+                false,
+            );
+        }
+    } else if title == "Editor" {
         y = editor_metric_cards(
             &mut c,
             y,
@@ -437,13 +797,14 @@ fn action_frame(
             &a.raw,
             &a.corpus,
             term.decimals(),
+            term.simple_stats,
         );
     }
-    if !limited.is_empty() {
-        c.text(0, y, "Notes: limited contexts (i info)", YELLOW);
+    if title != "Editor" && title != "Optimizer" && !limited.is_empty() {
+        c.text(0, y, "Source notes available (i info)", YELLOW);
         y += 2;
     }
-    if title != "Editor" {
+    if title != "Editor" && title != "Optimizer" {
         y = grouped_metric_cards(
             &mut c,
             y,
@@ -452,109 +813,48 @@ fn action_frame(
             &a.raw,
             &a.corpus,
             term.decimals(),
+            term.simple_stats,
         );
     }
-    y = finger_table(&mut c, y + 1, &b.metrics, &a.metrics, term.decimals());
-    y = score_panel(
-        &mut c,
-        y + 1,
-        &breakdown(&b.metrics, w),
-        &breakdown(&a.metrics, w),
-        None,
-        term.decimals(),
-    );
+    if !aklgg_scoring {
+        y = finger_table(&mut c, y + 1, &b.metrics, &a.metrics, term.decimals());
+    }
+    if aklgg_scoring {
+        let before = action_mana_stats(base, b, w);
+        let after = action_mana_stats(l, a, w);
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &mana_breakdown(&before, w),
+            &mana_breakdown(&after, w),
+            None,
+            term.decimals(),
+        );
+        c.text(0, y, "Scoring: aklgg weights", MUTED);
+        y += 1;
+    } else {
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &breakdown(&b.metrics, w),
+            &breakdown(&a.metrics, w),
+            None,
+            term.decimals(),
+        );
+    }
+    if (title == "Editor" && !l.alt_fingers.is_empty()) || title == "Optimizer" {
+        y = typing_policy_row(&mut c, y, w);
+    }
+    if (title == "Editor" && !l.combos.is_empty()) || title == "Optimizer" {
+        y = combo_policy_row(&mut c, y, w);
+    }
+    if title == "Editor" {
+        y = spacegram_policy_row(&mut c, y, a.corpus.include_spacegrams);
+    }
     c.text(0, y, &short(status, c.w), CYAN);
-    c.text(0, y + 1, &short(controls, c.w), MUTED);
+    c.text(0, y + 1, &short(&controls, c.w), MUTED);
     c.h = y + 3;
     c
-}
-
-fn mana2_stats(raw: &Raw, totals: &[f64; 4]) -> mana2_metrics::Stats {
-    mana2_metrics::stats(
-        raw.1
-            .as_ref()
-            .expect("Mana2 evaluation must retain native stat counters"),
-        *totals,
-    )
-}
-
-fn mana2_compact_stats(
-    c: &mut Canvas,
-    y: usize,
-    before: Option<&mana2_metrics::Stats>,
-    after: &mana2_metrics::Stats,
-    decimals: usize,
-) -> usize {
-    let selected = [
-        ("LP", "finger-usage-LP"),
-        ("RP", "finger-usage-RP"),
-        ("offpinky", "offpinky"),
-        ("curl", "pinkyringcurl"),
-        ("SFB", "sfb"),
-        ("SFS", "sfs"),
-        ("alt", "alt"),
-        ("redirect", "redirect"),
-        ("roll", "roll"),
-        ("good roll", "goodroll"),
-    ];
-    let format = |label: &str, id: &str| {
-        let value = after.get(id).expect("selected Mana2 stat is defined");
-        if let Some(before) = before {
-            format!(
-                "{label} {}%→{}%",
-                number(before.get(id).unwrap(), decimals),
-                number(value, decimals)
-            )
-        } else {
-            format!("{label} {}%", number(value, decimals))
-        }
-    };
-    let first = selected[..4]
-        .iter()
-        .map(|(label, id)| format(label, id))
-        .collect::<Vec<_>>()
-        .join("   ");
-    let second = selected[4..]
-        .iter()
-        .map(|(label, id)| format(label, id))
-        .collect::<Vec<_>>()
-        .join("   ");
-    c.text(0, y, &short(&first, c.w), FG);
-    c.text(0, y + 1, &short(&second, c.w), FG);
-    y + 2
-}
-
-fn mana2_score_line(
-    c: &mut Canvas,
-    y: usize,
-    before: Option<f64>,
-    after: f64,
-    objective: f64,
-    decimals: usize,
-) -> usize {
-    let score = if let Some(before) = before {
-        format!(
-            "Mana2 SCORE {} → {} (higher is better)",
-            number(before, decimals),
-            number(after, decimals),
-        )
-    } else {
-        format!("Mana2 SCORE {} (higher is better)", number(after, decimals),)
-    };
-    c.text(0, y, &short(&score, c.w), CYAN);
-    c.text(
-        0,
-        y + 1,
-        &short(
-            &format!(
-                "Training objective {} (weighted corpus mixture; lower is better)",
-                number(objective, decimals),
-            ),
-            c.w,
-        ),
-        MUTED,
-    );
-    y + 2
 }
 
 fn trace_view(term: &mut Terminal, l: &ak::Layout, w: &Weights, physical: bool) -> AppResult<()> {
@@ -604,15 +904,62 @@ fn trace_view(term: &mut Terminal, l: &ak::Layout, w: &Weights, physical: bool) 
     info_page(term, title, &lines)
 }
 
+type ContributorKeys = Vec<(String, Option<usize>)>;
+
+fn contributor_keys(before: &Evaluated, after: &Evaluated) -> [ContributorKeys; 2] {
+    let mut duplicates = BTreeSet::new();
+    for evaluation in [before, after] {
+        let mut seen = BTreeSet::new();
+        for label in &evaluation.labels {
+            if !seen.insert(label) {
+                duplicates.insert(label.as_str());
+            }
+        }
+    }
+    [before, after].map(|evaluation| {
+        evaluation
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(slot, label)| {
+                (
+                    label.clone(),
+                    duplicates.contains(label.as_str()).then_some(slot),
+                )
+            })
+            .collect()
+    })
+}
+
+fn contributor_name(keys: &ContributorKeys, skip: bool) -> String {
+    keys.iter()
+        .map(|(label, duplicate_slot)| {
+            let mut name = if label.contains(char::is_whitespace)
+                || label.contains('#')
+                || label.contains('"')
+            {
+                ak::quote(label.as_bytes())
+            } else {
+                label.clone()
+            };
+            if let Some(slot) = duplicate_slot {
+                name.push_str(&format!("#{slot}"));
+            }
+            name
+        })
+        .collect::<Vec<_>>()
+        .join(if skip { " _ " } else { " " })
+}
+
 fn action_contributor_rows(
     m: usize,
-    l: &ak::Layout,
+    _l: &ak::Layout,
     before: &Evaluated,
     after: &Evaluated,
 ) -> Vec<(String, f64, f64)> {
-    let mut rows = Vec::new();
-    let unigram =
-        METRIC_NAMES[m] == "TRAVEL" || METRIC_NAMES[m] == "VTRAVEL" || METRIC_NAMES[m] == "LTRAVEL";
+    let mut contributions = BTreeMap::<(ContributorKeys, Vec<usize>), (f64, f64)>::new();
+    let keys = contributor_keys(before, after);
+    let unigram = matches!(METRIC_NAMES[m], "TRAVEL" | "VTRAVEL" | "LTRAVEL");
     let count_kind = if unigram {
         0
     } else if is_rhythm(m) {
@@ -620,81 +967,246 @@ fn action_contributor_rows(
     } else {
         1
     };
-    let bt = if is_skip(m) {
-        &before.counts.skip
+    let pattern_kind = if unigram {
+        0
+    } else if is_rhythm(m) {
+        3
+    } else if is_skip(m) {
+        2
     } else {
-        &before.counts.tables[count_kind]
+        1
     };
-    let at = if is_skip(m) {
-        &after.counts.skip
-    } else {
-        &after.counts.tables[count_kind]
-    };
-    let d0 = denominator(m, &before.raw, &before.corpus);
-    let d1 = denominator(m, &after.raw, &after.corpus);
-    let grams: BTreeSet<_> = bt.keys().chain(at.keys()).cloned().collect();
-    for ids in grams {
-        let mut gram_ids = [0usize; 3];
-        for (j, &key) in ids.iter().enumerate() {
-            gram_ids[j] = after.model.original[key];
-        }
-        let gram = Gram {
-            ids: gram_ids,
-            len: ids.len(),
-            kind: if unigram {
-                0
-            } else if is_rhythm(m) {
-                3
-            } else if is_skip(m) {
-                2
-            } else {
-                1
-            },
-            f: 1.0,
+    let patterns = |evaluation: &Evaluated| -> ng::FingerTable {
+        let effective = if is_skip(m) {
+            evaluation.counts.finger_skip.as_ref()
+        } else {
+            evaluation
+                .counts
+                .finger_tables
+                .as_ref()
+                .map(|tables| &tables[count_kind])
         };
-        let mut unit = Raw::default();
-        let pos = positions(&after.model.original);
-        add_gram(&mut unit, &gram, &pos, &after.model.geometry, 1.0);
-        let mass = unit.0[m];
-        if mass <= 0.0 {
-            continue;
+        if let Some(table) = effective {
+            return table.clone();
         }
-        let a = pct(*bt.get(&ids).unwrap_or(&0.0) * mass, d0);
-        let b = pct(*at.get(&ids).unwrap_or(&0.0) * mass, d1);
-        if a == 0.0 && b == 0.0 {
-            continue;
-        }
-        let label = ids
+        let physical = if is_skip(m) {
+            &evaluation.counts.skip
+        } else {
+            &evaluation.counts.tables[count_kind]
+        };
+        physical
             .iter()
-            .map(|&i| l.slots[i].label.as_str())
-            .collect::<Vec<_>>()
-            .join(if is_skip(m) { " _ " } else { " " });
-        rows.push((label, a, b));
+            .map(|(slots, &frequency)| {
+                (
+                    ng::FingerPattern {
+                        slots: slots.to_vec(),
+                        fingers: slots
+                            .iter()
+                            .map(|&slot| evaluation.model.geometry.keys[slot].finger)
+                            .collect(),
+                    },
+                    frequency,
+                )
+            })
+            .collect()
+    };
+    for (side, evaluation) in [before, after].into_iter().enumerate() {
+        let denominator = denominator(m, &evaluation.raw, &evaluation.corpus);
+        for (pattern, frequency) in patterns(evaluation) {
+            let unit = ng::pattern_raw(&evaluation.model.geometry, pattern_kind, &pattern);
+            let mass = unit.0[m];
+            if mass <= 0.0 {
+                continue;
+            }
+            let value = pct(frequency * mass, denominator);
+            if value == 0.0 {
+                continue;
+            }
+            let names = pattern
+                .slots
+                .iter()
+                .map(|&i| keys[side][i].clone())
+                .collect();
+            let alternate_fingers = if pattern
+                .slots
+                .iter()
+                .zip(&pattern.fingers)
+                .any(|(&slot, &finger)| evaluation.model.geometry.keys[slot].finger != finger)
+            {
+                pattern.fingers
+            } else {
+                Vec::new()
+            };
+            let values = contributions.entry((names, alternate_fingers)).or_default();
+            if side == 0 {
+                values.0 += value;
+            } else {
+                values.1 += value;
+            }
+        }
     }
+    let mut rows: Vec<_> = contributions
+        .into_iter()
+        .map(|((keys, fingers), (before, after))| {
+            let mut label = contributor_name(&keys, is_skip(m));
+            if !fingers.is_empty() {
+                label.push_str(" (");
+                label.push_str(
+                    &fingers
+                        .iter()
+                        .map(|&finger| FINGER_NAMES[finger])
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                );
+                label.push(')');
+            }
+            (label, before, after)
+        })
+        .collect();
     rows.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
     rows
 }
 
-// Render the same settings and hit targets as the ordinary optimizer.
+// Search options live on a separate screen so the optimizer's main view can
+// use the same compact statistics dashboard as the editor.
+/// Settings-tab id of `[magic] max_rules`, shown while magic search is on.
+const MAGIC_RULES_SETTING: usize = 18;
+/// Settings-tab id of `[combos] max`; 0 leaves combos as they are.
+const COMBOS_SETTING: usize = 19;
+/// Settings-tab id of `[adaptive] max`; 0 leaves adaptive swaps as they are.
+const SWAPS_SETTING: usize = 20;
+/// Settings-tab ids of `[combos] exact` and `[adaptive] exact`.
+const COMBOS_EXACT_SETTING: usize = 22;
+const SWAPS_EXACT_SETTING: usize = 23;
+
+/// Toggle `[combos] exact` (`combos`) or `[adaptive] exact` and save it.
+fn toggle_exact(combos: bool, exact: &mut bool) -> AppResult<()> {
+    let mut config = load_app_config()?;
+    *exact = !*exact;
+    if combos {
+        config.combos.exact = *exact;
+        save_config_sections(&[("combos", combos_config_text(&config.combos))])?;
+    } else {
+        config.adaptive.exact = *exact;
+        save_config_sections(&[("adaptive", adaptive_config_text(&config.adaptive))])?;
+    }
+    Ok(())
+}
+
+/// Ask for a new adaptive swap count and save it to `[adaptive]`.
+fn edit_swap_count(term: &mut Terminal, swaps: &mut usize) -> AppResult<()> {
+    let limit = crate::swap_fit::MAX_SWAPS;
+    let title = format!("Adaptive swaps to fit (0 off, up to {limit})");
+    let Some(value) = input_box(term, &title, "", &swaps.to_string())? else {
+        return Ok(());
+    };
+    let value = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|count| *count <= limit)
+        .ok_or_else(|| format!("adaptive swaps must be 0-{limit}"))?;
+    let mut config = load_app_config()?;
+    config.adaptive.max_swaps = value;
+    save_config_sections(&[("adaptive", adaptive_config_text(&config.adaptive))])?;
+    *swaps = value;
+    Ok(())
+}
+
+/// How many pieces a fit may add: "exactly" with `exact`, else "up to".
+fn count_bound(exact: bool) -> &'static str {
+    if exact {
+        "exactly"
+    } else {
+        "up to"
+    }
+}
+
+/// Status text for adaptive swap fitting.
+fn swap_label(swaps: usize, exact: bool) -> String {
+    if swaps == 0 {
+        " · Swaps: off".into()
+    } else {
+        format!(" · Swaps: {} {swaps}", count_bound(exact))
+    }
+}
+
+/// Status text for combo fitting; empty while `[typing] combos` is off.
+fn combo_label(combos: Option<usize>, exact: bool) -> String {
+    match combos {
+        None => String::new(),
+        Some(0) => " · Combos: off · Settings".into(),
+        Some(count) => format!(" · Combos: {} {count}", count_bound(exact)),
+    }
+}
+
+/// Ask for a new combo count and save it to `[combos]`; the optimizer reads
+/// that section when it starts.
+fn edit_combo_count(term: &mut Terminal, combos: &mut usize) -> AppResult<()> {
+    let limit = crate::combo_fit::MAX_COMBOS;
+    let title = format!("Combos to fit (0 off, up to {limit})");
+    let Some(value) = input_box(term, &title, "", &combos.to_string())? else {
+        return Ok(());
+    };
+    let value = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|count| *count <= limit)
+        .ok_or_else(|| format!("combos must be 0-{limit}"))?;
+    let mut config = load_app_config()?;
+    config.combos.max_combos = value;
+    save_config_sections(&[("combos", combos_config_text(&config.combos))])?;
+    *combos = value;
+    Ok(())
+}
+
+/// Ask for a new magic rule count and save it to `[magic]`; the magic search
+/// reads that section when it starts.
+fn edit_magic_rules(term: &mut Terminal, rules: &mut usize) -> AppResult<()> {
+    let limit = crate::magic_design::MAX_RULES;
+    let title = format!("Magic rules (1-{limit})");
+    let Some(value) = input_box(term, &title, "", &rules.to_string())? else {
+        return Ok(());
+    };
+    let value = value
+        .trim()
+        .parse()
+        .ok()
+        .filter(|count| (1..=limit).contains(count))
+        .ok_or_else(|| format!("magic rules must be 1-{limit}"))?;
+    let mut config = load_app_config()?;
+    config.magic.max_rules = value;
+    save_config_sections(&[("magic", magic_config_text(&config.magic))])?;
+    *rules = value;
+    Ok(())
+}
+
 fn action_setup_frame(
     width: usize,
+    stats_view: &str,
     layout: &ak::Layout,
     baseline: &ak::Layout,
     corpus: &ng::NgramCorpus,
     weights: &Weights,
     locks: &[bool],
     settings: &SearchSettings,
+    magic_rules: Option<usize>,
+    combos: Option<usize>,
+    swaps: usize,
+    exact: (bool, bool),
     status: &str,
+    selected: Option<usize>,
 ) -> Canvas {
     let mut c = Canvas::optimizer(width, 96);
     header(
         &mut c,
-        "Optimizer",
+        "Search settings",
         &corpus.name,
         &layout.name,
-        "Space run | ? help | q back",
+        &format!("e done | Space run | w weights | v stats: {stats_view} | ? help"),
     );
-    let mut y = action_keyboard(&mut c, 3, layout, baseline, Some(locks), None) + 1;
+    let mut y = action_keyboard(&mut c, 3, layout, baseline, Some(locks), selected) + 1;
     c.text(
         0,
         y,
@@ -707,19 +1219,33 @@ fn action_setup_frame(
     );
     y += 2;
 
-    match settings.mode.as_str() {
-        "detailed" => y = grouped_weight_rows(&mut c, y, weights) + 1,
-        "mana2" => y = mana2_weight_rows(&mut c, y, &weights.2) + 1,
-        "simple" => y = simple_weight_rows(&mut c, y, &weights.3) + 1,
-        _ => unreachable!("validated search mode"),
+    y = typing_policy_row(&mut c, y, weights);
+    y = combo_policy_row(&mut c, y, weights) + 1;
+    let mut fields = settings_labels(settings);
+    if let Some(rules) = magic_rules {
+        fields.push((MAGIC_RULES_SETTING, "Magic rules".into(), rules.to_string()));
     }
-
-    let fields = settings_labels(settings);
+    let yes_no = |value: bool| if value { "yes" } else { "no" }.to_string();
+    // Combos fit only while they are scored (`[typing] combos`, the row above).
+    let combos = match combos {
+        None => "off (typing)".to_string(),
+        Some(0) => "off".to_string(),
+        Some(count) => count.to_string(),
+    };
+    fields.push((COMBOS_SETTING, "Combos".into(), combos));
+    fields.push((COMBOS_EXACT_SETTING, "Combos exact".into(), yes_no(exact.0)));
+    let swaps = if swaps == 0 {
+        "off".to_string()
+    } else {
+        swaps.to_string()
+    };
+    fields.push((SWAPS_SETTING, "Adaptive swaps".into(), swaps));
+    fields.push((SWAPS_EXACT_SETTING, "Swaps exact".into(), yes_no(exact.1)));
     let columns = if c.w >= 80 { 4 } else { 2 };
     let column_width = c.w / columns;
-    for (i, (label, value)) in fields.iter().enumerate() {
-        let x = i % columns * column_width;
-        let row = y + i / columns * 2;
+    for (cell, (i, label, value)) in fields.iter().enumerate() {
+        let x = cell % columns * column_width;
+        let row = y + cell / columns * 2;
         c.text(x, row, &short(label, column_width.saturating_sub(1)), MUTED);
         c.text(
             x,
@@ -734,7 +1260,7 @@ fn action_setup_frame(
                 w: column_width.saturating_sub(1),
                 h: 2,
             },
-            Action::Setting(i),
+            Action::Setting(*i),
         );
     }
     y += (fields.len() + columns - 1) / columns * 2 + 1;
@@ -778,6 +1304,12 @@ fn action_setup_frame(
     }
     y += 2;
     c.text(0, y, &short(status, c.w), CYAN);
+    c.text(
+        0,
+        y + 1,
+        &short("Space run · m magic · ? help · q back", c.w),
+        MUTED,
+    );
     c.h = y + 2;
     c
 }
@@ -790,6 +1322,7 @@ fn action_detail_frame(
     corpus: &str,
     rows: &[(String, f64, f64)],
     totals: (f64, f64),
+    denominators: (f64, f64),
     sort_change: bool,
     all: bool,
     merge: bool,
@@ -803,6 +1336,7 @@ fn action_detail_frame(
         corpus,
         rows,
         totals,
+        denominators,
         sort_change,
         all,
         merge,
@@ -818,13 +1352,25 @@ fn action_detail_frame_named(
     corpus: &str,
     rows: &[(String, f64, f64)],
     totals: (f64, f64),
+    denominators: (f64, f64),
     sort_change: bool,
     all: bool,
     merge: bool,
 ) -> Canvas {
     let mut c = Canvas::new(width, 64);
-    header(&mut c, title, corpus, &layout.name, "? help | q back");
+    header(&mut c, title, corpus, &layout.name, "");
     let mut y = action_keyboard(&mut c, 2, layout, baseline, None, None) + 1;
+    y = metric_detail_intro(&mut c, y, m);
+    if (denominators.0 - denominators.1).abs() > DISPLAY_EPSILON {
+        for line in wrap_lines(
+            &["Change ignores denominator shifts; Before/After keep actual percentages.".into()],
+            c.w.max(1),
+        ) {
+            c.text(0, y, &line, MUTED);
+            y += 1;
+        }
+        y += 1;
+    }
     c.text(
         0,
         y,
@@ -867,7 +1413,9 @@ fn action_detail_frame_named(
     let count = if all { rows.len() } else { rows.len().min(16) };
     for (i, (name, before, after)) in rows.iter().take(count).enumerate() {
         let row = y + i;
-        let color = change_color(m, *before, *after);
+        let (compare_before, compare_after) =
+            contributor_comparison(*before, *after, denominators.0, denominators.1);
+        let color = change_color(m, compare_before, compare_after);
         c.text(0, row, &short(name, 8), FG);
         c.right(9, row, 9, &number(*before, DETAIL_DECIMALS), MUTED);
         c.right(20, row, 9, &number(*after, DETAIL_DECIMALS), color);
@@ -875,8 +1423,8 @@ fn action_detail_frame_named(
             31,
             row,
             9,
-            &delta_text(*before, *after, DETAIL_DECIMALS),
-            delta_color(m, *before, *after),
+            &delta_text(compare_before, compare_after, DETAIL_DECIMALS),
+            delta_color(m, compare_before, compare_after),
         );
         contribution_bar(&mut c, 43, row, plot_width, *before, *after, maximum, color);
     }
@@ -888,6 +1436,8 @@ fn action_detail_frame_named(
     if !all {
         let before = (totals.0 - rows.iter().take(count).map(|r| r.1).sum::<f64>()).max(0.0);
         let after = (totals.1 - rows.iter().take(count).map(|r| r.2).sum::<f64>()).max(0.0);
+        let (compare_before, compare_after) =
+            contributor_comparison(before, after, denominators.0, denominators.1);
         y += 1;
         c.text(0, y, "Other", MUTED);
         c.right(9, y, 9, &number(before, DETAIL_DECIMALS), MUTED);
@@ -896,11 +1446,12 @@ fn action_detail_frame_named(
             31,
             y,
             9,
-            &delta_text(before, after, DETAIL_DECIMALS),
-            delta_color(m, before, after),
+            &delta_text(compare_before, compare_after, DETAIL_DECIMALS),
+            delta_color(m, compare_before, compare_after),
         );
     }
-    c.h = y + 2;
+    let footer_y = if all { y + 1 } else { y + 2 };
+    c.h = metric_detail_footer(&mut c, footer_y, m, sort_change, merge, Some(all), None);
     c
 }
 
@@ -914,6 +1465,10 @@ fn action_contributors(
 ) -> AppResult<()> {
     let source = action_contributor_rows(m, layout, before, after);
     let totals = (before.metrics.v[m], after.metrics.v[m]);
+    let denominators = (
+        denominator(m, &before.raw, &before.corpus),
+        denominator(m, &after.raw, &after.corpus),
+    );
     let mut scroll = 0;
     let mut sort_change = false;
     let mut all = false;
@@ -939,7 +1494,9 @@ fn action_contributors(
         }
         rows.sort_by(|a, b| {
             let order = if sort_change {
-                (b.2 - b.1).abs().total_cmp(&(a.2 - a.1).abs())
+                let (a0, a1) = contributor_comparison(a.1, a.2, denominators.0, denominators.1);
+                let (b0, b1) = contributor_comparison(b.1, b.2, denominators.0, denominators.1);
+                (b1 - b0).abs().total_cmp(&(a1 - a0).abs())
             } else {
                 b.2.total_cmp(&a.2)
             };
@@ -953,6 +1510,7 @@ fn action_contributors(
             &after.corpus.name,
             &rows,
             totals,
+            denominators,
             sort_change,
             all,
             merge,
@@ -976,14 +1534,26 @@ fn action_contributors(
                 merge = !merge;
                 scroll = 0;
             }
-            Event::Char('?') => help_popup(
-                term,
-                &c,
-                METRIC_NAMES[m],
-                &[ METRIC_HELP[m].into(), "d sorts by change; a toggles all/top; b combines reversed pairs; q returns.".into(), roll_settings_label(after.model.geometry.rolls), "Keys are physical slots pressed, including action keys, labelled by the current layout; they are not emitted text.".into(), "Before is the loaded baseline; After is the current layout. Blue keys have moved.".into(), "Top 16 contributions are shown with the remainder in Other.".into(), "SRAF shows clean credit; ALT counts all non-thumb LRL/RLR triples. Roll thumb inclusion and movement filters follow [rolls]. Both-zero rows are omitted; — means unchanged.".into(),]
-            )?,
-            _ => {
+            Event::Char('?') => {
+                let mut help = vec![
+                    METRIC_HELP[m].into(),
+                    "d: Sort by contribution or absolute change.".into(),
+                    "a: Show the top 16 contributions or all contributions.".into(),
+                ];
+                if !is_rhythm(m) {
+                    help.push("b: Combine each physical sequence with its reverse.".into());
+                }
+                help.extend([
+                    "q or Esc: Return to the editor.".into(),
+                    roll_settings_label(after.model.geometry.rolls),
+                    "Keys name the physical presses, including action keys, not emitted text. Before and After use their own layout's labels.".into(),
+                    "Before is the active comparison layout; After is the current layout. Blue keys have moved.".into(),
+                    "Top 16 contributions are shown with the remainder in Other.".into(),
+                    "SRAF shows clean credit; ALT counts all non-thumb LRL/RLR triples. Roll thumb inclusion and movement filters follow [rolls]. Both-zero rows are omitted; — means unchanged.".into(),
+                ]);
+                help_popup(term, &c, METRIC_NAMES[m], &help)?;
             }
+            _ => {}
         }
     }
 }
@@ -994,24 +1564,109 @@ fn choose_corpus(term: &mut Terminal) -> AppResult<Option<PathBuf>> {
 
 pub(crate) fn action_editor(
     term: &mut Terminal,
-    mut l: ak::Layout,
-    mut corpus: ng::NgramCorpus,
+    l: ak::Layout,
+    corpus: ng::NgramCorpus,
     optimize: bool,
 ) -> AppResult<()> {
     if optimize {
         return action_optimizer(term, l, corpus);
     }
 
-    let mut timing =
-        crate::load_profile::LoadProfile::new("action editor/optimizer initialization");
-    let original = l.clone();
-    let mut w = load_weights(Path::new(WEIGHTS_FILE))?;
-    let Some(mut baseline) = evaluate_tui(term, &original, &corpus, &w)? else {
+    let mut timing = crate::load_profile::LoadProfile::new("action editor initialization");
+    let w = load_weights(Path::new(WEIGHTS_FILE))?;
+    let corpus = Arc::new(corpus);
+    let Some(baseline) = evaluate_tui_shared(term, &l, &corpus, &w)? else {
         return Ok(());
     };
     timing.mark("Baseline evaluation (nested report)");
+    action_editor_core(term, l, corpus, w, baseline, timing)
+}
+
+pub(crate) fn action_editor_prepared(
+    term: &mut Terminal,
+    l: ak::Layout,
+    corpus: Arc<ng::NgramCorpus>,
+    w: Weights,
+    baseline: Arc<Evaluated>,
+) -> AppResult<()> {
+    let mut timing = crate::load_profile::LoadProfile::new("prepared action editor initialization");
+    timing.mark("Reuse ranked mapping and metrics");
+    action_editor_core(term, l, corpus, w, baseline, timing)
+}
+
+fn toggle_editor_policy(
+    term: &mut Terminal,
+    original: &ak::Layout,
+    layout: &ak::Layout,
+    corpus: &Arc<ng::NgramCorpus>,
+    weights: &Weights,
+    combos: bool,
+) -> AppResult<Option<(Weights, Arc<Evaluated>, Arc<Evaluated>)>> {
+    let mut next = weights.clone();
+    if combos {
+        next.4 = !next.4;
+    } else {
+        next.3 = !next.3;
+    }
+    let Some(before) = evaluate_tui_shared(term, original, corpus, &next)? else {
+        return Ok(None);
+    };
+    let Some(after) = evaluate_tui_shared(term, layout, corpus, &next)? else {
+        return Ok(None);
+    };
+    save_config_sections(&[("typing", typing_config_text(&next))])?;
+    Ok(Some((next, before, after)))
+}
+
+fn toggle_editor_spacegrams(
+    term: &mut Terminal,
+    original: &ak::Layout,
+    layout: &ak::Layout,
+    corpus: &Arc<ng::NgramCorpus>,
+    weights: &Weights,
+) -> AppResult<Option<(Arc<ng::NgramCorpus>, Arc<Evaluated>, Arc<Evaluated>)>> {
+    let mut limits = load_app_config()?.ngrams;
+    limits.include_spacegrams = !corpus.include_spacegrams;
+    let enabled = limits.include_spacegrams;
+    let path = corpus.path.clone();
+    let raw = fs::read_to_string(&path)?;
+    let Some(next) = ngram_job(
+        term,
+        "Reload spacegrams",
+        &corpus.name,
+        &layout.name,
+        move |stop, progress| {
+            ng::NgramCorpus::from_text_progress_with_limits(&raw, &path, limits, stop, progress)
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    let next = Arc::new(next);
+    let Some(before) = evaluate_tui_shared(term, original, &next, weights)? else {
+        return Ok(None);
+    };
+    let Some(after) = evaluate_tui_shared(term, layout, &next, weights)? else {
+        return Ok(None);
+    };
+    save_spacegram_setting(enabled)?;
+    Ok(Some((next, before, after)))
+}
+
+fn action_editor_core(
+    term: &mut Terminal,
+    mut l: ak::Layout,
+    mut corpus: Arc<ng::NgramCorpus>,
+    mut w: Weights,
+    mut baseline: Arc<Evaluated>,
+    mut timing: crate::load_profile::LoadProfile,
+) -> AppResult<()> {
+    let original = l.clone();
     let mut current = baseline.clone();
-    let mut undo: Vec<ak::Layout> = Vec::new();
+    let mut previous = current.clone();
+    let mut compare_latest = false;
+    let mut undo: Vec<(ak::Layout, Option<Arc<Evaluated>>)> = Vec::new();
+    let mut redo: Vec<(ak::Layout, Option<Arc<Evaluated>>)> = Vec::new();
     let (mut selected, mut drag) = (None, None);
     let mut scroll = 0;
     let mut status = String::new();
@@ -1023,12 +1678,15 @@ pub(crate) fn action_editor(
             "Editor",
             &l,
             &original,
-            &baseline,
+            if compare_latest { &previous } else { &baseline },
             &current,
             &w,
             None,
             selected.or(drag),
             &status,
+            Some(compare_latest),
+            None,
+            None,
         );
         term.present(&c, scroll)?;
         if let Some(mut timing) = opening.take() {
@@ -1043,61 +1701,172 @@ pub(crate) fn action_editor(
             Event::Escape if selected.is_some() || drag.is_some() => {
                 selected = None;
                 drag = None;
-            },
+            }
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-            Event::Char('.') => term.precise=!term.precise,
+            Event::Char('.') => term.precise = !term.precise,
+            Event::Char('d') => compare_latest = !compare_latest,
+            Event::Char('m') => {
+                term.toggle_stats_view();
+                scroll = 0;
+            }
             Event::Char('?') => help_popup(
                 term,
                 &c,
-                "Action controls",
-                &[action_controls(false).into(), "Click a stat for its contributing patterns.".into(), "i shows corpus/limit notes; t traces text; p traces physical key presses; c changes corpus; w edits weights.".into(), "Save creates a new copy; r restores the original layout.".into(), format!("{}-gram estimate; physical presses {}; ignored characters {}.", current.counts.order, number(current.counts.presses, term.decimals()), number(current.counts.ignored_characters, term.decimals()))]
+                "Editor controls",
+                &[
+                    "Click a statistic\tShow its contributing physical patterns".into(),
+                    "Click or drag keys\tSelect two keys to swap their bindings".into(),
+                    "d\tToggle isolated changes: compare with the layout before your latest edit.".into(),
+                    "m\tSwitch between Detailed jump statistics and Simple FSB/FSS/HSB/HSS statistics.".into(),
+                    "u\tUndo the last edit.".into(),
+                    "U\tRedo the last undone edit.".into(),
+                    "r\tReset the layout to its loaded bindings".into(),
+                    "s\tSave the current layout as a new copy".into(),
+                    "c\tChoose a different corpus".into(),
+                    "z\tInclude or exclude patterns with Space, such as e + Space or Space + t.".into(),
+                    "f\tEnable or disable alternate fingers.".into(),
+                    "F\tEnable or disable combos.".into(),
+                    "w\tEdit a metric weight".into(),
+                    "v\tShow layout rules".into(),
+                    "i\tShow corpus and source-limit notes".into(),
+                    "t\tShow how text is typed.".into(),
+                    "p\tTrace physical key presses.".into(),
+                    ".\tToggle display precision".into(),
+                    "Blue keys\tBindings changed from the loaded layout".into(),
+                    "Green means better; red means worse. Normally, compare with the loaded layout. Isolated changes show only the latest edit, including undo or reset.".into(),
+                    "Changing corpus, typing settings, or weights starts a fresh latest-edit comparison.".into(),
+                ],
             )?,
             Event::Char('i') => show_corpus_info(term, &current.corpus)?,
+            Event::Char('v') => crate::layout_rules::show(term, &c, &l, &w)?,
+            Event::Char('z') => match toggle_editor_spacegrams(term, &original, &l, &corpus, &w) {
+                Ok(Some((next, b, a))) => {
+                    corpus = next;
+                    baseline = b;
+                    previous = a.clone();
+                    current = a;
+                    invalidate_action_editor_history(&mut undo, &mut redo);
+                    status = format!(
+                        "Spacegrams {}",
+                        if corpus.include_spacegrams {
+                            "ON"
+                        } else {
+                            "OFF"
+                        }
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => status = format!("Spacegrams unchanged: {error}"),
+            },
             Event::Char('t') => trace_view(term, &l, &w, false)?,
             Event::Char('p') => trace_view(term, &l, &w, true)?,
-            Event::Char('s') => status = match l.save_new() {
-                Ok(p) => saved_layout_message(&p),
-                Err(e) => e
-            },
+            Event::Char('s') => {
+                status = match l.save_new() {
+                    Ok(p) => saved_layout_message(&p),
+                    Err(e) => e,
+                }
+            }
             Event::Char('r') => {
-                undo.push(l.clone());
+                undo.push((l, Some(current.clone())));
+                redo.clear();
+                previous = current;
                 l = original.clone();
                 current = baseline.clone();
-            },
-            Event::Char('u') => if let Some(old) = undo.last() {
-                if let Some(value) = evaluate_tui(term, old, &corpus, &w)? {
-                    l = undo.pop().unwrap();
-                    current = value;
+            }
+            Event::Char('u') => {
+                if let Some((old, saved)) = undo.last().cloned() {
+                    let value = match saved {
+                        Some(value) => Some(value),
+                        None => evaluate_tui_shared(term, &old, &corpus, &w)?,
+                    };
+                    if let Some(value) = value {
+                        undo.pop();
+                        redo.push((l, Some(current.clone())));
+                        previous = current;
+                        l = old;
+                        current = value;
+                        status.clear();
+                    }
                 }
-            },
-            Event::Char('c') => if let Some(p) = choose_corpus(term)? {
-                match load_corpus_tui(term, &p) {
-                    Ok(Some(next)) => {
-                        if let Some(b) = evaluate_tui(term, &original, &next, &w)? {
-                            if let Some(a) = evaluate_tui(term, &l, &next, &w)? {
-                                corpus = next;
-                                baseline = b;
-                                current = a;
-                                status.clear();
+            }
+            Event::Char('U') => {
+                if let Some((next, saved)) = redo.last().cloned() {
+                    let value = match saved {
+                        Some(value) => Some(value),
+                        None => evaluate_tui_shared(term, &next, &corpus, &w)?,
+                    };
+                    if let Some(value) = value {
+                        redo.pop();
+                        undo.push((l, Some(current.clone())));
+                        previous = current;
+                        l = next;
+                        current = value;
+                        status.clear();
+                    }
+                }
+            }
+            Event::Char('c') => {
+                if let Some(p) = choose_corpus(term)? {
+                    match load_corpus_tui(term, &p) {
+                        Ok(Some(next)) => {
+                            let next = Arc::new(next);
+                            if let Some(b) = evaluate_tui_shared(term, &original, &next, &w)? {
+                                if let Some(a) = evaluate_tui_shared(term, &l, &next, &w)? {
+                                    corpus = next;
+                                    baseline = b;
+                                    previous = a.clone();
+                                    current = a;
+                                    invalidate_action_editor_history(&mut undo, &mut redo);
+                                    status.clear();
+                                }
                             }
                         }
-                    },
-                    Ok(None) => {
-                    },
-                    Err(e) => status = e.to_string(),
+                        Ok(None) => {}
+                        Err(e) => status = e.to_string(),
+                    }
                 }
-            },
+            }
+            Event::Char(ch @ ('f' | 'F'))
+                if ch == 'f' && !l.alt_fingers.is_empty() || ch == 'F' && !l.combos.is_empty() =>
+            {
+                let label = if ch == 'F' {
+                    "Combos"
+                } else {
+                    "Alternate fingers"
+                };
+                match toggle_editor_policy(term, &original, &l, &corpus, &w, ch == 'F') {
+                    Ok(Some((next_w, b, a))) => {
+                        w = next_w;
+                        baseline = b;
+                        previous = a.clone();
+                        current = a;
+                        invalidate_action_editor_history(&mut undo, &mut redo);
+                        status = format!(
+                            "{label} {}",
+                            if if ch == 'F' { w.4 } else { w.3 } {
+                                "enabled"
+                            } else {
+                                "disabled"
+                            }
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => status = format!("{label} toggle failed: {error}"),
+                }
+            }
             Event::Char('w') => {
-                let ids: Vec<_> = (0..N_WEIGHTS).filter(|&i|!aggregate(i)).collect();
-                let names: Vec<_> = ids.iter().map(|&i | WEIGHT_NAMES[i].to_string()).collect();
+                let ids: Vec<_> = (0..N_WEIGHTS).filter(|&i| !aggregate(i)).collect();
+                let names: Vec<_> = ids.iter().map(|&i| WEIGHT_NAMES[i].to_string()).collect();
                 if let Some(i) = menu(term, "", &names)? {
                     let mut next_w = w.clone();
                     edit_single_weight(term, &mut next_w, ids[i])?;
-                    if let Some(b) = evaluate_tui(term, &original, &corpus, &next_w)? {
-                        if let Some(a) = evaluate_tui(term, &l, &corpus, &next_w)? {
+                    if let Some(b) = evaluate_tui_shared(term, &original, &corpus, &next_w)? {
+                        if let Some(a) = evaluate_tui_shared(term, &l, &corpus, &next_w)? {
                             w = next_w;
                             baseline = b;
+                            previous = a.clone();
                             current = a;
+                            invalidate_action_editor_history(&mut undo, &mut redo);
                         }
                     }
                 }
@@ -1107,28 +1876,76 @@ pub(crate) fn action_editor(
                 y,
                 button: 0,
                 release: false,
-                motion: false
-            } => {
-                match term.hit(&c, x, y, scroll) {
-                    Some(Action::Key(i)) => drag = Some(i),
-                    Some(Action::Metric(m)) => {
-                        action_contributors(term, m, &l, &original, &baseline, &current)?;
-                    }
-                    Some(Action::Weight(i)) => {
-                        let mut next_w = w.clone();
-                        edit_single_weight(term, &mut next_w, i)?;
-                        if let Some(b) = evaluate_tui(term, &original, &corpus, &next_w)? {
-                            if let Some(a) = evaluate_tui(term, &l, &corpus, &next_w)? {
-                                w = next_w;
-                                baseline = b;
-                                current = a;
-                            }
+                motion: false,
+            } => match term.hit(&c, x, y, scroll) {
+                Some(Action::Key(i)) => drag = Some(i),
+                Some(Action::Command('v')) => crate::layout_rules::show(term, &c, &l, &w)?,
+                Some(Action::Command('z')) => {
+                    match toggle_editor_spacegrams(term, &original, &l, &corpus, &w) {
+                        Ok(Some((next, b, a))) => {
+                            corpus = next;
+                            baseline = b;
+                            previous = a.clone();
+                            current = a;
+                            invalidate_action_editor_history(&mut undo, &mut redo);
+                            status = format!(
+                                "Spacegrams {}",
+                                if corpus.include_spacegrams {
+                                    "ON"
+                                } else {
+                                    "OFF"
+                                }
+                            );
                         }
-                    }
-                    _ => {
+                        Ok(None) => {}
+                        Err(error) => status = format!("Spacegrams unchanged: {error}"),
                     }
                 }
-            }
+                Some(Action::Command(ch @ ('f' | 'F'))) => {
+                    let label = if ch == 'F' {
+                        "Combos"
+                    } else {
+                        "Alternate fingers"
+                    };
+                    match toggle_editor_policy(term, &original, &l, &corpus, &w, ch == 'F') {
+                        Ok(Some((next_w, b, a))) => {
+                            w = next_w;
+                            baseline = b;
+                            previous = a.clone();
+                            current = a;
+                            invalidate_action_editor_history(&mut undo, &mut redo);
+                            status = format!(
+                                "{label} {}",
+                                if if ch == 'F' { w.4 } else { w.3 } {
+                                    "enabled"
+                                } else {
+                                    "disabled"
+                                }
+                            );
+                        }
+                        Ok(None) => {}
+                        Err(error) => status = format!("{label} toggle failed: {error}"),
+                    }
+                }
+                Some(Action::Metric(m)) => {
+                    let comparison = if compare_latest { &previous } else { &baseline };
+                    action_contributors(term, m, &l, &original, comparison, &current)?;
+                }
+                Some(Action::Weight(i)) => {
+                    let mut next_w = w.clone();
+                    edit_single_weight(term, &mut next_w, i)?;
+                    if let Some(b) = evaluate_tui_shared(term, &original, &corpus, &next_w)? {
+                        if let Some(a) = evaluate_tui_shared(term, &l, &corpus, &next_w)? {
+                            w = next_w;
+                            baseline = b;
+                            previous = a.clone();
+                            current = a;
+                            invalidate_action_editor_history(&mut undo, &mut redo);
+                        }
+                    }
+                }
+                _ => {}
+            },
             Event::Mouse {
                 x,
                 y,
@@ -1151,8 +1968,7 @@ pub(crate) fn action_editor(
                     }
                 }
             }
-            _ => {
-            }
+            _ => {}
         }
         if let Some((a, b)) = swap {
             if l.space(a) || l.space(b) {
@@ -1160,9 +1976,11 @@ pub(crate) fn action_editor(
             }
             let mut next = l.clone();
             next.swap(a, b);
-            match evaluate_tui(term, &next, &corpus, &w) {
+            match evaluate_tui_shared(term, &next, &corpus, &w) {
                 Ok(Some(v)) => {
-                    undo.push(l);
+                    undo.push((l, Some(current.clone())));
+                    redo.clear();
+                    previous = current;
                     l = next;
                     current = v;
                     status.clear();
@@ -1174,82 +1992,93 @@ pub(crate) fn action_editor(
     }
 }
 
-fn action_simple_rows(
-    metric: usize,
-    layout: &ak::Layout,
-    before: &Evaluated,
-    after: &Evaluated,
-) -> Vec<(String, f64, f64)> {
-    let mut physical = BTreeMap::<(Vec<usize>, bool), (f64, f64)>::new();
-    for (side, evaluation) in [before, after].into_iter().enumerate() {
-        let model = &evaluation.model;
-        let positions = positions(&model.original);
-        let denominator = simple_denominator(metric, &evaluation.raw, &evaluation.corpus.totals);
-        for gram in &evaluation.corpus.grams {
-            let mut contribution = Raw::default();
-            add_gram(&mut contribution, gram, &positions, &model.geometry, 1.0);
-            let mass = simple_mass(metric, &contribution);
-            let value = pct(mass.max(0.0), denominator);
-            if value == 0.0 {
-                continue;
-            }
-            let keys: Vec<_> = gram.ids[..gram.len]
-                .iter()
-                .map(|&id| positions[id])
-                .collect();
-            let values = physical.entry((keys, gram.kind == 2)).or_default();
-            if side == 0 {
-                values.0 += value;
-            } else {
-                values.1 += value;
-            }
-        }
+fn invalidate_action_editor_history(
+    undo: &mut [(ak::Layout, Option<Arc<Evaluated>>)],
+    redo: &mut [(ak::Layout, Option<Arc<Evaluated>>)],
+) {
+    for (_, evaluation) in undo.iter_mut().chain(redo.iter_mut()) {
+        *evaluation = None;
     }
-
-    let mut rows: Vec<_> = physical
-        .into_iter()
-        .map(|((keys, skip), (before, after))| {
-            let label = keys
-                .iter()
-                .map(|&key| layout.slots[key].label.as_str())
-                .collect::<Vec<_>>()
-                .join(if skip { " _ " } else { " " });
-            (label, before, after)
-        })
-        .collect();
-    rows.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
-    rows
 }
 
-fn action_default_locks(layout: &ak::Layout, generation: bool) -> Vec<bool> {
-    (0..layout.slots.len())
-        .map(|i| {
-            !generation
-                && (layout.home(i)
-                    || !layout.slots[i].main
-                    || matches!(layout.slots[i].binding, ak::Binding::Named(_)))
+/// Default locks, the same for every design: keys off the main block
+/// (thumbs, Space) stay where they are.
+pub(crate) fn action_default_locks(layout: &ak::Layout) -> Vec<bool> {
+    layout.slots.iter().map(|slot| !slot.main).collect()
+}
+
+/// The `H` preset: the default locks plus the home row and actions other than
+/// adaptive keys.
+pub(crate) fn action_home_locks(layout: &ak::Layout) -> Vec<bool> {
+    let homes = home_slot_mask(&physical_keys(layout));
+    // Adaptive swap keys move with their letters; other actions stay put.
+    layout
+        .slots
+        .iter()
+        .zip(homes)
+        .enumerate()
+        .map(|(index, (slot, home))| {
+            home || !slot.main
+                || matches!(slot.binding, ak::Binding::Named(_))
+                    && !crate::swap_fit::is_adaptive_key(layout, index)
         })
         .collect()
 }
 
-fn action_choose_design(
-    term: &mut Terminal,
-    layout: &ak::Layout,
-    settings: &mut SearchSettings,
-    locks: &mut Vec<bool>,
-) -> AppResult<()> {
+fn action_choose_design(term: &mut Terminal, settings: &mut SearchSettings) -> AppResult<()> {
     if let Some(choice) = menu(
         term,
         "",
         &["Refine".into(), "Random".into(), "Evolve".into()],
     )? {
-        let was_generation = settings.design != "refine";
         settings.design = ["refine", "random", "evolve"][choice].into();
-        if was_generation != (settings.design != "refine") {
-            *locks = action_default_locks(layout, settings.design != "refine");
-        }
     }
     Ok(())
+}
+
+fn choose_optimizer_magic(term: &mut Terminal, layout: &ak::Layout) -> AppResult<Option<usize>> {
+    let mut selected = layout.slots.iter().position(|slot| slot.main).unwrap_or(0);
+    loop {
+        let mut frame = Canvas::optimizer(term.width(), 32);
+        header(
+            &mut frame,
+            "Choose magic key",
+            "",
+            &layout.name,
+            "Click / hjkl / arrows select | Enter accept | Esc cancel",
+        );
+        action_keyboard(&mut frame, 3, layout, layout, None, Some(selected));
+        term.present(&frame, 0)?;
+        let event = term.event()?;
+        if let Some(Action::Key(slot)) = action_press(term, &frame, &event, 0) {
+            selected = slot;
+        }
+        match event {
+            Event::Enter => return Ok(Some(selected)),
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
+            Event::Left | Event::Char('h') | Event::Up | Event::Char('k') => {
+                selected = (selected + layout.slots.len() - 1) % layout.slots.len();
+            }
+            Event::Right | Event::Char('l') | Event::Down | Event::Char('j') => {
+                selected = (selected + 1) % layout.slots.len();
+            }
+            _ => {}
+        }
+    }
+}
+
+fn enable_optimizer_magic(
+    term: &mut Terminal,
+    layout: &mut ak::Layout,
+    locks: &mut Vec<bool>,
+) -> AppResult<Option<usize>> {
+    let Some(slot) = choose_optimizer_magic(term, layout)? else {
+        return Ok(None);
+    };
+    let (injected, root, fixed_locks) = crate::magic_optimizer::inject(layout, slot, locks)?;
+    *layout = injected;
+    *locks = fixed_locks;
+    Ok(Some(root))
 }
 
 fn action_optimizer_setup(
@@ -1261,24 +2090,261 @@ fn action_optimizer_setup(
     settings: &mut SearchSettings,
     locks: &mut Vec<bool>,
     status: &mut String,
+    baseline_cache: &mut Option<Arc<Evaluated>>,
+    current_cache: &mut Option<Arc<Evaluated>>,
+    magic_root: &mut Option<usize>,
+    before_magic: &mut Option<(ak::Layout, Vec<bool>)>,
+    stashed_swaps: &mut Option<Vec<crate::swap_fit::Swap>>,
+    run_now: bool,
 ) -> AppResult<bool> {
+    // The selected optimizer panel belongs to this setup session.
+    term.optimizer_weights = false;
+    term.optimizer_score = false;
     let mut scroll = 0;
+    let mut settings_view = false;
+    // Starts once the analyses below are ready, as if Space were pressed.
+    let mut run_requested = run_now;
+    let mut drag = None;
+    let mut drag_hover = None;
+    let (mut magic_rules, mut combos, mut swaps, mut combos_exact, mut swaps_exact) =
+        load_app_config()
+            .map(|config| {
+                let combos = config.weights.4.then_some(config.combos.max_combos);
+                (
+                    config.magic.max_rules,
+                    combos,
+                    config.adaptive.max_swaps,
+                    config.combos.exact,
+                    config.adaptive.exact,
+                )
+            })
+            .unwrap_or((MagicSettings::default().max_rules, None, 0, false, false));
     loop {
-        let frame = action_setup_frame(
-            term.width(),
-            layout,
-            original,
-            corpus,
-            weights,
-            locks,
-            settings,
-            status,
+        if !settings_view && (baseline_cache.is_none() || current_cache.is_none()) {
+            if baseline_cache.is_none() {
+                match evaluate_tui(term, original, corpus, weights) {
+                    Ok(Some(value)) => *baseline_cache = Some(value),
+                    Ok(None) => {
+                        *status =
+                            "Optimizer analysis cancelled; change settings or try again".into();
+                        settings_view = true;
+                    }
+                    Err(error) => {
+                        *status = format!("Optimizer analysis failed: {error}");
+                        settings_view = true;
+                    }
+                }
+            }
+            if !settings_view && current_cache.is_none() {
+                if layout.slots == original.slots
+                    && layout.actions == original.actions
+                    && layout.row_stagger == original.row_stagger
+                    && layout.left_outer == original.left_outer
+                    && layout.right_outer == original.right_outer
+                    && layout.action_mode == original.action_mode
+                    && layout.alt_fingers == original.alt_fingers
+                    && layout.combos.is_empty()
+                    && original.combos.is_empty()
+                {
+                    *current_cache = baseline_cache.clone();
+                } else {
+                    match evaluate_tui(term, layout, corpus, weights) {
+                        Ok(Some(value)) => *current_cache = Some(value),
+                        Ok(None) => {
+                            *status =
+                                "Optimizer analysis cancelled; change settings or try again".into();
+                            settings_view = true;
+                        }
+                        Err(error) => {
+                            *status = format!("Optimizer analysis failed: {error}");
+                            settings_view = true;
+                        }
+                    }
+                }
+            }
+            if baseline_cache.is_some()
+                && current_cache.is_some()
+                && (status.starts_with("Optimizer analysis failed:")
+                    || status.starts_with("Optimizer analysis cancelled;"))
+            {
+                status.clear();
+            }
+        }
+        if run_requested {
+            run_requested = false;
+            if baseline_cache.is_some() && current_cache.is_some() {
+                validate_search_settings(settings)?;
+                return Ok(true);
+            }
+        }
+        let mut frame = if settings_view {
+            action_setup_frame(
+                term.width(),
+                term.stats_view_name(),
+                layout,
+                original,
+                corpus,
+                weights,
+                locks,
+                settings,
+                magic_root.map(|_| magic_rules),
+                combos,
+                swaps,
+                (combos_exact, swaps_exact),
+                &format!(
+                    "Magic rules: {}{}{}{}",
+                    magic_root
+                        .map(|root| format!("on · key {} · joint search", layout.slots[root].label))
+                        .unwrap_or_else(|| "off · m enable".into()),
+                    combo_label(combos, combos_exact),
+                    swap_label(swaps, swaps_exact),
+                    if status.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" · {status}")
+                    }
+                ),
+                drag_hover,
+            )
+        } else if term.optimizer_score {
+            let (before, after) = (
+                baseline_cache.as_ref().unwrap(),
+                current_cache.as_ref().unwrap(),
+            );
+            let rows = if settings.mode == "aklgg" {
+                aklgg_score_rows(
+                    &action_mana_stats(original, before, weights),
+                    &action_mana_stats(layout, after, weights),
+                    weights,
+                )
+            } else {
+                metric_score_rows(&before.metrics, &after.metrics, weights)
+            };
+            let mut frame = score_frame(term.width(), rows, term.decimals());
+            let keys = "1 overview · 2 settings · 3 weights · Space run · q back";
+            let h = frame.h;
+            frame.text(0, h - 3, &short(status, frame.w), CYAN);
+            frame.text(0, h - 2, &short(keys, frame.w), MUTED);
+            frame
+        } else {
+            let lock_status = format!(
+                "Locked {} · Free {} · Magic rules: {}{}{}{}",
+                locks.iter().filter(|&&value| value).count(),
+                locks.iter().filter(|&&value| !value).count(),
+                magic_root
+                    .map(|root| format!("on · key {} · joint search", layout.slots[root].label))
+                    .unwrap_or_else(|| "off · m enable".into()),
+                combo_label(combos, combos_exact),
+                swap_label(if stashed_swaps.is_some() { 0 } else { swaps }, swaps_exact),
+                if status.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {status}")
+                }
+            );
+            action_frame(
+                term,
+                "Optimizer",
+                layout,
+                original,
+                baseline_cache.as_ref().unwrap(),
+                current_cache.as_ref().unwrap(),
+                weights,
+                Some(locks),
+                drag_hover,
+                &lock_status,
+                None,
+                Some(&settings.mode),
+                Some((stashed_swaps.as_deref(), swaps, swaps_exact)),
+            )
+        };
+        let active_tab = if settings_view {
+            1
+        } else if term.optimizer_score {
+            3
+        } else if term.optimizer_weights {
+            2
+        } else {
+            0
+        };
+        optimizer_tabs(
+            &mut frame,
+            active_tab,
+            &corpus.name,
+            &layout.name,
+            &settings.mode,
         );
         scroll = scroll.min(frame.h.saturating_sub(term.size.1));
         term.present(&frame, scroll)?;
         let mut event = term.event()?;
         if scroll_event(&event, &mut scroll, frame.h, term.size.1) {
             continue;
+        }
+        match event.clone() {
+            Event::Escape if drag.is_some() => {
+                drag = None;
+                drag_hover = None;
+                continue;
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: false,
+                motion: false,
+            } => {
+                if let Some(Action::Key(i)) = term.hit(&frame, x, y, scroll) {
+                    drag = Some(i);
+                    drag_hover = Some(i);
+                    continue;
+                }
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: false,
+                motion: true,
+            } if drag.is_some() => {
+                if let Some(Action::Key(i)) = term.hit(&frame, x, y, scroll) {
+                    drag_hover = Some(i);
+                }
+                continue;
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: true,
+                ..
+            } if drag.is_some() => {
+                let from = drag.take().unwrap();
+                let target = match term.hit(&frame, x, y, scroll) {
+                    Some(Action::Key(i)) => Some(i),
+                    _ => None,
+                };
+                drag_hover = None;
+                if let Some(to) = target {
+                    if from == to {
+                        locks[to] = !locks[to];
+                    } else {
+                        layout.swap(from, to);
+                        if let Some(root) = *magic_root {
+                            *magic_root = Some(if root == from {
+                                to
+                            } else if root == to {
+                                from
+                            } else {
+                                root
+                            });
+                        }
+                        *current_cache = None;
+                        *status = "Swapped bindings".into();
+                    }
+                }
+                continue;
+            }
+            _ => {}
         }
         if let Some(action) = action_press(term, &frame, &event, scroll) {
             match action {
@@ -1289,37 +2355,18 @@ fn action_optimizer_setup(
                 Action::Weight(i) => {
                     if let Err(error) = edit_single_weight(term, weights, i) {
                         *status = error.to_string();
+                    } else {
+                        *baseline_cache = None;
+                        *current_cache = None;
                     }
                     continue;
                 }
-                Action::Mana2Weight(i) => {
-                    match edit_mana2_weight(term, weights, i) {
-                        Ok(true) => {
-                            settings.preset = "custom".into();
-                            *status = format!("Updated Mana2 {}", mana2_metrics::STAT_IDS[i]);
-                        }
-                        Ok(false) => {}
-                        Err(error) => *status = error.to_string(),
-                    }
-                    continue;
-                }
-                Action::SimpleWeight(i) => {
-                    match edit_simple_weight(term, weights, i) {
-                        Ok(true) => {
-                            settings.preset = "custom".into();
-                            *status = format!("Updated Simple {}", simple_metrics::STAT_IDS[i]);
-                        }
-                        Ok(false) => {}
-                        Err(error) => *status = error.to_string(),
-                    }
-                    continue;
-                }
-                Action::SimpleSpeedSetting(i) => {
-                    match edit_simple_speed_setting(term, weights, i) {
+                Action::ManaWeight(i) => {
+                    match edit_physical_weight(term, weights, i) {
                         Ok(true) => {
                             settings.preset = "custom".into();
                             *status =
-                                format!("Updated Simple {}", simple_metrics::SPEED_SETTING_IDS[i]);
+                                format!("Updated {} {}", settings.mode, mana2_metrics::STAT_IDS[i]);
                         }
                         Ok(false) => {}
                         Err(error) => *status = error.to_string(),
@@ -1327,18 +2374,44 @@ fn action_optimizer_setup(
                     continue;
                 }
                 Action::Setting(i) => {
+                    let previous_mode = settings.mode.clone();
                     let result = match i {
-                        14 => action_choose_design(term, layout, settings, locks),
-                        16 => {
-                            cycle_metrics(settings);
-                            Ok(())
-                        }
+                        14 => action_choose_design(term, settings),
                         17 => choose_preset(term, settings),
+                        MAGIC_RULES_SETTING => edit_magic_rules(term, &mut magic_rules),
+                        COMBOS_SETTING => {
+                            // Setting a count scores combos too.
+                            if combos.is_none() {
+                                weights.4 = true;
+                                *baseline_cache = None;
+                                *current_cache = None;
+                            }
+                            let count = combos.get_or_insert_with(|| {
+                                load_app_config().map_or(0, |config| config.combos.max_combos)
+                            });
+                            edit_combo_count(term, count)
+                        }
+                        SWAPS_SETTING => edit_swap_count(term, &mut swaps),
+                        COMBOS_EXACT_SETTING => toggle_exact(true, &mut combos_exact),
+                        SWAPS_EXACT_SETTING => toggle_exact(false, &mut swaps_exact),
                         _ => edit_setting(term, settings, i),
                     };
                     if let Err(error) = result {
                         *status = error.to_string();
+                    } else if settings.mode != previous_mode {
+                        *status = format!("Scoring: {}", settings.mode);
                     }
+                    continue;
+                }
+                Action::Metric(metric) if !settings_view => {
+                    action_contributors(
+                        term,
+                        metric,
+                        layout,
+                        original,
+                        baseline_cache.as_ref().unwrap(),
+                        current_cache.as_ref().unwrap(),
+                    )?;
                     continue;
                 }
                 Action::Command(ch) => event = Event::Char(ch),
@@ -1346,31 +2419,174 @@ fn action_optimizer_setup(
             }
         }
 
+        // Handle shared tab shortcuts before panel-specific commands. This is
+        // also the path used by mouse clicks on the tab bar.
+        match event {
+            Event::Char(tab @ '1'..='4') => {
+                settings_view = tab == '2';
+                term.optimizer_weights = tab == '3';
+                term.optimizer_score = tab == '4';
+                scroll = 0;
+                continue;
+            }
+            _ => {}
+        }
+
         match event {
             Event::Char(' ') => {
+                if baseline_cache.is_none() || current_cache.is_none() {
+                    // Refresh changed weights/policies even when the user
+                    // starts directly from the settings panel.
+                    settings_view = false;
+                    term.optimizer_weights = false;
+                    run_requested = true;
+                    continue;
+                }
                 validate_search_settings(settings)?;
+                term.optimizer_weights = false;
+                term.optimizer_score = false;
                 return Ok(true);
             }
+            Event::Escape | Event::Char('q') if settings_view => {
+                settings_view = false;
+                term.optimizer_weights = false;
+                scroll = 0;
+            }
+            Event::Escape | Event::Char('q') if term.optimizer_weights => {
+                term.optimizer_weights = false;
+                scroll = 0;
+            }
+            Event::Escape | Event::Char('q') if term.optimizer_score => {
+                term.optimizer_score = false;
+                scroll = 0;
+            }
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(false),
-            Event::Char('H') => *locks = action_default_locks(layout, false),
-            Event::Char('U') => *locks = action_default_locks(layout, true),
+            Event::Char('e') => {
+                settings_view = !settings_view;
+                term.optimizer_weights = false;
+                term.optimizer_score = false;
+                scroll = 0;
+            }
+            Event::Char('.') => term.precise = !term.precise,
+            Event::Char('m') | Event::Char('M') => {
+                if magic_root.is_some() {
+                    *magic_root = None;
+                    if let Some((saved_layout, saved_locks)) = before_magic.take() {
+                        *layout = saved_layout;
+                        *locks = saved_locks;
+                    } else {
+                        *layout = original.clone();
+                        *locks = action_default_locks(layout);
+                    }
+                    *current_cache = None;
+                    if stashed_swaps.is_some() {
+                        keep_swaps_off(layout, stashed_swaps, current_cache);
+                    }
+                    *status =
+                        "Magic search off; restored the layout from before magic search.".into();
+                } else {
+                    let saved = (layout.clone(), locks.clone());
+                    match enable_optimizer_magic(term, layout, locks) {
+                        Ok(root) => {
+                            *magic_root = root;
+                            if root.is_some() {
+                                *before_magic = Some(saved);
+                                *current_cache = None;
+                            }
+                        }
+                        Err(error) => *status = error.to_string(),
+                    }
+                }
+            }
+            Event::Char('H') => *locks = action_home_locks(layout),
+            Event::Char('U') => locks.fill(false),
             Event::Char('L') => locks.fill(true),
-            Event::Char('o') => *layout = original.clone(),
+            Event::Char('o') => {
+                // Restores the arrangement only; the locks stay as set.
+                *layout = original.clone();
+                *magic_root = None;
+                *before_magic = None;
+                *current_cache = baseline_cache.clone();
+                if stashed_swaps.is_some() {
+                    keep_swaps_off(layout, stashed_swaps, current_cache);
+                }
+            }
+            Event::Char('a') => {
+                match stashed_swaps.take() {
+                    Some(swaps) => {
+                        *layout = crate::swap_fit::install(layout, &swaps);
+                        *status = "Adaptive swaps on".into();
+                    }
+                    None => {
+                        *stashed_swaps = Some(Vec::new());
+                        keep_swaps_off(layout, stashed_swaps, current_cache);
+                        *status = "Adaptive swaps off for this session: none used or fitted".into();
+                    }
+                }
+                *current_cache = None;
+            }
             Event::Char('n') => settings.seed = new_seed(),
-            Event::Char('g') => action_choose_design(term, layout, settings, locks)?,
-            Event::Char('m') => cycle_metrics(settings),
+            Event::Char('v') => {
+                term.toggle_stats_view();
+                scroll = 0;
+            }
+            Event::Char('t') => {
+                cycle_weight_system(settings);
+                *status = format!("{} scoring", settings.mode);
+                scroll = 0;
+            }
+            Event::Char('g') => action_choose_design(term, settings)?,
+            Event::Char('f') => {
+                weights.3 = !weights.3;
+                *baseline_cache = None;
+                *current_cache = None;
+                *status = format!(
+                    "Alternate fingers {}; s saves configuration",
+                    if weights.3 { "on" } else { "off" }
+                );
+            }
+            Event::Char('F') => {
+                weights.4 = !weights.4;
+                combos = weights
+                    .4
+                    .then(|| load_app_config().map_or(0, |config| config.combos.max_combos));
+                *baseline_cache = None;
+                *current_cache = None;
+                *status = format!(
+                    "Combos {}; s saves configuration",
+                    if weights.4 { "enabled" } else { "disabled" }
+                );
+            }
             Event::Char('p') => choose_preset(term, settings)?,
             Event::Char('x') => edit_mix(term, settings)?,
             Event::Char('w') => {
-                let ids: Vec<_> = (0..N_WEIGHTS).filter(|&i| !aggregate(i)).collect();
-                let names: Vec<_> = ids.iter().map(|&i| WEIGHT_NAMES[i].to_string()).collect();
-                if let Some(i) = menu(term, "Typing effort weights", &names)? {
-                    edit_single_weight(term, weights, ids[i])?;
+                let open = !term.optimizer_weights;
+                term.optimizer_weights = open;
+                term.optimizer_score = false;
+                settings_view = false;
+                scroll = 0;
+            }
+            Event::Enter if term.optimizer_weights => {
+                if settings.uses_mana2_stats() {
+                    if let Err(error) = choose_physical_weight(term, weights) {
+                        *status = error.to_string();
+                    }
+                } else {
+                    let before = weights_text(weights);
+                    if let Err(error) = choose_optimizer_weight(term, weights) {
+                        *status = error.to_string();
+                    }
+                    if weights_text(weights) != before {
+                        *baseline_cache = None;
+                        *current_cache = None;
+                    }
                 }
             }
             Event::Char('d') => {
                 *weights = Weights::default();
                 *settings = SearchSettings::default();
+                *baseline_cache = None;
+                *current_cache = None;
             }
             Event::Char('s') => {
                 *status = match save_optimizer_settings(weights, settings) {
@@ -1382,29 +2598,83 @@ fn action_optimizer_setup(
                 Ok(config) => {
                     *weights = config.weights;
                     *settings = config.search;
+                    *baseline_cache = None;
+                    *current_cache = None;
                     *status = "reloaded configuration".into();
                 }
                 Err(error) => *status = error.to_string(),
             },
-            Event::Char('i') => info_page(term, "Corpus", &corpus.warnings)?,
+            Event::Char('i') => {
+                let warnings: Vec<_> = corpus
+                    .warnings
+                    .iter()
+                    .chain(layout.source_warnings.iter())
+                    .cloned()
+                    .collect();
+                info_page(term, "Corpus and layout", &warnings)?;
+            }
             Event::Char('?') => help_popup(
                 term,
                 &frame,
                 "Optimizer",
                 &[
-                    action_controls(true).into(),
-                    "Space run; s save configuration; r reload; d defaults; o reset layout to original.".into(),
-                    "g design; m detailed/Mana2/Simple; p preset; n new seed; x corpus mixture.".into(),
-                    "H home/action locks; U unlock all; L lock all. Mouse toggles locks.".into(),
+                    "Space\tRun the optimizer.".into(),
+                    "m\tToggle magic-key injection and joint letter/rule search.".into(),
+                    "1 / 2 / 3\tOverview / Settings / Weights.".into(),
+                    "e / w\tOpen Settings / Weights; press again for Overview.".into(),
+                    "Enter\tChoose a weight for the selected scoring system.".into(),
+                    "v\tSwitch Simple / Detailed statistics; scoring stays unchanged.".into(),
+                    "t\tSwitch normal / aklgg scoring.".into(),
+                    "s\tSave weights and search settings.".into(),
+                    "r\tReload weights and search settings from configuration.".into(),
+                    "d\tRestore default weights and search settings.".into(),
+                    "o\tReset the layout to its loaded bindings.".into(),
+                    "Click a key\tLock or unlock its physical slot.".into(),
+                    "Drag a key\tSwap its binding with another key.".into(),
+                    "Click a stat\tShow its contributing patterns.".into(),
+                    "H\tUse default locks.".into(),
+                    "U\tUnlock all keys, including an active magic key.".into(),
+                    "L\tLock all keys.".into(),
+                    "f\tTurn alternate fingers off or on (or click the Alts line).".into(),
+                    "a\tTurn adaptive swaps off or on for this session (or click the Swaps line)."
+                        .into(),
+                    "F\tEnable or disable combos.".into(),
+                    "g\tChoose Refine, Random, or Evolve.".into(),
+                    "p\tChoose a limit preset.".into(),
+                    "n\tChoose a new random seed.".into(),
+                    "x\tEdit the training corpus mixture.".into(),
+                    ".\tSwitch between two and four decimal places.".into(),
+                    "q\tClose settings, or return to the previous screen.".into(),
                     "Limits are increases relative to the original on each training corpus.".into(),
                     "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into(),
-                    "Detailed weights select typing effort; w edits them.".into(),
-                    "Click a Mana2 schedule or Simple scalar weight to edit it; s saves both sections.".into(),
                 ],
             )?,
             _ => {}
         }
     }
+}
+
+/// Take `layout`'s adaptive swaps out into `stashed`, which marks them off.
+/// Swaps already stashed stay; the layout's own replace them when it has any.
+fn keep_swaps_off(
+    layout: &mut ak::Layout,
+    stashed: &mut Option<Vec<crate::swap_fit::Swap>>,
+    current_cache: &mut Option<Arc<Evaluated>>,
+) {
+    let (base, swaps) = crate::swap_fit::split(layout);
+    if !swaps.is_empty() {
+        *layout = base;
+        *stashed = Some(swaps);
+        *current_cache = None;
+    }
+}
+
+/// `arrangement` of a search result, with its alternate fingers named by
+/// letter again (see `alt_fingers::pin`).
+fn arranged(start: &ak::Layout, arr: &[usize]) -> ak::Layout {
+    let mut layout = crate::action_search::arrangement(start, arr);
+    crate::alt_fingers::unpin(&mut layout);
+    layout
 }
 
 fn action_optimizer_search(
@@ -1415,37 +2685,77 @@ fn action_optimizer_search(
     weights: &Weights,
     settings: &SearchSettings,
     locks: &[bool],
-) -> AppResult<Option<Snapshot>> {
-    let original_owned = original.clone();
-    let seed_owned = seed.clone();
+    magic_root: Option<usize>,
+    swaps_off: bool,
+) -> AppResult<Option<(Snapshot, ak::Layout)>> {
+    // Own alternate fingers stay on their keys while letters move; every
+    // layout leaving the search names them by letter again.
+    let mut original_owned = original.clone();
+    let mut seed_owned = seed.clone();
+    crate::alt_fingers::pin(&mut original_owned);
+    crate::alt_fingers::pin(&mut seed_owned);
     let training = corpora.to_vec();
     let worker_weights = weights.clone();
     let worker_settings = settings.clone();
     let worker_locks = locks.to_vec();
+    let config = load_app_config()?;
+    let worker_magic = config.magic;
+    let worker_combos = config.combos;
+    let mut worker_swaps = config.adaptive;
+    if swaps_off {
+        worker_swaps.max_swaps = 0;
+    }
+    let joint = magic_root.is_some()
+        || worker_combos.active_max(&worker_weights) > 0
+        || worker_swaps.max_swaps > 0;
     let control = Arc::new(Control::new());
     let worker_control = Arc::clone(&control);
     let (updates_tx, updates_rx) = mpsc::sync_channel(2);
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
-        let mut callback = |snapshot, baseline, raw, totals| {
-            let _ = updates_tx.try_send((snapshot, baseline, raw, totals));
+        let result = if joint {
+            let mut callback = |mut layout, snapshot, baseline, raw, totals| {
+                crate::alt_fingers::unpin(&mut layout);
+                let _ = updates_tx.try_send((snapshot, baseline, raw, totals, layout));
+            };
+            crate::magic_optimizer::run_controlled(
+                &original_owned,
+                &seed_owned,
+                magic_root,
+                &worker_locks,
+                &training,
+                &worker_weights,
+                &worker_settings,
+                &worker_magic,
+                &worker_combos,
+                &worker_swaps,
+                &worker_control,
+                &mut callback,
+            )
+            .map(|(layout, snapshot)| (snapshot, layout))
+        } else {
+            let mut callback = |snapshot: Snapshot, baseline, raw, totals| {
+                let layout = arranged(&seed_owned, &snapshot.best.arr);
+                let _ = updates_tx.try_send((snapshot, baseline, raw, totals, layout));
+            };
+            crate::action_search::run_parallel(
+                &original_owned,
+                &seed_owned,
+                &training,
+                &worker_weights,
+                &worker_settings,
+                &worker_locks,
+                &worker_control,
+                &mut callback,
+            )
+            .map(|snapshot| (snapshot, seed_owned))
         };
-        let result = crate::action_search::run(
-            &original_owned,
-            &seed_owned,
-            &training,
-            &worker_weights,
-            &worker_settings,
-            &worker_locks,
-            &worker_control,
-            &mut callback,
-        );
         let _ = done_tx.send(result);
     });
 
-    let mut snapshot: Option<(Snapshot, Metrics, Raw, [f64; 4])> = None;
+    let mut snapshot: Option<(Snapshot, Metrics, Raw, [f64; 4], ak::Layout)> = None;
     let mut scroll = 0;
-    let result = (|| -> AppResult<Option<Snapshot>> {
+    let result = (|| -> AppResult<Option<(Snapshot, ak::Layout)>> {
         loop {
             while let Ok(update) = updates_rx.try_recv() {
                 snapshot = Some(update);
@@ -1462,7 +2772,7 @@ fn action_optimizer_search(
 
             let layout = snapshot
                 .as_ref()
-                .map(|(value, _, _, _)| crate::action_search::arrangement(seed, &value.best.arr))
+                .map(|(_, _, _, _, layout)| layout.clone())
                 .unwrap_or_else(|| seed.clone());
             let mut frame = Canvas::optimizer(term.width(), 96);
             header(
@@ -1470,10 +2780,14 @@ fn action_optimizer_search(
                 "Optimizing",
                 &corpora[0].0.name,
                 &seed.name,
-                "p pause | ? help | q setup",
+                &format!(
+                    "p pause | m stats: {} | ? help | q setup",
+                    term.stats_view_name()
+                ),
             );
             let mut y = action_keyboard(&mut frame, 3, &layout, original, Some(locks), None) + 1;
-            if let Some((snapshot, baseline, raw, totals)) = &snapshot {
+            y = rules_and_alts_rows(&mut frame, y, &layout, weights);
+            if let Some((snapshot, baseline, raw, totals, _)) = &snapshot {
                 let progress = &snapshot.progress;
                 let phase = if control.pause.load(Ordering::Relaxed) {
                     "paused"
@@ -1481,40 +2795,30 @@ fn action_optimizer_search(
                     &progress.phase
                 };
                 let current = metrics_totals(raw, totals);
-                if settings.mode == "mana2" {
-                    let stats = mana2_stats(raw, totals);
-                    y = mana2_compact_stats(&mut frame, y, None, &stats, term.decimals());
-                    if snapshot.has_best {
-                        y = mana2_score_line(
-                            &mut frame,
-                            y,
-                            None,
-                            mana2_metrics::score(&stats, &weights.2),
-                            snapshot.best.score,
-                            term.decimals(),
-                        );
-                    }
-                } else if settings.mode == "simple" {
-                    let stats = mana2_stats(raw, totals);
-                    y = simple_stats_rows(&mut frame, y, None, &stats, &weights.3, term.decimals());
-                    y = simple_speed_table(
-                        &mut frame,
-                        y + 1,
-                        None,
-                        &stats,
-                        &weights.3,
-                        term.decimals(),
-                    );
-                    y = simple_score_line(
-                        &mut frame,
-                        y,
-                        None,
-                        simple_metrics::score(&stats, &weights.3),
-                        snapshot.has_best.then_some(snapshot.best.score),
-                        term.decimals(),
-                    );
+                let aklgg_scoring = settings.mode == "aklgg";
+                let physical_stats = settings.uses_mana2_stats().then(|| {
+                    // A training mixture has no single population; it keeps
+                    // the mapped totals.
+                    let populations = match corpora {
+                        [(corpus, _)] => corpus.speed_populations,
+                        _ => [0.0; 2],
+                    };
+                    ng::mana_stats(
+                        raw.1
+                            .as_ref()
+                            .expect("physical search snapshot must contain Mana counters"),
+                        *totals,
+                        populations,
+                    )
+                });
+                if aklgg_scoring {
+                    // Search snapshots carry the current compact physical counters.
+                    // Showing it in both columns avoids remapping the baseline merely
+                    // for a live progress frame; setup and result views have both.
+                    let stats = physical_stats.as_ref().unwrap();
+                    y = aklgg_stat_table(&mut frame, y, stats, stats, term.decimals());
                 } else {
-                    y = grouped_metric_totals(
+                    y = grouped_metric_table(
                         &mut frame,
                         y,
                         baseline,
@@ -1522,41 +2826,75 @@ fn action_optimizer_search(
                         raw,
                         totals,
                         term.decimals(),
+                        if term.simple_stats {
+                            &SIMPLE_TABLE_GROUPS
+                        } else {
+                            &TABLE_GROUPS
+                        },
+                        false,
+                        true,
                     );
                     y = finger_table(&mut frame, y + 1, baseline, &current, term.decimals());
+                }
+                if settings.uses_mana2_stats() {
+                    let score = mana_breakdown(physical_stats.as_ref().unwrap(), weights);
+                    frame.text(
+                        0,
+                        y + 1,
+                        &format!(
+                            "{} · Penalties {} − Rewards {} = Score {}",
+                            "aklgg",
+                            number(score.penalty, term.decimals()),
+                            number(score.bonus, term.decimals()),
+                            number(score.net, term.decimals()),
+                        ),
+                        CYAN,
+                    );
+                    y += 3;
+                } else {
                     y = score_panel(
                         &mut frame,
                         y + 1,
-                        &action_score_breakdown(baseline, weights, settings),
-                        &action_score_breakdown(&current, weights, settings),
+                        &action_score_breakdown(baseline, weights),
+                        &action_score_breakdown(&current, weights),
                         None,
                         term.decimals(),
                     );
-                    if snapshot.has_best {
-                        frame.text(
-                            0,
-                            y,
-                            &format!(
-                                "Search objective: {} ({}, training mixture)",
-                                number(snapshot.best.score, term.decimals()),
-                                settings.mode,
-                            ),
-                            CYAN,
-                        );
-                        y += 2;
-                    }
+                }
+                if snapshot.has_best {
+                    frame.text(
+                        0,
+                        y,
+                        &format!(
+                            "Search score: {} ({}, training mixture)",
+                            number(snapshot.best.score, term.decimals()),
+                            if settings.uses_mana2_stats() {
+                                "aklgg"
+                            } else {
+                                "Normal"
+                            },
+                        ),
+                        CYAN,
+                    );
+                    y += 2;
                 }
                 frame.text(
                     0,
                     y,
                     &format!(
-                        "{}  {}/{}  {} trials  {} accepted  {:.1}s",
+                        "{}  {}/{}  {} {}  {} accepted  {:.1}s · {} workers",
                         phase,
                         progress.restart,
                         settings.restarts,
                         progress.evaluations,
+                        if magic_root.is_some() {
+                            "swap trials"
+                        } else {
+                            "trials"
+                        },
                         progress.accepted,
                         progress.elapsed,
+                        search_worker_count(settings),
                     ),
                     CYAN,
                 );
@@ -1575,6 +2913,10 @@ fn action_optimizer_search(
                     control.pause.store(!paused, Ordering::Relaxed);
                 }
                 Event::Char('.') => term.precise = !term.precise,
+                Event::Char('m') => {
+                    term.toggle_stats_view();
+                    scroll = 0;
+                }
                 Event::Char('?') => help_popup(
                     term,
                     &frame,
@@ -1582,7 +2924,9 @@ fn action_optimizer_search(
                     &[
                         "p pauses or resumes the search; q returns to setup and keeps the best current changes in memory.".into(),
                         "The score, accepted count, trial count, and current best layout remain visible while searching.".into(),
-                        "Use the setup screen to change mode, weights, corpus mixture, locks, limits, and search settings.".into(),
+                        "Use the setup screen to change weights, corpus mixture, locks, limits, and search settings.".into(),
+                        "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS.".into(),
+                        "Magic search refits rules between search sections; swap trials count binding proposals.".into(),
                     ],
                 )?,
                 Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
@@ -1597,20 +2941,27 @@ fn action_optimizer_search(
         return Err("action search worker panicked".into());
     }
     if matches!(&result, Ok(None)) {
-        if let Some((snapshot, _, _, _)) = snapshot {
-            if snapshot.has_best {
-                *seed = crate::action_search::arrangement(seed, &snapshot.best.arr);
+        // A final accepted candidate may arrive after the last screen update.
+        // Recover the complete layout, including its dictionary, before leaving.
+        if let Ok(Ok((finished, basis))) = done_rx.try_recv() {
+            if finished.has_best {
+                *seed = arranged(&basis, &finished.best.arr);
+            }
+        } else {
+            while let Ok(update) = updates_rx.try_recv() {
+                snapshot = Some(update);
+            }
+            if let Some((snapshot, _, _, _, layout)) = snapshot {
+                if snapshot.has_best {
+                    *seed = layout;
+                }
             }
         }
     }
     result
 }
 
-fn action_score_breakdown(
-    metrics: &Metrics,
-    weights: &Weights,
-    _settings: &SearchSettings,
-) -> Breakdown {
+fn action_score_breakdown(metrics: &Metrics, weights: &Weights) -> Breakdown {
     breakdown(metrics, weights)
 }
 
@@ -1632,54 +2983,20 @@ fn action_result_frame(
         "Optimizer result",
         &after.corpus.name,
         &layout.name,
-        "? help | q setup",
+        &format!("m stats: {} | ? help | q setup", term.stats_view_name()),
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
-    if settings.mode == "mana2" {
-        let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
-        let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
-        y = mana2_compact_stats(
-            &mut frame,
-            y,
-            Some(&before_stats),
-            &after_stats,
-            term.decimals(),
-        );
-        y = mana2_score_line(
-            &mut frame,
-            y,
-            Some(mana2_metrics::score(&before_stats, &weights.2)),
-            mana2_metrics::score(&after_stats, &weights.2),
-            objective,
-            term.decimals(),
-        );
-    } else if settings.mode == "simple" {
-        let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
-        let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
-        y = simple_stats_rows(
-            &mut frame,
-            y,
-            Some(&before_stats),
-            &after_stats,
-            &weights.3,
-            term.decimals(),
-        );
-        y = simple_speed_table(
-            &mut frame,
-            y + 1,
-            Some(&before_stats),
-            &after_stats,
-            &weights.3,
-            term.decimals(),
-        );
-        y = simple_score_line(
-            &mut frame,
-            y,
-            Some(simple_metrics::score(&before_stats, &weights.3)),
-            simple_metrics::score(&after_stats, &weights.3),
-            Some(objective),
-            term.decimals(),
-        );
+    y = rules_and_alts_rows(&mut frame, y, layout, weights);
+    let aklgg_scoring = settings.mode == "aklgg";
+    let physical_stats = settings.uses_mana2_stats().then(|| {
+        (
+            action_mana_stats(original, before, weights),
+            action_mana_stats(layout, after, weights),
+        )
+    });
+    if aklgg_scoring {
+        let (before_stats, after_stats) = physical_stats.as_ref().unwrap();
+        y = aklgg_stat_table(&mut frame, y, before_stats, after_stats, term.decimals());
     } else {
         y = grouped_metric_cards(
             &mut frame,
@@ -1689,6 +3006,7 @@ fn action_result_frame(
             &after.raw,
             &after.corpus,
             term.decimals(),
+            term.simple_stats,
         );
         y = finger_table(
             &mut frame,
@@ -1697,29 +3015,43 @@ fn action_result_frame(
             &after.metrics,
             term.decimals(),
         );
+    }
+    if settings.uses_mana2_stats() {
+        let (before_stats, after_stats) = physical_stats.as_ref().unwrap();
         y = score_panel(
             &mut frame,
             y + 1,
-            &action_score_breakdown(&before.metrics, weights, settings),
-            &action_score_breakdown(&after.metrics, weights, settings),
+            &mana_breakdown(before_stats, weights),
+            &mana_breakdown(after_stats, weights),
+            None,
+            term.decimals(),
+        );
+    } else {
+        y = score_panel(
+            &mut frame,
+            y + 1,
+            &action_score_breakdown(&before.metrics, weights),
+            &action_score_breakdown(&after.metrics, weights),
             None,
             term.decimals(),
         );
     }
-    if settings.mode == "detailed" {
-        frame.text(
-            0,
-            y,
-            &format!(
-                "Search objective: {} ({}, training mixture) · {}-gram estimate",
-                number(objective, term.decimals()),
-                settings.mode,
-                after.counts.order,
-            ),
-            CYAN,
-        );
-        y += 2;
-    }
+    frame.text(
+        0,
+        y,
+        &format!(
+            "Search score: {} ({}, training mixture) · {}-gram estimate",
+            number(objective, term.decimals()),
+            if settings.uses_mana2_stats() {
+                "aklgg"
+            } else {
+                "normal"
+            },
+            after.counts.order,
+        ),
+        CYAN,
+    );
+    y += 2;
     frame.text(0, y, &short(status, frame.w), CYAN);
     frame.h = y + 2;
     frame
@@ -1735,24 +3067,43 @@ fn save_action_result(
     corpora: &[(ng::NgramCorpus, f64)],
     candidate: &Candidate,
     progress: &Progress,
+    magic_enabled: bool,
 ) -> AppResult<PathBuf> {
-    let path = layout
-        .save_new()
+    let path = crate::layout_export::save_optimized(layout)
         .map_err(|error| format!("layout save: {error}"))?;
-    let physical_weights = if settings.mode == "mana2" {
-        format!("[mana2]\n{}\n", weights.2.config_text())
-    } else if settings.mode == "simple" {
-        format!("[simple]\n{}\n", weights.3.config_text())
+    let selected_weights = if settings.uses_mana2_stats() {
+        format!("[aklgg]\n{}\n", weights.2.config_text())
     } else {
         String::new()
     };
     let mut report = format!(
-        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
-        progress.seed, progress.evaluations, progress.elapsed, candidate.score,
-        weights_text(weights), rolls_config_text(weights.rolls()), physical_weights, search_settings_text(settings),
-        original.text(), start.text(), layout.text(),
-        locks.iter().enumerate().filter_map(|(i, &locked)| locked.then_some(i)).collect::<Vec<_>>(),
+        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nscore = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
+        progress.seed,
+        progress.evaluations,
+        progress.elapsed,
+        candidate.score,
+        weights_text(weights),
+        rolls_config_text(weights.rolls()),
+        selected_weights,
+        search_settings_text(settings),
+        original.text(),
+        start.text(),
+        layout.text(),
+        locks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &locked)| locked.then_some(i))
+            .collect::<Vec<_>>(),
     );
+    if magic_enabled {
+        let max_rules = load_app_config()
+            .map(|config| config.magic.max_rules)
+            .unwrap_or(MagicSettings::default().max_rules);
+        report.push_str(&format!(
+            "\n[magic_rules]\nenabled = true\nmax_rules = {max_rules}\nmode = {}\nalgorithm = controlled_joint_search\n",
+            settings.mode
+        ));
+    }
     let total_share: f64 = corpora.iter().map(|(_, share)| *share).sum();
     for (corpus, share) in corpora {
         report.push_str(&format!(
@@ -1763,34 +3114,6 @@ fn save_action_result(
         ));
         for warning in &corpus.warnings {
             report.push_str(&format!("# {warning}\n"));
-        }
-        if settings.uses_mana2_stats() {
-            let stop = AtomicBool::new(false);
-            let before = evaluate(original, corpus, weights, &stop)?;
-            let after = evaluate(layout, corpus, weights, &stop)?;
-            let before_stats = mana2_stats(&before.raw, &before.corpus.totals);
-            let after_stats = mana2_stats(&after.raw, &after.corpus.totals);
-            if settings.mode == "mana2" {
-                report.push_str(&format!(
-                    "mana2_score = {:.9} -> {:.9}\n",
-                    mana2_metrics::score(&before_stats, &weights.2),
-                    mana2_metrics::score(&after_stats, &weights.2),
-                ));
-            } else {
-                report.push_str(&format!(
-                    "simple_score = {:.9} -> {:.9}\n",
-                    simple_metrics::score(&before_stats, &weights.3),
-                    simple_metrics::score(&after_stats, &weights.3),
-                ));
-                let before_values = simple_metrics::values(&before_stats, &weights.3);
-                let after_values = simple_metrics::values(&after_stats, &weights.3);
-                for (index, id) in simple_metrics::STAT_IDS.iter().enumerate() {
-                    report.push_str(&format!(
-                        "simple_metric_{id} = {:.9} -> {:.9}\n",
-                        before_values[index], after_values[index],
-                    ));
-                }
-            }
         }
     }
     atomic_write(&path.with_extension("run.txt"), &report, false)?;
@@ -1803,11 +3126,69 @@ fn action_optimizer(
     corpus: ng::NgramCorpus,
 ) -> AppResult<()> {
     let config = load_app_config()?;
-    let mut weights = config.weights;
-    let mut settings = config.search;
+    let weights = config.weights;
+    let settings = config.search;
+    let locks = action_default_locks(&original);
+    action_optimizer_session(
+        term, original, corpus, weights, settings, locks, false, false,
+    )
+    .map(|_| ())
+}
+
+/// The action optimizer for a converted plain layout, injecting a magic key
+/// when `magic` is set and starting a run at once when `start` is set.
+pub(crate) fn action_optimizer_from_plain(
+    term: &mut Terminal,
+    original: ak::Layout,
+    corpus: ng::NgramCorpus,
+    weights: Weights,
+    settings: SearchSettings,
+    locks: Vec<bool>,
+    magic: bool,
+    start: bool,
+) -> AppResult<bool> {
+    action_optimizer_session(
+        term, original, corpus, weights, settings, locks, magic, start,
+    )
+}
+
+fn action_optimizer_session(
+    term: &mut Terminal,
+    original: ak::Layout,
+    corpus: ng::NgramCorpus,
+    mut weights: Weights,
+    mut settings: SearchSettings,
+    mut locks: Vec<bool>,
+    enable: bool,
+    start: bool,
+) -> AppResult<bool> {
     let mut layout = original.clone();
-    let mut locks = action_default_locks(&layout, settings.design != "refine");
+    let mut before_magic = None;
+    let mut run_now = start;
+    let mut magic_root = if enable {
+        let saved = (layout.clone(), locks.clone());
+        let Some(root) = enable_optimizer_magic(term, &mut layout, &mut locks)? else {
+            return Ok(false);
+        };
+        before_magic = Some(saved);
+        Some(root)
+    } else {
+        // A layout that already has a magic key refits its rules in place.
+        // Turning magic search off keeps this layout rather than resetting it.
+        let existing = crate::magic_optimizer::existing_root(&layout);
+        if existing.is_some() {
+            before_magic = Some((layout.clone(), locks.clone()));
+        }
+        existing
+    };
     let mut status = String::new();
+    // Setup redraws, lock changes, and search-option edits reuse these full
+    // physical analyses. Layout or weight changes invalidate only what they
+    // can affect.
+    let mut setup_baseline: Option<Arc<Evaluated>> = None;
+    let mut setup_current: Option<Arc<Evaluated>> = None;
+    // Adaptive swaps taken out while they are off for this session.
+    let mut stashed_swaps = None;
 
     loop {
         if !action_optimizer_setup(
@@ -1819,16 +3200,25 @@ fn action_optimizer(
             &mut settings,
             &mut locks,
             &mut status,
+            &mut setup_baseline,
+            &mut setup_current,
+            &mut magic_root,
+            &mut before_magic,
+            &mut stashed_swaps,
+            std::mem::take(&mut run_now),
         )? {
-            return Ok(());
+            return Ok(true);
         }
         let Some(training) = crate::session::load_action_training(term, &corpus, &settings)? else {
             continue;
         };
-        let mut before: Option<Arc<Evaluated>> = None;
+        let mut before = setup_baseline.clone();
         'runs: loop {
-            let start = layout.clone();
-            let Some(result) = action_optimizer_search(
+            let actual_run_start = layout.clone();
+            let magic_binding = magic_root
+                .and_then(|root| layout.slots.get(root))
+                .map(|slot| slot.binding.clone());
+            let searched = action_optimizer_search(
                 term,
                 &original,
                 &mut layout,
@@ -1836,10 +3226,27 @@ fn action_optimizer(
                 &weights,
                 &settings,
                 &locks,
-            )?
-            else {
-                status = "Search stopped; changes kept in memory. o resets the layout.".into();
-                break 'runs;
+                magic_root,
+                stashed_swaps.is_some(),
+            );
+            let (result, start) = match searched {
+                Ok(Some(result)) => result,
+                Ok(None) => {
+                    if let Some(binding) = &magic_binding {
+                        magic_root = layout
+                            .slots
+                            .iter()
+                            .position(|slot| &slot.binding == binding);
+                    }
+                    setup_current = None;
+                    status = "Search stopped; changes kept in memory. o resets the layout.".into();
+                    break 'runs;
+                }
+                Err(error) => {
+                    setup_current = None;
+                    status = format!("Search failed: {error}");
+                    break 'runs;
+                }
             };
             if !result.has_best || result.archive.is_empty() {
                 status = format!("{} · no eligible candidate", result.progress.phase);
@@ -1861,7 +3268,13 @@ fn action_optimizer(
             status.clear();
             loop {
                 let candidate = &result.archive[choice];
-                layout = crate::action_search::arrangement(&start, &candidate.arr);
+                layout = arranged(&start, &candidate.arr);
+                if let Some(binding) = &magic_binding {
+                    magic_root = layout
+                        .slots
+                        .iter()
+                        .position(|slot| &slot.binding == binding);
+                }
                 if details[choice].is_none() {
                     details[choice] = evaluate_tui(term, &layout, &corpus, &weights)?;
                     if details[choice].is_none() {
@@ -1909,11 +3322,33 @@ fn action_optimizer(
 
                 match event {
                     Event::Escape | Event::Char('q') | Event::Char('r') => {
+                        setup_current = Some(current.clone());
                         status = "Changes kept in memory. o resets the layout.".into();
                         break 'runs;
                     }
-                    Event::Quit => return Ok(()),
+                    Event::Quit => return Ok(true),
                     Event::Char('.') => term.precise = !term.precise,
+                    Event::Char('m') => {
+                        term.toggle_stats_view();
+                        scroll = 0;
+                    }
+                    Event::Char('v') if magic_root.is_some() => {
+                        let root = magic_root.unwrap();
+                        let mut rows = vec![format!("Fixed physical key: {}", layout.slots[root].label)];
+                        if let ak::Binding::Named(name) = &layout.slots[root].binding {
+                            if let Some(ak::Action::Rules { rules, .. }) = layout.actions.get(name) {
+                                rows.extend(rules.iter().map(|(context, output)| {
+                                    let output = match output {
+                                        ak::Emission::Text(text) => format!("{:?}", String::from_utf8_lossy(text)),
+                                        ak::Emission::Call(name) => format!("@{name}"),
+                                        ak::Emission::None => "none".into(),
+                                    };
+                                    format!("After {:?} → {output}", String::from_utf8_lossy(context))
+                                }));
+                            }
+                        }
+                        help_popup(term, &frame, "Current magic rules", &rows)?;
+                    }
                     Event::Char('?') => help_popup(
                         term,
                         &frame,
@@ -1922,6 +3357,8 @@ fn action_optimizer(
                             "Space refines this candidate; b compares archived candidates; [ and ] move between them.".into(),
                             "s saves this candidate; S saves the archive; r or q returns to setup and keeps the current layout in memory.".into(),
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
+                            "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS.".into(),
+                            "v shows current magic rules when magic optimization is enabled.".into(),
                             ". toggles display precision.".into(),
                         ],
                     )?,
@@ -1947,7 +3384,7 @@ fn action_optimizer(
                             .enumerate()
                             .map(|(i, candidate)| {
                                 format!(
-                                    "{}  objective {}",
+                                    "{}  score {}",
                                     i + 1,
                                     number(candidate.score, term.decimals())
                                 )
@@ -1963,13 +3400,14 @@ fn action_optimizer(
                         status = match save_action_result(
                             &layout,
                             &original,
-                            &start,
+                            &actual_run_start,
                             &weights,
                             &settings,
                             &locks,
                             &training,
                             candidate,
                             &result.progress,
+                            magic_root.is_some(),
                         ) {
                             Ok(path) => saved_layout_message(&path),
                             Err(error) => error.to_string(),
@@ -1979,22 +3417,23 @@ fn action_optimizer(
                         let mut saved = 0;
                         for candidate in &result.archive {
                             let candidate_layout =
-                                crate::action_search::arrangement(&start, &candidate.arr);
+                                arranged(&start, &candidate.arr);
                             match save_action_result(
                                 &candidate_layout,
                                 &original,
-                                &start,
+                                &actual_run_start,
                                 &weights,
                                 &settings,
                                 &locks,
                                 &training,
                                 candidate,
                                 &result.progress,
+                                magic_root.is_some(),
                             ) {
                                 Ok(_) => saved += 1,
                                 Err(error) => {
                                     status = format!(
-                                        "saved {saved} candidates (.dat + .jsonc); {error}"
+                                        "saved {saved} candidates (.jsonc); {error}"
                                     );
                                     break;
                                 }
@@ -2002,7 +3441,7 @@ fn action_optimizer(
                         }
                         if saved == result.archive.len() {
                             status =
-                                format!("saved {saved} candidates (.dat + .jsonc) and run records");
+                                format!("saved {saved} candidates (.jsonc) and run records");
                         }
                     }
                     Event::Char('i') => show_corpus_info(term, &current.corpus)?,
@@ -2017,14 +3456,6 @@ fn action_optimizer(
 
 // Retain the previous greedy runner only as a profiling/differential reference.
 #[cfg(test)]
-enum SearchMsg {
-    Progress(u64, f64),
-    Update(usize, usize, u64, f64),
-    Done(ak::Layout, u64),
-    Error(String),
-}
-
-#[cfg(test)]
 fn run_action_search<const PROFILE: bool, const DETAIL: bool>(
     initial: ak::Layout,
     text: &ng::NgramCorpus,
@@ -2032,18 +3463,19 @@ fn run_action_search<const PROFILE: bool, const DETAIL: bool>(
     locked: &[bool],
     limits: (f64, f64),
     cancel: &AtomicBool,
-    tx: &mpsc::Sender<SearchMsg>,
     profile: &mut crate::action_profile::Profile,
 ) -> ak::Result<(ak::Layout, u64)> {
     use crate::action_profile::{clock, elapsed};
     let setup_start = clock::<PROFILE>();
     let mut best = initial;
     let effort = LocalEffort::new(&best, weights);
-    let cache_result = ng::Incremental::new(
+    let cache_result = ng::Incremental::new_with_policy(
         text,
         &best,
         Geometry::with_rolls(physical_keys(&best), weights.rolls()),
         cancel,
+        weights.alts(),
+        weights.combo_policy(),
         |a, b, k| effort.get(a, b, k),
     );
     let mut cache = match cache_result {
@@ -2132,14 +3564,8 @@ fn run_action_search<const PROFILE: bool, const DETAIL: bool>(
                         profile.score += elapsed::<PROFILE>(score_start);
                         profile.accepted += 1;
                     }
-                    let _ = tx.send(SearchMsg::Update(a, b, trials, score));
-                } else {
-                    if PROFILE {
-                        profile.rejected += 1;
-                    }
-                    if trials % 16 == 0 {
-                        let _ = tx.send(SearchMsg::Progress(trials, score));
-                    }
+                } else if PROFILE {
+                    profile.rejected += 1;
                 }
                 if PROFILE && named {
                     profile.named_time += elapsed::<PROFILE>(candidate_start);
@@ -2161,7 +3587,7 @@ fn print_evaluation(l: &ak::Layout, corpus: &ng::NgramCorpus) -> AppResult<Evalu
         "{}  {}  {}-gram estimate",
         l.name, corpus.name, corpus.order
     );
-    for warning in &corpus.warnings {
+    for warning in &v.corpus.warnings {
         println!("{warning}");
     }
     println!(
@@ -2172,6 +3598,23 @@ fn print_evaluation(l: &ak::Layout, corpus: &ng::NgramCorpus) -> AppResult<Evalu
         println!("{:<12} {:.6}", METRIC_NAMES[m], v.metrics.v[m]);
     }
     println!("SCORE        {:.6}", v.score);
+    // Mana2 / akl.gg statistics for the same mapping, normalized as the ranker
+    // normalizes action layouts.
+    let summary = crate::action_summary::evaluate_with_mode(
+        l,
+        corpus,
+        &w,
+        &AtomicBool::new(false),
+        &AtomicU64::new(0),
+        "aklgg",
+    )
+    .map_err(|e| format!("action corpus: {e}"))?;
+    if let Some(raw) = summary.raw.1.as_ref() {
+        let stats = ng::mana_stats(raw, summary.totals, summary.counts.speed_populations);
+        for (id, value) in mana2_metrics::STAT_IDS.iter().zip(stats.values) {
+            println!("mana.{id:<22} {value:.6}");
+        }
+    }
     Ok(v)
 }
 
@@ -2179,51 +3622,6 @@ fn corpus_arg(args: &[String], i: usize) -> AppResult<PathBuf> {
     match args.get(i) {
         Some(name) => corpus_by_name(name),
         None => default_corpus_path()?.ok_or_else(|| "select a corpus".into()),
-    }
-}
-
-pub(crate) fn inspect_ranked(
-    term: &mut Terminal,
-    layout: &ak::Layout,
-    evaluation: &Evaluated,
-    weights: &Weights,
-) -> AppResult<()> {
-    let mut scroll = 0;
-    loop {
-        let canvas = action_frame(
-            term, "Layout", layout, layout, evaluation, evaluation, weights, None, None, "",
-        );
-        term.present(&canvas, scroll)?;
-        let event = term.event()?;
-        if scroll_event(&event, &mut scroll, canvas.h, term.size.1) {
-            continue;
-        }
-        if let Some(Action::Metric(metric)) = action_press(term, &canvas, &event, scroll) {
-            action_contributors(term, metric, layout, layout, evaluation, evaluation)?;
-        }
-        match event {
-            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-            Event::Char('.') => term.precise = !term.precise,
-            Event::Char('?') => help_popup(
-                term,
-                &canvas,
-                "Layout details",
-                &[
-                    "Click a stat for its contributing physical patterns.".into(),
-                    "i shows corpus and source-limit notes; t traces text; p traces physical key presses; . toggles display precision; q returns.".into(),
-                    format!(
-                        "{}-gram estimate; physical presses {}; ignored characters {}.",
-                        evaluation.counts.order,
-                        number(evaluation.counts.presses, term.decimals()),
-                        number(evaluation.counts.ignored_characters, term.decimals()),
-                    ),
-                ],
-            )?,
-            Event::Char('i') => show_corpus_info(term, &evaluation.corpus)?,
-            Event::Char('t') => trace_view(term, layout, weights, false)?,
-            Event::Char('p') => trace_view(term, layout, weights, true)?,
-            _ => {}
-        }
     }
 }
 
@@ -2261,11 +3659,19 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
             let path = corpus_arg(args, 1)?;
             let mut term = Terminal::open()?;
             let result = ranking(&mut term, &path);
-            let restart = term.restart_requested;
+            let restart = if term.restart_requested {
+                Some(
+                    term.restart_arguments
+                        .take()
+                        .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
+                )
+            } else {
+                None
+            };
             drop(term);
             result?;
-            if restart {
-                restart_program(&restart_program_path()?)?;
+            if let Some(arguments) = restart {
+                restart_program(&restart_program_path()?, &arguments)?;
             }
             return Ok(());
         }
@@ -2503,6 +3909,7 @@ mod ngram_integration_tests {
             &corpus.name,
             &rows,
             (evaluation.metrics.v[SFB], evaluation.metrics.v[SFB]),
+            (1.0, 1.0),
             false,
             true,
             false,
@@ -2512,9 +3919,6 @@ mod ngram_integration_tests {
 
     #[test]
     fn action_view_helpers_preserve_physical_names_selection_and_all_rows() {
-        assert!(action_controls(true).contains("Space run"));
-        assert!(!action_controls(false).contains("Space run"));
-        assert!(action_controls(false).contains("save copy"));
         let l = history_layout();
         let m = history_key(&l, "@");
         let mut c = Canvas::new(100, 20);
@@ -2532,6 +3936,7 @@ mod ngram_integration_tests {
                 "test",
                 &rows,
                 (4.0, 8.0),
+                (1.0, 1.0),
                 false,
                 true,
                 false,
@@ -2542,12 +3947,23 @@ mod ngram_integration_tests {
             assert!(c.h >= 46);
             // All rows, not a fixed top-24 snapshot.
         }
-        let empty =
-            action_detail_frame(80, SFB, &l, &l, "test", &[], (0.0, 0.0), false, true, false);
+        let empty = action_detail_frame(
+            80,
+            SFB,
+            &l,
+            &l,
+            "test",
+            &[],
+            (0.0, 0.0),
+            (1.0, 1.0),
+            false,
+            true,
+            false,
+        );
         assert!(canvas_text(&empty).contains("No contributing physical sequences"));
     }
     #[test]
-    fn magic_setup_uses_normal_weight_grid_and_shared_search_settings() {
+    fn magic_setup_uses_shared_search_settings_without_inline_weights() {
         let layout = history_layout();
         let corpus = history_corpus(b"aan");
         let weights = Weights::default();
@@ -2555,30 +3971,35 @@ mod ngram_integration_tests {
         let locks = vec![false; layout.slots.len()];
         for width in [40, 80, 120] {
             let canvas = action_setup_frame(
-                width, &layout, &layout, &corpus, &weights, &locks, &settings, "ready",
+                width,
+                "Detailed",
+                &layout,
+                &layout,
+                &corpus,
+                &weights,
+                &locks,
+                &settings,
+                None,
+                None,
+                0,
+                (false, false),
+                "ready",
+                None,
             );
             let text = canvas_text(&canvas);
-            for label in [
-                "Optimizer",
-                "Locked",
-                "Free",
-                "Weights",
-                "SFB",
-                "SFS",
-                "ready",
-            ] {
+            for label in ["Search settings", "Locked", "Free", "ready"] {
                 assert!(text.contains(label), "missing {label} at width {width}");
             }
-            assert!(text.contains("Restarts"));
+            assert!(text.contains("Steps"));
             assert!(text.contains("Temp start"));
             assert!(text.contains("Travel Δ max"));
-            assert!(text.contains("hybrid"));
-            for setting in 0..settings_labels(&settings).len() {
+            assert!(!text.contains("Restarts") && !text.contains("Workers"));
+            for (setting, _, _) in settings_labels(&settings) {
                 assert!(canvas.hits.iter().any(|(_, action)| matches!(
                     action, Action::Setting(index) if *index == setting
                 )));
             }
-            assert!(canvas
+            assert!(!canvas
                 .hits
                 .iter()
                 .any(|(_, action)| matches!(action, Action::Weight(SFB))));
@@ -2592,81 +4013,157 @@ mod ngram_integration_tests {
             );
         }
 
-        let mut mana2_weights = weights.clone();
-        mana2_weights.2 = mana2_metrics::Weights::from_text("sfbw = [-11, 1.5, -9]\n").unwrap();
-        let mut mana2_settings = settings.clone();
-        mana2_settings.mode = "mana2".into();
         let canvas = action_setup_frame(
-            40,
-            &layout,
-            &layout,
-            &corpus,
-            &mana2_weights,
-            &locks,
-            &mana2_settings,
-            "ready",
-        );
-        let text = canvas_text(&canvas);
-        assert!(text.contains("sfbw"));
-        assert!(text.contains("[-11, 1.5, -9]"));
-        for stat in 0..mana2_metrics::STAT_IDS.len() {
-            assert!(canvas
-                .hits
-                .iter()
-                .any(|(_, action)| matches!(action, Action::Mana2Weight(index) if *index == stat)));
-        }
-
-        let mut simple_settings = settings.clone();
-        simple_settings.mode = "simple".into();
-        let canvas = action_setup_frame(
-            40,
+            80,
+            "Detailed",
             &layout,
             &layout,
             &corpus,
             &weights,
             &locks,
-            &simple_settings,
+            &settings,
+            None,
+            None,
+            0,
+            (false, false),
             "ready",
+            None,
         );
-        let text = canvas_text(&canvas);
-        assert!(text.contains("Simple weights"));
-        for stat in 0..simple_metrics::N_STATS {
-            assert!(canvas.hits.iter().any(
-                |(_, action)| matches!(action, Action::SimpleWeight(index) if *index == stat)
-            ));
-        }
-    }
-    #[test]
-    fn action_default_locks_preserve_refine_safety_and_allow_generation() {
-        let layout = history_layout();
-        let refine = action_default_locks(&layout, false);
-        let generation = action_default_locks(&layout, true);
-        let action = history_key(&layout, "@");
-        assert!(refine[action]);
-        assert!(!generation[action]);
-        for i in 0..layout.slots.len() {
-            assert!(!generation[i]);
-            if layout.space(i) || layout.home(i) || !layout.slots[i].main {
-                assert!(refine[i]);
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Setting(16))));
+        assert!(!canvas_text(&canvas).contains("Magic rules"));
+        let canvas = action_setup_frame(
+            80,
+            "Detailed",
+            &layout,
+            &layout,
+            &corpus,
+            &weights,
+            &locks,
+            &settings,
+            Some(7),
+            Some(4),
+            4,
+            (false, false),
+            "ready",
+            None,
+        );
+        assert!(canvas_text(&canvas).contains("Magic rules"));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Setting(MAGIC_RULES_SETTING))));
+        assert!(canvas_text(&canvas).contains("Combos"));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Setting(COMBOS_SETTING))));
+        assert!(canvas_text(&canvas).contains("Adaptive swaps"));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Setting(SWAPS_SETTING))));
+        // Combo and swap counts and exactness show whether or not combos are
+        // scored, at every width.
+        for (width, combos) in [(80, None), (120, Some(3)), (40, Some(0))] {
+            let canvas = action_setup_frame(
+                width,
+                "Detailed",
+                &layout,
+                &layout,
+                &corpus,
+                &weights,
+                &locks,
+                &settings,
+                None,
+                combos,
+                3,
+                (true, false),
+                "ready",
+                None,
+            );
+            let text = canvas_text(&canvas);
+            for label in ["Combos exact", "Swaps exact", "Adaptive swaps", "yes"] {
+                assert!(text.contains(label), "missing {label} at {width}:\n{text}");
+            }
+            for setting in [COMBOS_SETTING, COMBOS_EXACT_SETTING, SWAPS_EXACT_SETTING] {
+                assert!(canvas
+                    .hits
+                    .iter()
+                    .any(|(_, action)| matches!(action, Action::Setting(s) if *s == setting)));
             }
         }
     }
+    #[test]
+    fn result_line_names_genuine_rules_and_combos() {
+        let mut layout = ak::Layout::parse(
+            r#"{"layout": {"fingers": ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
+                "thumbs": ["space", ""]},
+              "fingermap": ["0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9"],
+              "magic": {"keys": "*", "wildcards": "%", "rules": [
+                  {"inputs": "%*", "output": "%%"},
+                  {"inputs": "o*", "output": "ou"},
+                  {"inputs": "e*", "output": "ee"}]}}"#,
+            Path::new("result-line.jsonc"),
+        )
+        .unwrap();
+        assert_eq!(rules_and_combos(&layout).as_deref(), Some("Magic *: o→u"));
+        let Json::Array(combos) = crate::parse_json(
+            r#"[{"keys":["e","d"],"output":"ed"},{"inputs":["rf"],"output":"rf"}]"#,
+        )
+        .unwrap() else {
+            unreachable!()
+        };
+        layout.combos = combos;
+        assert_eq!(
+            rules_and_combos(&layout).as_deref(),
+            Some("Magic *: o→u · Combos: e+d=ed r+f=rf")
+        );
+        layout.combos.clear();
+        let plain = ak::Layout::parse(
+            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\n",
+            Path::new("plain.dat"),
+        )
+        .unwrap();
+        assert_eq!(rules_and_combos(&plain), None);
+    }
 
     #[test]
-    fn simple_action_details_use_physical_labels_and_exact_simple_components() {
+    fn default_locks_keep_off_main_keys_and_home_locks_add_the_home_row() {
         let layout = history_layout();
-        let corpus = history_corpus(b"aanwaapnwhn");
-        let mut weights = Weights::new([0.0; N_WEIGHTS]);
-        weights.0[SKB] = 2.0;
-        let evaluation = evaluate(&layout, &corpus, &weights, &AtomicBool::new(false)).unwrap();
-        for metric in 0..SIMPLE_NAMES.len() {
-            let rows = action_simple_rows(metric, &layout, &evaluation, &evaluation);
-            let total: f64 = rows.iter().map(|row| row.2).sum();
-            assert!((total - evaluation.metrics.simple[metric]).abs() < 1e-9);
-            assert!(rows.iter().all(|row| row.1.to_bits() == row.2.to_bits()));
+        let home = action_home_locks(&layout);
+        let default = action_default_locks(&layout);
+        let action = history_key(&layout, "@");
+        assert!(home[action]);
+        assert!(!default[action]);
+        let mut shifted = layout.clone();
+        for slot in shifted.slots.iter_mut().filter(|slot| slot.main) {
+            slot.col += 1;
         }
-        let rows = action_simple_rows(0, &layout, &evaluation, &evaluation);
-        assert!(rows.iter().any(|row| row.0 == "@ n" && row.2 > 0.0));
+        shifted.left_outer = true;
+        let mut outer = shifted
+            .slots
+            .iter()
+            .find(|slot| slot.main && slot.row == 1 && slot.col == 1)
+            .unwrap()
+            .clone();
+        outer.col = 0;
+        outer.binding = ak::Binding::Empty;
+        shifted.slots.push(outer);
+        let shifted_locks = action_home_locks(&shifted);
+        for (slot, locked) in shifted.slots.iter().zip(shifted_locks) {
+            if slot.main && slot.row == 1 && !matches!(slot.binding, ak::Binding::Named(_)) {
+                assert_eq!(locked, matches!(slot.col, 1 | 2 | 3 | 4 | 7 | 8 | 9 | 10));
+            }
+        }
+        for i in 0..layout.slots.len() {
+            assert_eq!(default[i], !layout.slots[i].main);
+            if layout.space(i) || layout.home(i) || !layout.slots[i].main {
+                assert!(home[i]);
+            }
+        }
     }
 
     #[test]
@@ -2685,13 +4182,28 @@ mod ngram_integration_tests {
             "test",
             &rows,
             (2.0, 4.0),
+            (2.0, 1.0),
             false,
             false,
             false,
         );
         let text = canvas_text(&canvas);
         for label in [
-            "Before", "After", "Change", "Other", "@ n 15", "○", "●", "2.0000", "4.0000",
+            "SFB: Two consecutive presses on different keys using the same finger.",
+            "Before",
+            "After",
+            "Change",
+            "Other",
+            "@ n 15",
+            "○",
+            "●",
+            "2.0000",
+            "4.0000",
+            "d sort: value",
+            "b pairs: separate",
+            "a rows: top",
+            "Change ignores denominator shifts",
+            "—",
         ] {
             assert!(text.contains(label), "missing {label}");
         }
@@ -2734,7 +4246,7 @@ mod ngram_integration_tests {
             4,
         );
         let panel_text = canvas_text(&panel);
-        for label in ["Penalty", "Credit", "Objective"] {
+        for label in ["Penalties", "Rewards", "Score"] {
             assert!(panel_text.contains(label));
         }
         let reopened = evaluate(&l, &c, &w, &stop).unwrap();
@@ -2767,6 +4279,41 @@ mod ngram_integration_tests {
         .unwrap();
         let value = evaluate(&plain, &c, &w, &stop).unwrap();
         assert_eq!(value.counts.action_presses, 0.0);
+
+        // Before-only named pairs must survive a three-key binding cycle.
+        let original = ak::Layout::parse(
+            "y l d w z | q f u o /\nn r t s v | k b e a i\nx j m c g | p h , . ;\n",
+            Path::new("jump-comparison.dat"),
+        )
+        .unwrap();
+        let corpus = history_corpus(b"ho op po bo ob ok ko kb kb bh hk hk hk");
+        let before = evaluate(&original, &corpus, &w, &stop).unwrap();
+        let mut edited = original.clone();
+        let k = history_key(&original, "k");
+        let b = history_key(&original, "b");
+        let h = history_key(&original, "h");
+        edited.swap(k, b);
+        edited.swap(b, h);
+        let after = evaluate(&edited, &corpus, &w, &stop).unwrap();
+        let rows = action_contributor_rows(DNFJB, &edited, &before, &after);
+        assert!(rows
+            .iter()
+            .any(|(name, b, a)| name == "h o" && *b > 0.0 && *a == 0.0));
+        assert!(rows
+            .iter()
+            .any(|(name, b, a)| name == "k o" && *b == 0.0 && *a > 0.0));
+        let rows = action_contributor_rows(DNHJB, &edited, &before, &after);
+        assert!(rows
+            .iter()
+            .any(|(name, b, a)| { name == "b o" && *b > 0.0 && b.to_bits() == a.to_bits() }));
+        for metric in 0..N_METRICS {
+            let rows = action_contributor_rows(metric, &edited, &before, &after);
+            let sums = rows
+                .iter()
+                .fold((0.0, 0.0), |sums, row| (sums.0 + row.1, sums.1 + row.2));
+            assert!((sums.0 - before.metrics.v[metric]).abs() < 1e-8);
+            assert!((sums.1 - after.metrics.v[metric]).abs() < 1e-8);
+        }
     }
     const HISTORY_LAYOUT: &str = "f d l w v | q p o u ,\ns t h y g | z n a e i\nx k m c j | @ b ' ; .\nthumbs: r space\n\nw@ wh\nn@ n'\na@ aa\n";
     fn history_layout() -> ak::Layout {
@@ -2878,7 +4425,7 @@ mod ngram_integration_tests {
         let detailed = evaluate(&l, &history_corpus(b"aah"), &weights, &stop).unwrap();
         let h = history_key(&l, "h");
         assert_eq!(
-            detailed.counts.tables[2].get(&vec![a, action, h]),
+            detailed.counts.tables[2].get(&[a, action, h][..]),
             Some(&1.0)
         );
         assert_eq!(detailed.counts.action_presses, 1.0);
@@ -2886,7 +4433,7 @@ mod ngram_integration_tests {
         let following_collision = evaluate(&l, &history_corpus(b"aan"), &weights, &stop).unwrap();
         let n = history_key(&l, "n");
         assert_eq!(
-            following_collision.counts.tables[2].get(&vec![a, a, n]),
+            following_collision.counts.tables[2].get(&[a, a, n][..]),
             Some(&1.0)
         );
     }
@@ -2901,6 +4448,11 @@ mod ngram_integration_tests {
 
         weights.0[SKB] = 2.0;
         let weighted = LocalEffort::new(&l, &weights);
+        assert!(weighted.all_finite());
+        let mut overflowing = LocalEffort::new(&l, &weights);
+        overflowing.uni[0] = f64::MAX;
+        overflowing.bi[0] = f64::MAX;
+        assert!(!overflowing.all_finite());
         assert_eq!(
             weighted.get(None, Some(a), a),
             weighted.get(None, None, a) + 2.0,
@@ -2924,8 +4476,8 @@ mod ngram_integration_tests {
             let k = history_key(&l, label);
             let corpus = history_corpus(text);
             let detailed = evaluate(&l, &corpus, &w, &stop).unwrap();
-            assert_eq!(detailed.counts.tables[2].get(&vec![a, m, k]), Some(&1.0));
-            assert_eq!(detailed.counts.tables[1].get(&vec![m, k]), Some(&1.0));
+            assert_eq!(detailed.counts.tables[2].get(&[a, m, k][..]), Some(&1.0));
+            assert_eq!(detailed.counts.tables[1].get(&[m, k][..]), Some(&1.0));
             assert_eq!(detailed.raw.0[SFB], 1.0);
             let effort = LocalEffort::new(&l, &w);
             let cache = ng::Incremental::new(
@@ -2966,6 +4518,7 @@ mod ngram_integration_tests {
                         include_thumbs,
                         include_scissors,
                         include_stretches,
+                        alts: None,
                     };
                     let weights = Weights::default().with_rolls(rolls);
                     let full = evaluate(&layout, &corpus, &weights, &stop).unwrap();
@@ -2997,14 +4550,9 @@ mod ngram_integration_tests {
                         let total: f64 = rows.iter().map(|(_, _, after)| after).sum();
                         assert!((total - full.metrics.v[metric]).abs() < 1e-9);
                     }
-                    for simple_metric in 7..=8 {
-                        let simple = action_simple_rows(simple_metric, &layout, &full, &full);
-                        let total: f64 = simple.iter().map(|(_, _, after)| after).sum();
-                        assert!((total - full.metrics.simple[simple_metric]).abs() < 1e-9);
-                    }
 
                     let effort = LocalEffort::new(&layout, &weights);
-                    let mut cache = ng::Incremental::new(
+                    let cache = ng::Incremental::new(
                         &corpus,
                         &layout,
                         Geometry::with_rolls(physical_keys(&layout), rolls),
@@ -3070,7 +4618,7 @@ mod ngram_integration_tests {
             }
 
             let effort = LocalEffort::new(&layout, &weights);
-            let mut cache = ng::Incremental::new(
+            let cache = ng::Incremental::new(
                 &corpus,
                 &layout,
                 Geometry::new(physical_keys(&layout)),
@@ -3129,7 +4677,7 @@ mod ngram_integration_tests {
             let y = evaluate(&literal, &corpus, &w, &stop).unwrap();
             assert_eq!(x.counts.tables, y.counts.tables);
             assert_eq!(x.counts.skip, y.counts.skip);
-            assert_eq!(x.counts.tables[2].get(&ids.to_vec()), Some(&1.0));
+            assert_eq!(x.counts.tables[2].get(&ids[..]), Some(&1.0));
             assert_eq!(x.counts.action_presses, 1.0);
             assert_eq!(y.counts.action_presses, 0.0);
             for i in 0..N_RAW {
@@ -3218,9 +4766,6 @@ mod ngram_integration_tests {
         for (a, b) in actual.0.off.iter().zip(expected.metrics.off) {
             close(*a, b);
         }
-        for (a, b) in actual.0.simple.iter().zip(expected.metrics.simple) {
-            close(*a, b);
-        }
     }
     #[test]
     fn incremental_proposals_match_full_evaluation_and_rejected_swaps_do_not_leak() {
@@ -3265,11 +4810,6 @@ mod ngram_integration_tests {
                     cache
                         .propose_swap(a, b, &stop, |a, b, k| effort.get(a, b, k), &mut proposal)
                         .unwrap();
-                    if matches!(layout.slots[a].binding, ak::Binding::Named(_))
-                        || matches!(layout.slots[b].binding, ak::Binding::Named(_))
-                    {
-                        assert!(proposal.all_contexts);
-                    }
                     layout.swap(a, b);
                     let full = evaluate(&layout, &corpus, &w, &stop).unwrap();
                     assert_summary(proposal.summary(&w), &full);
@@ -3353,7 +4893,7 @@ mod ngram_integration_tests {
         let w = Weights::default();
         let stop = AtomicBool::new(false);
         let effort = LocalEffort::new(&layout, &w);
-        let mut cache = ng::Incremental::new(
+        let cache = ng::Incremental::new(
             &corpus,
             &layout,
             Geometry::new(physical_keys(&layout)),
@@ -3467,7 +5007,6 @@ mod ngram_integration_tests {
             }
         }
         let limits = (f64::INFINITY, f64::INFINITY);
-        let (tx, _rx) = mpsc::channel();
         let mut off = crate::action_profile::Profile::default();
         let mut coarse = crate::action_profile::Profile::default();
         let mut detail = crate::action_profile::Profile::default();
@@ -3478,7 +5017,6 @@ mod ngram_integration_tests {
             &locked,
             limits,
             &stop,
-            &tx,
             &mut off,
         )
         .unwrap();
@@ -3489,7 +5027,6 @@ mod ngram_integration_tests {
             &locked,
             limits,
             &stop,
-            &tx,
             &mut coarse,
         )
         .unwrap();
@@ -3500,7 +5037,6 @@ mod ngram_integration_tests {
             &locked,
             limits,
             &stop,
-            &tx,
             &mut detail,
         )
         .unwrap();
@@ -3678,10 +5214,6 @@ mod detailed_evaluation_tests {
                         assert_eq!(
                             actual.metrics.off.map(f64::to_bits),
                             expected.metrics.off.map(f64::to_bits)
-                        );
-                        assert_eq!(
-                            actual.metrics.simple.map(f64::to_bits),
-                            expected.metrics.simple.map(f64::to_bits)
                         );
                         assert_eq!(actual.score.to_bits(), expected.score.to_bits());
                         for metric in 0..N_METRICS {

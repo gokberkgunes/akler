@@ -169,6 +169,16 @@ fn bool_field(map: &BTreeMap<String, Json>, field: &str, default: bool) -> ak::R
     }
 }
 
+fn integer_field(map: &BTreeMap<String, Json>, field: &str, context: &str) -> ak::Result<usize> {
+    match map.get(field) {
+        Some(Json::Number(value)) if value.is_finite() && *value >= 0.0 && value.fract() == 0.0 => {
+            Ok(*value as usize)
+        }
+        Some(_) => Err(format!("{context}.{field}: expected a nonnegative integer")),
+        None => Err(format!("{context}: missing field {field:?}")),
+    }
+}
+
 fn key_token(token: &str) -> ak::Result<String> {
     if let Some(value) = token.strip_prefix("char:") {
         if value.len() == 1 && value.as_bytes()[0].is_ascii_graphic() {
@@ -176,7 +186,7 @@ fn key_token(token: &str) -> ak::Result<String> {
         }
         return Err("char: requires one printable non-space ASCII character".into());
     }
-    if token == "space" || token == "␠" {
+    if token == "space" || (token == "␠" || token == "␣") {
         return Ok(" ".into());
     }
     if matches!(token, "skip" | "blank" | "~") {
@@ -308,26 +318,34 @@ fn import_wildcard_magic(
                 return Err(format!("magic wildcard rule {input:?} needs output"));
             }
             let output = string(required(rule, "output")?, "magic wildcard output")?;
-            let expected = if text_wildcard {
-                format!("{wildcard}{wildcard}")
+            let fallback = if text_wildcard {
+                let emitted = output.strip_prefix(wildcard).ok_or_else(|| {
+                    format!("magic wildcard rule {input:?} must preserve {wildcard:?}")
+                })?;
+                if emitted == wildcard {
+                    "repeat-output".into()
+                } else if emitted.len() == 1 && emitted.as_bytes()[0].is_ascii_graphic() {
+                    ak::quote(&[emitted.as_bytes()[0].to_ascii_lowercase()])
+                } else {
+                    return Err(format!(
+                        "magic wildcard rule {input:?} must repeat the wildcard or append one printable ASCII character"
+                    ));
+                }
             } else {
-                format!("{wildcard}_{wildcard}")
+                let expected = format!("{wildcard}_{wildcard}");
+                if output != expected {
+                    return Err(format!(
+                        "magic wildcard rule {input:?} must output {expected:?}"
+                    ));
+                }
+                "repeat-previous-output".into()
             };
-            if output != expected {
-                return Err(format!(
-                    "magic wildcard rule {input:?} must output {expected:?}"
-                ));
-            }
             definitions.insert(
                 label.clone(),
                 ImportedRules {
                     basis: if text_wildcard { "magic" } else { "skip-magic" },
                     rules: BTreeMap::new(),
-                    fallback: if text_wildcard {
-                        "repeat-output".into()
-                    } else {
-                        "repeat-previous-output".into()
-                    },
+                    fallback,
                 },
             );
             wildcard_positions.insert(label, position);
@@ -417,17 +435,22 @@ fn import_wildcard_magic(
     Ok(())
 }
 
-fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
+fn import_layout_with_actions(
+    root: &BTreeMap<String, Json>,
+    path: &Path,
+    mut action_names: BTreeMap<String, String>,
+    mut action_defs: BTreeMap<String, ImportedRules>,
+    allow_unequal_rows: bool,
+) -> ak::Result<Layout> {
     for field in root.keys() {
         if !matches!(
             field.as_str(),
-            "layout" | "fingermap" | "board" | "layers" | "magic" | "skip" | "combos"
+            "layout" | "fingermap" | "board" | "layers" | "magic" | "skip" | "combos" | "alts"
         ) {
             return Err(format!("unsupported JSON layout field {field:?}"));
         }
     }
     empty_feature(root, "layers")?;
-    empty_feature(root, "combos")?;
 
     let layout = object(required(root, "layout")?, "layout")?;
     empty_feature(layout, "combos")?;
@@ -441,22 +464,26 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             .split_whitespace()
             .map(key_token)
             .collect::<ak::Result<Vec<_>>>()?;
-        if !(10..=12).contains(&tokens.len()) {
+        if !(10..=13).contains(&tokens.len()) {
             return Err(format!(
-                "layout.fingers row {} must have 10, 11, or 12 keys (use skip for empty slots)",
+                "layout.fingers row {} must have 10 through 13 keys (use skip for empty slots)",
                 row + 1
             ));
         }
         rows.push(tokens);
     }
-    if rows.iter().any(|row| row.len() != rows[0].len()) {
+    if !allow_unequal_rows && rows.iter().any(|row| row.len() != rows[0].len()) {
         return Err(format!(
             "layout.fingers rows have {}, {}, and {} physical slots; add skip so all rows have the same width",
             rows[0].len(), rows[1].len(), rows[2].len()
         ));
     }
 
-    let mut thumbs = [vec![" ".to_string()], Vec::new()];
+    if rows.iter().any(|row| row.len() == 13) && !root.contains_key("fingermap") {
+        return Err("13-column layouts require an explicit fingermap".into());
+    }
+
+    let mut thumbs = [Vec::new(), Vec::new()];
     if let Some(value) = layout.get("thumbs") {
         let values = array(value, "layout.thumbs")?;
         if values.len() > 2 {
@@ -465,10 +492,31 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         thumbs = [Vec::new(), Vec::new()];
         for (hand, value) in values.iter().enumerate() {
             let group = string(value, "layout.thumbs hand")?;
-            thumbs[hand] = group
-                .split_whitespace()
-                .map(key_token)
-                .collect::<ak::Result<Vec<_>>>()?;
+            let tokens: Vec<_> = group.split_whitespace().collect();
+            if tokens == ["none"] {
+                thumbs[hand].push("none".into());
+            } else {
+                if tokens.iter().any(|token| *token == "none") {
+                    return Err("layout.thumbs none cannot be combined with a thumb key".into());
+                }
+                thumbs[hand] = tokens
+                    .into_iter()
+                    .map(key_token)
+                    .collect::<ak::Result<Vec<_>>>()?;
+            }
+        }
+    }
+    let has_space = rows
+        .iter()
+        .flatten()
+        .chain(thumbs.iter().flatten())
+        .any(|label| label == " ");
+    let explicit_absence = thumbs.iter().flatten().any(|label| label == "none");
+    if !has_space && !explicit_absence {
+        match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
+            (true, _) => thumbs[0].push(" ".into()),
+            (false, true) => thumbs[1].push(" ".into()),
+            (false, false) => {}
         }
     }
 
@@ -504,9 +552,6 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
         .chain(thumbs.iter().flatten())
         .cloned()
         .collect();
-    let mut action_names = BTreeMap::new();
-    let mut action_defs: BTreeMap<String, ImportedRules> = BTreeMap::new();
-
     if let Some(magic) = root
         .get("magic")
         .filter(|value| !matches!(value, Json::Null))
@@ -694,8 +739,24 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
     }
 
     let mut dat = String::new();
-    for row in &rows {
-        let split = if row.len() == 12 { 6 } else { 5 };
+    for (row_index, row) in rows.iter().enumerate() {
+        let default_split = if row.len() >= 12 {
+            row.len().div_ceil(2)
+        } else {
+            5
+        };
+        let split = fingermap
+            .get(row_index)
+            .and_then(|map| {
+                let fingers: Vec<_> = map.split_whitespace().collect();
+                fingers.iter().position(|finger| finger.starts_with('R'))
+            })
+            .filter(|&split| {
+                matches!(row.len(), 11 | 13)
+                    && (5..=7).contains(&split)
+                    && (5..=7).contains(&(row.len() - split))
+            })
+            .unwrap_or(default_split);
         let left = row[..split]
             .iter()
             .map(|label| dat_key(label, &action_names))
@@ -777,6 +838,33 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             };
             dat.push_str(&format!("{directive}: {}\n", numbers.join(" ")));
         }
+        if let Some(value) = board.get("thumbColumns") {
+            let values = array(value, "board.thumbColumns")?;
+            let thumb_count = thumbs
+                .iter()
+                .flatten()
+                .filter(|label| label.as_str() != "none")
+                .count();
+            if values.len() != thumb_count {
+                return Err(format!(
+                    "board.thumbColumns needs {thumb_count} values for this geometry"
+                ));
+            }
+            let columns = values
+                .iter()
+                .map(|value| match value {
+                    Json::Number(number)
+                        if number.is_finite()
+                            && number.fract() == 0.0
+                            && (i8::MIN as f64..=i8::MAX as f64).contains(number) =>
+                    {
+                        Ok((*number as i8).to_string())
+                    }
+                    _ => Err("board.thumbColumns values must be integers in -128..127".into()),
+                })
+                .collect::<ak::Result<Vec<_>>>()?;
+            dat.push_str(&format!("thumb-columns: {}\n", columns.join(" ")));
+        }
     }
 
     for (name, definition) in &action_defs {
@@ -812,13 +900,331 @@ fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layou
             }
         }
     }
+    if let Some(value) = root
+        .get("alts")
+        .filter(|value| !matches!(value, Json::Null))
+    {
+        parsed.alt_fingers = crate::alt_fingers::parse_json(value)?;
+    }
+    if let Some(value) = root
+        .get("combos")
+        .filter(|value| !matches!(value, Json::Null))
+    {
+        parsed.combos = array(value, "combos")?.to_vec();
+        if !parsed.combos.is_empty() {
+            parsed
+                .source_warnings
+                .push("Combos are preserved; [typing] combos controls their scoring.".into());
+        }
+    }
+    Ok(parsed)
+}
+
+fn import_layout(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
+    import_layout_with_actions(root, path, BTreeMap::new(), BTreeMap::new(), false)
+}
+
+#[derive(Clone)]
+struct SparkKey {
+    label: String,
+    row: usize,
+    col: usize,
+    finger: usize,
+}
+
+fn spark_finger(value: &Json, field: &str) -> ak::Result<usize> {
+    let name = string(value, field)?;
+    ["LP", "LR", "LM", "LI", "LT", "RT", "RI", "RM", "RR", "RP"]
+        .iter()
+        .position(|candidate| name.eq_ignore_ascii_case(candidate))
+        .ok_or_else(|| format!("{field}: unknown finger {name:?}"))
+}
+
+fn import_spark(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout> {
+    let format = string(required(root, "format")?, "format")?;
+    if format != "spark/1" {
+        return Err(format!("unsupported Spark layout format {format:?}"));
+    }
+    let source_name = string(required(root, "name")?, "name")?;
+    if source_name.trim().is_empty() || source_name.chars().any(char::is_control) {
+        return Err("name: expected nonempty text without control characters".into());
+    }
+    let payload = object(required(root, "payload")?, "payload")?;
+    for field in payload.keys() {
+        if !matches!(field.as_str(), "keys" | "magic" | "alts" | "combos") {
+            return Err(format!("unsupported spark/1 payload field {field:?}"));
+        }
+    }
+
+    let mut keys = Vec::new();
+    let mut coordinates = BTreeSet::new();
+    for (index, value) in array(required(payload, "keys")?, "payload.keys")?
+        .iter()
+        .enumerate()
+    {
+        let field = format!("payload.keys[{index}]");
+        let key = object(value, &field)?;
+        for name in key.keys() {
+            if !matches!(name.as_str(), "char" | "row" | "col" | "finger") {
+                return Err(format!("{field}: unsupported field {name:?}"));
+            }
+        }
+        let label = key_token(string(required(key, "char")?, &format!("{field}.char"))?)?;
+        if label.is_empty() {
+            return Err(format!("{field}.char: a Spark key cannot be empty"));
+        }
+        let row = integer_field(key, "row", &field)?;
+        let col = integer_field(key, "col", &field)?;
+        if row > 3 {
+            return Err(format!(
+                "{field}.row: only main rows 0..2 and thumb row 3 are supported"
+            ));
+        }
+        if col > 11 {
+            return Err(format!("{field}.col: only columns 0..11 are supported"));
+        }
+        let finger = spark_finger(required(key, "finger")?, &format!("{field}.finger"))?;
+        if row == 3 && !matches!(finger, 4 | 5) {
+            return Err(format!("{field}: row 3 requires LT or RT"));
+        }
+        if row < 3 && matches!(finger, 4 | 5) {
+            return Err(format!("{field}: LT and RT belong on thumb row 3"));
+        }
+        if !coordinates.insert((row, col)) {
+            return Err(format!(
+                "payload.keys contains duplicate position [{row}, {col}]"
+            ));
+        }
+        keys.push(SparkKey {
+            label,
+            row,
+            col,
+            finger,
+        });
+    }
+    if keys.is_empty() {
+        return Err("payload.keys must contain physical keys".into());
+    }
+
+    let main_width = keys
+        .iter()
+        .filter(|key| key.row < 3)
+        .map(|key| key.col + 1)
+        .max()
+        .unwrap_or(0);
+    if !(10..=12).contains(&main_width) {
+        return Err(format!(
+            "spark/1 main rows need 10, 11, or 12 columns; found {main_width}"
+        ));
+    }
+    let default_finger = |col: usize| -> usize {
+        match col {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            3 | 4 => 3,
+            5 | 6 => 6,
+            7 => 7,
+            8 => 8,
+            _ => 9,
+        }
+    };
+    let mut rows = Vec::new();
+    let mut fingermap = Vec::new();
+    for row in 0..3 {
+        let mut labels = Vec::new();
+        let mut fingers = Vec::new();
+        for col in 0..main_width {
+            if let Some(key) = keys.iter().find(|key| key.row == row && key.col == col) {
+                labels.push(if key.label == " " {
+                    "space".into()
+                } else {
+                    key.label.clone()
+                });
+                // Spark and Mana use the same LP..LI, LT, RT, RI..RP IDs.
+                fingers.push(key.finger.to_string());
+            } else {
+                labels.push("skip".into());
+                fingers.push(default_finger(col).to_string());
+            }
+        }
+        rows.push(Json::String(labels.join(" ")));
+        fingermap.push(Json::String(fingers.join(" ")));
+    }
+
+    let mut spark_thumbs: [Vec<SparkKey>; 2] = [Vec::new(), Vec::new()];
+    for key in keys.iter().filter(|key| key.row == 3) {
+        spark_thumbs[key.finger - 4].push(key.clone());
+    }
+    for group in &mut spark_thumbs {
+        group.sort_by_key(|key| key.col);
+    }
+    let thumb_text = spark_thumbs
+        .iter()
+        .map(|group| {
+            Json::String(
+                group
+                    .iter()
+                    .map(|key| {
+                        if key.label == " " {
+                            "space".to_string()
+                        } else {
+                            key.label.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
+        .collect();
+
+    let mut action_names = BTreeMap::new();
+    let mut action_defs = BTreeMap::new();
+    if let Some(value) = payload
+        .get("magic")
+        .filter(|value| !matches!(value, Json::Null))
+    {
+        let magic = object(value, "payload.magic")?;
+        for field in magic.keys() {
+            if field != "magic_keys" {
+                return Err(format!("payload.magic: unsupported field {field:?}"));
+            }
+        }
+        if let Some(value) = magic.get("magic_keys") {
+            for (index, value) in array(value, "payload.magic.magic_keys")?.iter().enumerate() {
+                let field = format!("payload.magic.magic_keys[{index}]");
+                let magic_key = object(value, &field)?;
+                for name in magic_key.keys() {
+                    if !matches!(name.as_str(), "key" | "default" | "rules") {
+                        return Err(format!("{field}: unsupported field {name:?}"));
+                    }
+                }
+                let label = key_token(string(
+                    required(magic_key, "key")?,
+                    &format!("{field}.key"),
+                )?)?;
+                if keys.iter().filter(|key| key.label == label).count() != 1 {
+                    return Err(format!(
+                        "{field}.key must identify exactly one physical key"
+                    ));
+                }
+                let default = object(required(magic_key, "default")?, &format!("{field}.default"))?;
+                if default
+                    .keys()
+                    .any(|name| !matches!(name.as_str(), "kind" | "char"))
+                {
+                    return Err(format!("{field}.default: only kind and char are supported"));
+                }
+                if string(required(default, "kind")?, &format!("{field}.default.kind"))? != "char" {
+                    return Err(format!("{field}.default.kind: only \"char\" is supported"));
+                }
+                let output = string(required(default, "char")?, &format!("{field}.default.char"))?;
+                if output.len() != 1 || !output.as_bytes()[0].is_ascii_graphic() {
+                    return Err(format!(
+                        "{field}.default.char: expected one printable ASCII character"
+                    ));
+                }
+                if let Some(rules) = magic_key.get("rules") {
+                    if !array(rules, &format!("{field}.rules"))?.is_empty() {
+                        return Err(format!(
+                            "{field}.rules: Spark magic rules are not supported yet"
+                        ));
+                    }
+                }
+                let name = match label.as_str() {
+                    "@" => "magic".into(),
+                    "$" => "skip".into(),
+                    _ => label.clone(),
+                };
+                if action_names.insert(label, name.clone()).is_some() {
+                    return Err(format!("{field}: duplicate magic key"));
+                }
+                action_defs.insert(
+                    name,
+                    ImportedRules {
+                        basis: "magic",
+                        rules: BTreeMap::new(),
+                        fallback: ak::quote(&[output.as_bytes()[0].to_ascii_lowercase()]),
+                    },
+                );
+            }
+        }
+    }
+
+    let mut converted = BTreeMap::new();
+    converted.insert(
+        "layout".into(),
+        Json::Object(BTreeMap::from([
+            ("fingers".into(), Json::Array(rows)),
+            ("thumbs".into(), Json::Array(thumb_text)),
+        ])),
+    );
+    converted.insert("fingermap".into(), Json::Array(fingermap));
+    if let Some(value) = payload.get("alts") {
+        converted.insert("alts".into(), value.clone());
+    }
+    if let Some(value) = payload.get("combos") {
+        converted.insert("combos".into(), value.clone());
+    }
+
+    let mut parsed =
+        import_layout_with_actions(&converted, path, action_names, action_defs, false)?;
+    for hand in 0..2 {
+        let parsed_thumbs: Vec<_> = parsed
+            .slots
+            .iter_mut()
+            .filter(|slot| !slot.main && slot.hand == hand as i8)
+            .collect();
+        // The parser keeps each hand's declared order. An implicit Space is
+        // inserted only on the other, empty hand.
+        if !spark_thumbs[hand].is_empty() && parsed_thumbs.len() != spark_thumbs[hand].len() {
+            return Err("Spark thumb geometry could not be preserved".into());
+        }
+        for (slot, source) in parsed_thumbs.into_iter().zip(&spark_thumbs[hand]) {
+            slot.col = source.col as i8;
+        }
+    }
+    parsed.name = source_name.to_string();
+    parsed.source_warnings.push(
+        "spark/1 does not provide physical stagger coordinates; imported with zero offsets.".into(),
+    );
     Ok(parsed)
 }
 
 pub(crate) fn parse_json_layout(text: &str, path: &Path) -> ak::Result<Layout> {
     let parsed = parse_jsonc(text).map_err(|error| format!("{}: {error}", path.display()))?;
     let root = object(&parsed, "layout document")?;
-    import_layout(root, path).map_err(|error| format!("{}: {error}", path.display()))
+    let result = if root.contains_key("format") || root.contains_key("payload") {
+        import_spark(root, path)
+    } else {
+        import_layout(root, path)
+    };
+    let mut layout = result.map_err(|error| format!("{}: {error}", path.display()))?;
+    if layout.alt_fingers.is_empty() {
+        if let Some(notes) = alt_finger_notes(text) {
+            match crate::alt_fingers::AltRules::parse_letters(&notes) {
+                Ok(rules) => layout.alt_fingers = rules,
+                Err(error) => layout
+                    .source_warnings
+                    .push(format!("alt fingers notes ignored: {error}")),
+            }
+        }
+    }
+    Ok(layout)
+}
+
+/// The rules under a `// alt fingers` heading in the leading comments, as
+/// stray's exports write them; used when the file has no `alts` array, which
+/// some tools drop when they save.
+fn alt_finger_notes(text: &str) -> Option<String> {
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .take_while(|line| line.starts_with("//"))
+        .map(|line| line.trim_start_matches('/').trim());
+    lines.find(|line| line.eq_ignore_ascii_case("alt fingers"))?;
+    let notes: Vec<_> = lines.take_while(|line| !line.is_empty()).collect();
+    (!notes.is_empty()).then(|| notes.join(" "))
 }
 
 #[cfg(test)]
@@ -855,6 +1261,210 @@ mod tests {
             .iter()
             .position(|slot| slot.label == label)
             .unwrap()
+    }
+
+    fn spark_example() -> String {
+        let rows = vec![
+            vec![
+                ("у", 0, "LP"),
+                ("l", 1, "LR"),
+                ("d", 2, "LM"),
+                ("p", 3, "LI"),
+                ("x", 4, "LI"),
+                ("j", 5, "RI"),
+                (",", 6, "RI"),
+                ("u", 7, "RM"),
+                ("o", 8, "RR"),
+                ("y", 9, "RP"),
+                (";", 10, "RP"),
+            ],
+            vec![
+                ("t", 0, "LP"),
+                ("r", 1, "LR"),
+                ("n", 2, "LM"),
+                ("c", 3, "LI"),
+                ("k", 4, "LI"),
+                ("f", 5, "RI"),
+                ("h", 6, "RI"),
+                ("a", 7, "RM"),
+                ("i", 8, "RR"),
+                ("e", 9, "RP"),
+                ("-", 10, "RP"),
+            ],
+            vec![
+                ("v", 0, "LP"),
+                ("q", 1, "LM"),
+                ("g", 2, "LI"),
+                ("w", 3, "LI"),
+                ("'", 4, "LI"),
+                ("b", 5, "RI"),
+                ("m", 6, "RI"),
+                ("z", 7, "RM"),
+                (".", 8, "RP"),
+                ("/", 9, "RP"),
+            ],
+        ];
+        let mut keys = Vec::new();
+        // Reverse order verifies that coordinates, rather than array order,
+        // define physical slots.
+        for (row, values) in rows.iter().enumerate().rev() {
+            for (label, col, finger) in values.iter().rev() {
+                keys.push(format!(
+                    r#"{{"char":{},"col":{col},"finger":"{finger}","row":{row}}}"#,
+                    crate::json_quote(label)
+                ));
+            }
+        }
+        keys.push(r#"{"char":"s","col":6,"finger":"RT","row":3}"#.into());
+        format!(
+            r#"{{
+                "name":"slate",
+                "format":"spark/1",
+                "payload":{{
+                    "keys":[{}],
+                    "magic":{{"magic_keys":[{{"key":"у","default":{{"kind":"char","char":"y"}},"rules":[]}}]}},
+                    "alts":[{{"ngram":["p",null,"g"],"fingers":["LM",null,"LI"]}}],
+                    "combos":[{{"keys":["a","u"],"output":"au"}}]
+                }}
+            }}"#,
+            keys.join(",")
+        )
+    }
+
+    #[test]
+    fn spark_wrapper_preserves_slots_magic_alts_and_metadata() {
+        let layout = Layout::parse(&spark_example(), Path::new("download.json")).unwrap();
+        assert_eq!(layout.name, "slate");
+        assert_eq!(layout.alt_fingers.len(), 1);
+        assert_eq!(layout.combos.len(), 1);
+        assert!(layout
+            .source_warnings
+            .iter()
+            .any(|warning| warning.contains("zero offsets")));
+        assert!(layout
+            .source_warnings
+            .iter()
+            .any(|warning| warning.contains("Combos are preserved")));
+
+        let ordered = |row| {
+            let mut slots: Vec<_> = layout
+                .slots
+                .iter()
+                .filter(|slot| slot.main && slot.row == row)
+                .collect();
+            slots.sort_by_key(|slot| slot.col);
+            slots
+                .into_iter()
+                .map(|slot| slot.label.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ordered(0),
+            ["у", "l", "d", "p", "x", "j", ",", "u", "o", "y", ";"]
+        );
+        assert_eq!(ordered(2).last(), Some(&"·"));
+        assert_eq!(layout.slots.iter().filter(|slot| slot.main).count(), 33);
+        assert_eq!(layout.slots[key(&layout, "q")].finger, 2);
+        assert_eq!(layout.slots[key(&layout, "j")].finger, 4);
+        assert_eq!(layout.slots[key(&layout, "u")].finger, 5);
+        assert_eq!(layout.slots[key(&layout, "o")].finger, 6);
+        assert_eq!(layout.slots[key(&layout, ".")].finger, 7);
+        assert!(layout
+            .slots
+            .iter()
+            .filter(|slot| slot.main)
+            .all(|slot| slot.row_offset == 0 && slot.column_offset == 0));
+
+        let action = key(&layout, "у");
+        assert!(matches!(layout.slots[action].binding, Binding::Named(_)));
+        assert_eq!(ak::trace_keys(&layout, &[action]).unwrap()[0].output, b"y");
+        let right_thumb = layout
+            .slots
+            .iter()
+            .find(|slot| !slot.main && slot.label == "s")
+            .unwrap();
+        assert_eq!(
+            (right_thumb.hand, right_thumb.finger, right_thumb.col),
+            (1, 9, 6)
+        );
+        assert!(layout.slots.iter().any(|slot| {
+            !slot.main
+                && slot.hand == 0
+                && matches!(&slot.binding, Binding::Text(text) if text == b" ")
+        }));
+
+        let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
+        for (path, text) in [("slate.dat", layout.text()), ("slate.jsonc", jsonc)] {
+            let restored = Layout::parse(&text, Path::new(path)).unwrap();
+            assert_eq!(restored.slots, layout.slots, "{path}");
+            assert_eq!(restored.alt_fingers, layout.alt_fingers, "{path}");
+            assert_eq!(
+                crate::alt_fingers::compact_json(&Json::Array(restored.combos.clone())),
+                crate::alt_fingers::compact_json(&Json::Array(layout.combos.clone())),
+                "{path}"
+            );
+            let action = key(&restored, "у");
+            assert_eq!(
+                ak::trace_keys(&restored, &[action]).unwrap()[0].output,
+                b"y",
+                "{path}"
+            );
+        }
+        for marker in ["@", "$"] {
+            let source = spark_example().replace('у', marker);
+            let layout = Layout::parse(&source, Path::new("spark.json")).unwrap();
+            let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
+            let restored = Layout::parse(&jsonc, Path::new("round.jsonc")).unwrap();
+            assert_eq!(restored.slots, layout.slots);
+            assert_eq!(restored.actions, layout.actions);
+        }
+    }
+
+    #[test]
+    fn spark_magic_rule_effects_fail_explicitly() {
+        let text = spark_example().replace(r#""rules":[]"#, r#""rules":[{"when":"a","char":"b"}]"#);
+        let error = Layout::parse(&text, Path::new("spark.json")).unwrap_err();
+        assert!(
+            error.contains("Spark magic rules are not supported yet"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn alt_finger_notes_stand_in_for_a_dropped_alts_array() {
+        let body = r#"{"layout":{"fingers":["q w e r t y u i o p","a s d f g h j k l ;","z x c v b n m , . /"]}}"#;
+        let notes = "// Notes.\n//\n// alt fingers\n//   dg d_g (LM LI) · gd g_d (LI LM)\n//\n";
+        let layout = parse_json_layout(&format!("{notes}{body}"), Path::new("x.jsonc")).unwrap();
+        let expected = crate::alt_fingers::AltRules::parse_letters("dg d_g (LM LI) gd g_d (LI LM)");
+        assert_eq!(layout.alt_fingers, expected.unwrap());
+        assert_eq!(layout.alt_fingers.len(), 4);
+        // An alts array wins; no notes means no rules.
+        let alts = r#"{"alts":[{"ngram":["s","g"],"fingers":["LM","LI"]}],"#;
+        let with_array = format!("{notes}{alts}{}", &body[1..]);
+        let layout = parse_json_layout(&with_array, Path::new("x.jsonc")).unwrap();
+        assert_eq!(layout.alt_fingers.len(), 1);
+        assert!(parse_json_layout(body, Path::new("x.jsonc"))
+            .unwrap()
+            .alt_fingers
+            .is_empty());
+    }
+
+    #[test]
+    fn mana_json_preserves_alts_and_combos() {
+        let text = example("@", "", row_board()).replacen(
+            r#""layers": null,"#,
+            r#""layers": null,
+               "alts":[{"ngram":["q",null,"e"],"fingers":["LM",null,"LI"]}],
+               "combos":[{"keys":["a","s"],"output":"as"}],"#,
+            1,
+        );
+        let layout = parse(&text);
+        assert_eq!(layout.alt_fingers.len(), 1);
+        assert_eq!(layout.combos.len(), 1);
+        assert!(layout
+            .source_warnings
+            .iter()
+            .any(|warning| warning.contains("Combos are preserved")));
     }
 
     #[test]
@@ -1021,9 +1631,11 @@ mod tests {
         let base = example("char:*", "", row_board());
         for (thumbs, expected) in [
             (r#"["space"]"#, 1),
-            (r#"["","e"]"#, 1),
-            ("[]", 0),
+            (r#"["","e"]"#, 2),
+            ("[]", 1),
             (r#"["skip","e"]"#, 2),
+            (r#"["none","e"]"#, 1),
+            (r#"["none"]"#, 0),
         ] {
             let layout = parse(&base.replace(r#"["space", "e"]"#, thumbs));
             assert_eq!(
@@ -1036,6 +1648,61 @@ mod tests {
             );
             assert!(!layout.extended());
         }
+
+        let right_space = parse(&base.replace(r#"["space", "e"]"#, r#"["e",""]"#));
+        let space = right_space
+            .slots
+            .iter()
+            .find(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
+            .unwrap();
+        assert!(!space.main);
+        assert_eq!(space.hand, 1);
+
+        let main_space_source = example("space", "", row_board());
+        for text in [
+            main_space_source.replace(r#""thumbs": ["space", "e"],"#, ""),
+            main_space_source.replace(r#"["space", "e"]"#, "[]"),
+            main_space_source.replace(r#"["space", "e"]"#, r#"["","e"]"#),
+        ] {
+            let main_space = parse(&text);
+            assert_eq!(
+                main_space
+                    .slots
+                    .iter()
+                    .filter(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
+                    .count(),
+                1
+            );
+            assert!(
+                main_space
+                    .slots
+                    .iter()
+                    .find(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
+                    .unwrap()
+                    .main
+            );
+        }
+
+        let magic = parse(
+            &example("char:*", r#"{"inputs":"a*","output":"ay"}"#, row_board())
+                .replace(r#"["space", "e"]"#, r#"["","*"]"#),
+        );
+        let magic_thumb = magic
+            .slots
+            .iter()
+            .find(|slot| !slot.main && slot.label == "*")
+            .unwrap();
+        assert_eq!(magic_thumb.hand, 1);
+        assert!(matches!(magic_thumb.binding, Binding::Named(_)));
+        assert!(magic.slots.iter().any(|slot| {
+            !slot.main
+                && slot.hand == 0
+                && matches!(&slot.binding, Binding::Text(text) if text == b" ")
+        }));
+
+        let mixed_none = base.replace(r#"["space", "e"]"#, r#"["none e",""]"#);
+        let error = Layout::parse(&mixed_none, Path::new("mixed-none.jsonc")).unwrap_err();
+        assert!(error.contains("none cannot be combined"), "{error}");
     }
 
     #[test]
@@ -1048,24 +1715,28 @@ mod tests {
         }"#;
         let layout = parse(source);
         let thumbs: Vec<_> = layout.slots.iter().filter(|slot| !slot.main).collect();
-        assert_eq!(thumbs.len(), 2);
+        assert_eq!(thumbs.len(), 3);
         assert_eq!(
             (thumbs[0].label.as_str(), thumbs[0].hand, thumbs[0].finger),
-            ("l", 1, 9)
+            ("␠", 0, 8)
         );
         assert_eq!(
             (thumbs[1].label.as_str(), thumbs[1].hand, thumbs[1].finger),
+            ("l", 1, 9)
+        );
+        assert_eq!(
+            (thumbs[2].label.as_str(), thumbs[2].hand, thumbs[2].finger),
             ("r", 1, 9)
         );
-        assert_ne!(thumbs[0].col, thumbs[1].col);
+        assert_ne!(thumbs[1].col, thumbs[2].col);
 
         let dat = layout.text();
-        assert!(dat.contains("thumbs: none | l r\n"));
+        assert!(dat.contains("thumbs: space | l r\n"));
         let from_dat = parse(&dat);
         assert_eq!(from_dat.slots, layout.slots);
 
         let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
-        assert!(jsonc.contains("\"thumbs\": [\"\", \"l r\"]"));
+        assert!(jsonc.contains("\"thumbs\": [\"space\", \"l r\"]"));
         let from_jsonc = parse(&jsonc);
         assert_eq!(from_jsonc.slots, layout.slots);
 
@@ -1105,7 +1776,7 @@ mod tests {
             .filter(|slot| !slot.main)
             .map(|slot| (slot.label.as_str(), slot.hand))
             .collect();
-        assert_eq!(thumbs, [("l", 1), ("r", 1)]);
+        assert_eq!(thumbs, [("␠", 0), ("l", 1), ("r", 1)]);
 
         let magic = key(&layout, "#");
         let skip = key(&layout, "$");

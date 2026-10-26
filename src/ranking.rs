@@ -12,11 +12,14 @@ const RANK_MANA_START: usize = BASE_RANK_COUNT;
 
 const RANK_COUNT: usize = BASE_RANK_COUNT + mana2_metrics::N_STATS;
 
-const RANK_Y: usize = 3;
+const RANK_Y: usize = 4;
 
-const RANK_DATA: usize = 6;
+const RANK_DATA: usize = 7;
 
-const RANK_ORDER: [usize; RANK_COUNT - 8] = [
+// The ordinary ranker only exposes AKLER's own metrics. Mana2 has a separate
+// catalog and entry point below so its statistics cannot leak into the normal
+// column picker or scoring mode.
+const RANK_ORDER: [usize; BASE_RANK_COUNT - 8] = [
     RANK_SCORE,
     SFB,
     SKB,
@@ -57,53 +60,21 @@ const RANK_ORDER: [usize; RANK_COUNT - 8] = [
     VTRAVEL,
     LTRAVEL,
     RANK_COVERAGE,
-    RANK_MANA_START + 0,
-    RANK_MANA_START + 1,
-    RANK_MANA_START + 2,
-    RANK_MANA_START + 3,
-    RANK_MANA_START + 4,
-    RANK_MANA_START + 5,
-    RANK_MANA_START + 6,
-    RANK_MANA_START + 7,
-    RANK_MANA_START + 8,
-    RANK_MANA_START + 9,
-    RANK_MANA_START + 10,
-    RANK_MANA_START + 11,
-    RANK_MANA_START + 12,
-    RANK_MANA_START + 13,
-    RANK_MANA_START + 14,
-    RANK_MANA_START + 15,
-    RANK_MANA_START + 16,
-    RANK_MANA_START + 17,
-    RANK_MANA_START + 18,
-    RANK_MANA_START + 19,
-    RANK_MANA_START + 20,
-    RANK_MANA_START + 21,
-    RANK_MANA_START + 22,
-    RANK_MANA_START + 23,
-    RANK_MANA_START + 24,
-    RANK_MANA_START + 25,
-    RANK_MANA_START + 26,
-    RANK_MANA_START + 27,
-    RANK_MANA_START + 28,
-    RANK_MANA_START + 29,
-    RANK_MANA_START + 30,
-    RANK_MANA_START + 31,
-    RANK_MANA_START + 32,
-    RANK_MANA_START + 33,
-    RANK_MANA_START + 34,
-    RANK_MANA_START + 35,
-    RANK_MANA_START + 36,
-    RANK_MANA_START + 37,
-    RANK_MANA_START + 38,
-    RANK_MANA_START + 39,
-    RANK_MANA_START + 40,
-    RANK_MANA_START + 41,
-    RANK_MANA_START + 42,
-    RANK_MANA_START + 43,
-    RANK_MANA_START + 44,
-    RANK_MANA_START + 45,
 ];
+
+fn rank_catalog(mana2: bool) -> Vec<usize> {
+    if mana2 {
+        std::iter::once(RANK_SCORE)
+            .chain(
+                mana2_metrics::WEIGHTABLE_STATS
+                    .iter()
+                    .map(|&index| RANK_MANA_START + index),
+            )
+            .collect()
+    } else {
+        RANK_ORDER.to_vec()
+    }
+}
 
 fn rank_name(m: usize) -> &'static str {
     if m >= RANK_MANA_START {
@@ -133,6 +104,32 @@ fn rank_name(m: usize) -> &'static str {
     }
 }
 
+fn displayed_rank_name(m: usize, mana2: bool) -> &'static str {
+    if mana2 && m >= RANK_MANA_START {
+        match mana2_metrics::STAT_IDS[m - RANK_MANA_START] {
+            "sfb" => "SFB",
+            "sfs" => "SFS",
+            "lsb" => "StretchB",
+            "lss" => "StretchS",
+            "vsb" => "ScissorB",
+            "vss" => "ScissorS",
+            "alt" => "ALT",
+            "redirect" => "RED",
+            "redirectweak" => "WeakRED",
+            "roll" => "ROLL",
+            "inroll2" => "IN2",
+            "outroll2" => "OUT2",
+            "inroll3" => "IN3",
+            "outroll3" => "OUT3",
+            "fspeed" => "Fspeed",
+            "weighted_speed" => "Weighted",
+            id => id,
+        }
+    } else {
+        rank_name(m)
+    }
+}
+
 fn rank_positive(m: usize) -> bool {
     m == RANK_COVERAGE
         || (m < N_METRICS && higher_better(m))
@@ -140,12 +137,11 @@ fn rank_positive(m: usize) -> bool {
             && mana2_higher_better(mana2_metrics::STAT_IDS[m - RANK_MANA_START]))
 }
 
-/// Mana2's positive score slopes are rewards: larger reported values improve
-/// its score. The remaining nonzero schedules are penalties, while zero-only
-/// schedules have no preference and keep the conventional ascending default.
-/// This classification mirrors mana2/weights.toml.
+/// Conventional column ordering for the screenshot statistics. This controls
+/// only ranker display direction; the configurable objective is scored
+/// separately from normal AKLER's lower-is-better score.
 fn mana2_higher_better(id: &str) -> bool {
-    matches!(id, "goodrollnothumbs" | "inroll2" | "inroll3")
+    matches!(id, "inroll2" | "inroll3")
 }
 
 fn rank_percent(m: usize) -> bool {
@@ -156,13 +152,17 @@ fn rank_percent(m: usize) -> bool {
         return false;
     }
     let id = mana2_metrics::STAT_IDS[m - RANK_MANA_START];
-    !matches!(id, "sfbw" | "lsb" | "vsb" | "sfsw" | "lss" | "vss")
+    !matches!(
+        id,
+        "lsb" | "vsb" | "lss" | "vss" | "sfbw" | "sfsw" | "fspeed" | "weighted_speed"
+    ) && !id.starts_with("fspeed-")
+        && !id.starts_with("weighted-speed-")
 }
 
 enum RankRow {
     Plain {
         model: Model,
-        corpus: Corpus,
+        corpus: Arc<Corpus>,
         raw: Raw,
         metrics: Metrics,
         score: f64,
@@ -176,6 +176,38 @@ enum RankRow {
 }
 
 impl RankRow {
+    fn has_magic(&self) -> bool {
+        matches!(self, Self::Action { layout, .. } if layout.slots.iter().any(|slot| matches!(slot.binding, action_keys::Binding::Named(_))))
+    }
+
+    fn has_thumb_letter(&self) -> bool {
+        let alpha = |text: &[u8]| text.len() == 1 && text[0].is_ascii_alphabetic();
+        match self {
+            Self::Plain { model, .. } => {
+                model.geometry.keys.iter().enumerate().any(|(slot, key)| {
+                    !key.main && model.canonical[model.original[slot]].is_ascii_alphabetic()
+                })
+            }
+            Self::Action { layout, .. } => layout.slots.iter().any(|slot| {
+                if slot.main {
+                    return false;
+                }
+                match &slot.binding {
+                    action_keys::Binding::Text(text) => alpha(text),
+                    action_keys::Binding::Named(name) => match layout.actions.get(name) {
+                        Some(action_keys::Action::Text(text)) => alpha(text),
+                        Some(action_keys::Action::Rules {
+                            fallback: action_keys::Emission::Text(text),
+                            ..
+                        }) => alpha(text),
+                        _ => false,
+                    },
+                    action_keys::Binding::Empty => false,
+                }
+            }),
+        }
+    }
+
     fn name(&self) -> &str {
         match self {
             Self::Plain { model, .. } => &model.board.name,
@@ -222,7 +254,7 @@ impl RankRow {
 fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
     if m >= RANK_MANA_START {
         let raw = row.raw().1.as_ref()?;
-        let stats = mana2_metrics::stats(raw, *row.totals());
+        let stats = mana2_rank_stats(row, raw);
         Some(stats.values[m - RANK_MANA_START])
     } else if m == RANK_SCORE {
         Some(row.score())
@@ -253,20 +285,72 @@ fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
     }
 }
 
+fn mana2_rank_stats(row: &RankRow, raw: &mana2_metrics::RawStats) -> mana2_metrics::Stats {
+    match row {
+        RankRow::Plain { corpus, .. } => mana_stats_for_corpus(row.raw(), corpus),
+        RankRow::Action { summary, .. } => {
+            action_ngrams::mana_stats(raw, *row.totals(), summary.counts.speed_populations)
+        }
+    }
+}
+
+// Switching objectives reuses the existing physical mappings. Only missing
+// counters are calculated; action winners and corpus preparation stay intact.
+fn rescore_rank_rows(rows: &mut [RankRow], weights: &Weights, mode: &str) {
+    let mana = mode == "aklgg";
+    for row in rows {
+        if mana && row.raw().1.is_none() {
+            match row {
+                RankRow::Plain { model, corpus, raw, .. } => {
+                    *raw = full_raw_with_mana2(&model.original, corpus, &model.geometry, true);
+                }
+                RankRow::Action { layout, summary, .. } => {
+                    summary.raw = action_ngrams::raw_from_counts(
+                        layout, &summary.counts, weights, true,
+                    ).0;
+                }
+            }
+        }
+        let score = if mana {
+            weights.physical_score(&mana2_rank_stats(row, row.raw().1.as_ref().unwrap()))
+        } else {
+            breakdown(row.metrics(), weights).net
+        };
+        match row {
+            RankRow::Plain { score: current, .. } => *current = score,
+            RankRow::Action { summary, .. } => summary.score = score,
+        }
+    }
+}
+
 fn plain_rank_row(
     board: Board,
     source: &Source,
+    cache: &std::cell::RefCell<BTreeMap<Vec<u8>, Arc<Corpus>>>,
     weights: &Weights,
     mode: &str,
 ) -> AppResult<RankRow> {
     let model = Model::with_rolls(board, weights.rolls());
-    let corpus = model.corpus(source)?;
-    let mana2 = matches!(mode, "mana2" | "simple");
+    // Canonical IDs depend only on the exact sorted symbol vector, including
+    // duplicate blank slots. Share the immutable mapped corpus across layouts
+    // with those same IDs instead of rebuilding or cloning its gram tables.
+    let cached = cache.borrow().get(&model.canonical).cloned();
+    let corpus = match cached {
+        Some(corpus) => corpus,
+        None => {
+            let corpus = Arc::new(model.corpus(source)?);
+            cache
+                .borrow_mut()
+                .insert(model.canonical.clone(), Arc::clone(&corpus));
+            corpus
+        }
+    };
+    let mana2 = mode == "aklgg";
     let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, mana2);
     let metrics = metrics(&raw, &corpus);
     let score = if mana2 {
-        let stats = mana2_metrics::stats(raw.1.as_ref().unwrap(), corpus.totals);
-        weights.physical_score(&stats, mode)
+        let stats = mana_stats_for_corpus(&raw, &corpus);
+        weights.physical_score(&stats)
     } else {
         breakdown(&metrics, weights).net
     };
@@ -300,6 +384,7 @@ fn parse_rank_layout(text: &str, path: &Path) -> AppResult<RankLayout> {
 // ordinary tables. A mixed collection shares one file read between its parsers.
 struct RankCorpora {
     plain: Option<Result<Source, String>>,
+    plain_cache: std::cell::RefCell<BTreeMap<Vec<u8>, Arc<Corpus>>>,
     action: Option<action_keys::Result<Arc<action_ngrams::NgramCorpus>>>,
 }
 
@@ -331,7 +416,11 @@ impl RankCorpora {
                 .map(Arc::new)
             });
 
-        Self { plain, action }
+        Self {
+            plain,
+            plain_cache: std::cell::RefCell::new(BTreeMap::new()),
+            action,
+        }
     }
 
     fn warnings(&self) -> Vec<String> {
@@ -350,6 +439,7 @@ impl RankCorpora {
     }
 }
 
+#[cfg(test)]
 fn evaluate_rank_layout(
     layout: RankLayout,
     corpora: &RankCorpora,
@@ -374,7 +464,7 @@ fn evaluate_rank_layout_with_mode(
                 .ok_or("ordinary corpus was not prepared")?
                 .as_ref()
                 .map_err(|error| error.clone())?;
-            plain_rank_row(board, source, weights, mode)
+            plain_rank_row(board, source, &corpora.plain_cache, weights, mode)
         }
         RankLayout::Action(layout) => {
             let corpus = corpora
@@ -410,18 +500,58 @@ struct RankingData {
     warnings: Vec<String>,
     columns: [bool; RANK_COUNT],
     hidden_layouts: BTreeSet<PathBuf>,
+    filters: RankFilters,
     weights: Weights,
     mana2: bool,
-    simple: bool,
+    scoring: String,
+    spacegrams: bool,
+    ngrams: NgramLimits,
 }
 
-fn load_ranking_progress(
+impl RankingData {
+    fn physical_catalog(&self) -> bool {
+        self.mana2 || self.scoring == "aklgg"
+    }
+}
+
+#[derive(Clone)]
+struct Mana2RankSettings {
+    weights: mana2_metrics::Weights,
+    ngrams: NgramLimits,
+    typing: (bool, bool),
+}
+
+fn load_ranking_progress_for_mode(
     path: &Path,
     stop: &AtomicBool,
     progress: &AtomicU64,
+    mana2: Option<Mana2RankSettings>,
+    typing: Option<(bool, bool)>,
+    spacegrams: Option<bool>,
 ) -> AppResult<RankingData> {
     let mut timing = load_profile::LoadProfile::new("ranker initialization");
-    let config = load_app_config()?;
+    let is_mana2 = mana2.is_some();
+    let mut config = if is_mana2 {
+        AppConfig::default()
+    } else {
+        load_app_config()?
+    };
+    if is_mana2 {
+        config.rank_filters = load_rank_filters()?;
+    }
+    if let Some(settings) = mana2 {
+        config.weights.2 = settings.weights;
+        config.weights.3 = settings.typing.0;
+        config.weights.4 = settings.typing.1;
+        config.ngrams = settings.ngrams;
+    }
+    if let Some((alt_fingers, combos)) = typing {
+        config.weights.3 = alt_fingers;
+        config.weights.4 = combos;
+    }
+    if let Some(include_spacegrams) = spacegrams {
+        config.ngrams.include_spacegrams = include_spacegrams;
+    }
     let mut layouts = Vec::new();
     let mut errors = Vec::new();
 
@@ -451,19 +581,14 @@ fn load_ranking_progress(
     let warnings = corpora.warnings();
     timing.mark("Prepare required corpus evaluators");
 
+    let scoring = if is_mana2 { "aklgg".into() } else { config.search.mode.clone() };
     let total = layouts.len();
     let mut rows = Vec::with_capacity(total);
     for (index, (layout_path, layout)) in layouts.into_iter().enumerate() {
         if stop.load(Ordering::Relaxed) {
             return Err("cancelled".into());
         }
-        match evaluate_rank_layout_with_mode(
-            layout,
-            &corpora,
-            &config.weights,
-            stop,
-            &config.search.mode,
-        ) {
+        match evaluate_rank_layout_with_mode(layout, &corpora, &config.weights, stop, &scoring) {
             Ok(row) => rows.push(row),
             Err(error) => errors.push(format!("{}: {error}", layout_path.display())),
         }
@@ -484,23 +609,57 @@ fn load_ranking_progress(
         rows,
         errors,
         warnings,
-        columns: config.rank_columns,
-        hidden_layouts: config.rank_hidden_layouts,
+        columns: if is_mana2 || scoring == "aklgg" {
+            default_mana2_rank_columns()
+        } else {
+            config.rank_columns
+        },
+        hidden_layouts: if is_mana2 {
+            load_rank_hidden_preferences()?
+        } else {
+            config.rank_hidden_layouts
+        },
+        filters: config.rank_filters,
         weights: config.weights,
-        mana2: config.search.uses_mana2_stats(),
-        simple: config.search.mode == "simple",
+        mana2: is_mana2,
+        scoring,
+        spacegrams: config.ngrams.include_spacegrams,
+        ngrams: config.ngrams,
     })
 }
 
 fn persist_hidden_rows(rows: &BTreeSet<PathBuf>) -> Option<String> {
     save_rank_hidden_layouts(rows).err().map(|error| {
         format!(
-            "Row visibility changed for this session only; could not save {APP_CONFIG_FILE}: {error}"
+            "Row visibility changed for this session only; could not save {RANK_HIDDEN_LAYOUTS_FILE}: {error}"
+        )
+    })
+}
+
+/// Save the visible columns, as the settings tab does; AKL.GG's catalog
+/// keeps its defaults.
+fn persist_hidden_columns(columns: &RankColumns) -> Option<String> {
+    if columns.mana2 {
+        return None;
+    }
+    save_rank_columns(&columns.hidden).err().map(|error| {
+        format!(
+            "Column visibility changed for this session only; could not save {APP_CONFIG_FILE}: {error}"
         )
     })
 }
 
 fn load_ranking_tui(term: &mut Terminal, path: &Path) -> AppResult<Option<RankingData>> {
+    load_ranking_tui_for_settings(term, path, None, None, None)
+}
+
+fn load_ranking_tui_for_settings(
+    term: &mut Terminal,
+    path: &Path,
+    mana2: Option<Mana2RankSettings>,
+    typing: Option<(bool, bool)>,
+    spacegrams: Option<bool>,
+) -> AppResult<Option<RankingData>> {
     let owned = prepare_corpus_path_tui(term, path)?;
     action_ui::ngram_job(
         term,
@@ -508,7 +667,8 @@ fn load_ranking_tui(term: &mut Terminal, path: &Path) -> AppResult<Option<Rankin
         &corpus_name(path),
         "",
         move |stop, progress| {
-            load_ranking_progress(&owned, stop, progress).map_err(|error| error.to_string())
+            load_ranking_progress_for_mode(&owned, stop, progress, mana2, typing, spacegrams)
+                .map_err(|error| error.to_string())
         },
     )
 }
@@ -528,85 +688,45 @@ where
     Ok(cached.clone())
 }
 
-fn inspect_row(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> AppResult<()> {
+fn open_ranked_editor(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> AppResult<()> {
     if let RankRow::Action {
         layout,
+        summary,
         corpus,
         details,
         ..
     } = row
     {
         let evaluation = rank_details_with(details, || {
-            let snapshot_layout = layout.clone();
-            let snapshot_corpus = Arc::clone(corpus);
-            let snapshot_weights = weights.clone();
-            action_ui::ngram_job(
-                term,
-                "Preparing layout details",
-                &corpus.name,
-                &layout.name,
-                move |stop, progress| {
-                    action_ui::evaluate_progress(
-                        &snapshot_layout,
-                        &snapshot_corpus,
-                        &snapshot_weights,
-                        stop,
-                        progress,
-                    )
-                    .map(Arc::new)
-                },
-            )
+            action_ui::evaluate_ranked(layout, corpus, weights, summary)
+                .map(|value| Some(Arc::new(value)))
+                .map_err(|error| error.into())
         })?;
         if let Some(evaluation) = evaluation {
-            action_ui::inspect_ranked(term, layout, &evaluation, weights)?;
+            action_ui::action_editor_prepared(
+                term,
+                layout.clone(),
+                Arc::clone(corpus),
+                weights.clone(),
+                evaluation,
+            )?;
         }
         return Ok(());
     }
 
-    let RankRow::Plain { model, corpus, .. } = row else {
+    let RankRow::Plain {
+        model, corpus, raw, ..
+    } = row
+    else {
         unreachable!();
     };
-    let mut scroll = 0;
-    loop {
-        let canvas = dashboard(
-            term,
-            "Layout",
-            "v validate | q back",
-            model,
-            &model.original,
-            &model.original,
-            corpus,
-            weights,
-            None,
-            None,
-            "",
-            None,
-            false,
-        );
-        term.present(&canvas, scroll)?;
-        let event = term.event()?;
-        if scroll_event(&event, &mut scroll, canvas.h, term.size.1) {
-            continue;
-        }
-        if let Some(Action::Metric(metric)) = action_press(term, &canvas, &event, scroll) {
-            contributor_view(
-                term,
-                metric,
-                model,
-                &model.original,
-                &model.original,
-                corpus,
-                false,
-            )?;
-        }
-        match event {
-            Event::Char('.') => term.precise = !term.precise,
-            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-            Event::Char('i') => show_corpus_info(term, corpus)?,
-            Event::Char('v') => validation_view(term, model, &model.original, &model.original)?,
-            _ => {}
-        }
-    }
+    editor_prepared(
+        term,
+        model.clone(),
+        (**corpus).clone(),
+        weights.clone(),
+        raw.clone(),
+    )
 }
 
 #[derive(Clone, Debug)]
@@ -621,23 +741,24 @@ struct RankColumns {
     history: Vec<Hidden>,
     redo: Vec<Hidden>,
     first: usize,
+    mana2: bool,
 }
 
 impl RankColumns {
-    fn new() -> Self {
+    fn new(mana2: bool) -> Self {
         Self {
             hidden: [false; RANK_COUNT],
             rows: BTreeSet::new(),
             history: Vec::new(),
             redo: Vec::new(),
             first: 0,
+            mana2,
         }
     }
 
     fn visible(&self) -> Vec<usize> {
-        RANK_ORDER
-            .iter()
-            .copied()
+        rank_catalog(self.mana2)
+            .into_iter()
             .filter(|&m| !self.hidden[m])
             .collect()
     }
@@ -714,9 +835,14 @@ impl RankColumns {
         }
     }
 
+    /// Show every hidden row and the columns hidden from the grid.
     fn restore(&mut self) -> bool {
         let rows_changed = !self.rows.is_empty();
-        self.hidden.fill(false);
+        for hidden in &self.history {
+            if let Hidden::Column(m) = hidden {
+                self.hidden[*m] = false;
+            }
+        }
         self.rows.clear();
         self.history.clear();
         self.redo.clear();
@@ -752,6 +878,34 @@ const RANK_DEFAULT_COLUMNS: &[usize] = &[
 
 fn default_rank_columns() -> [bool; RANK_COUNT] {
     std::array::from_fn(|metric| !RANK_DEFAULT_COLUMNS.contains(&metric))
+}
+
+fn default_mana2_rank_columns() -> [bool; RANK_COUNT] {
+    let wanted = [
+        "sfb",
+        "sfs",
+        "skb",
+        "sks",
+        "lsb",
+        "lss",
+        "vsb",
+        "vss",
+        "alt",
+        "redirect",
+        "redirectweak",
+        "roll",
+        "inroll2",
+        "outroll2",
+        "inroll3",
+        "outroll3",
+        "fspeed",
+        "weighted_speed",
+    ];
+    std::array::from_fn(|metric| {
+        metric != RANK_SCORE
+            && (metric < RANK_MANA_START
+                || !wanted.contains(&mana2_metrics::STAT_IDS[metric - RANK_MANA_START]))
+    })
 }
 
 fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
@@ -792,6 +946,7 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
     Ok(hidden)
 }
 
+#[cfg(test)]
 fn rank_columns_text(hidden: &[bool; RANK_COUNT]) -> String {
     let names: Vec<_> = RANK_ORDER
         .iter()
@@ -805,93 +960,416 @@ fn rank_columns_text(hidden: &[bool; RANK_COUNT]) -> String {
     )
 }
 
-fn toggle_rank_column(hidden: &mut [bool; RANK_COUNT], metric: usize) {
-    if hidden[metric] || RANK_ORDER.iter().filter(|&&id| !hidden[id]).count() > 1 {
+fn toggle_rank_column(hidden: &mut [bool; RANK_COUNT], metric: usize, mana2: bool) {
+    if hidden[metric]
+        || rank_catalog(mana2)
+            .iter()
+            .filter(|&&id| !hidden[id])
+            .count()
+            > 1
+    {
         hidden[metric] = !hidden[metric];
     }
 }
 
-fn choose_rank_columns(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RankTab {
+    Rankings,
+    Layouts,
+    Columns,
+}
+
+fn draw_rank_tabs(canvas: &mut Canvas, active: RankTab, y: usize) {
+    let index = match active {
+        RankTab::Rankings => 0,
+        RankTab::Layouts => 1,
+        RankTab::Columns => 2,
+    };
+    workspace_tabs_at(canvas, y, index,
+        &[" [1] Rankings ", " [2] Layouts ", " [3] Columns "]);
+}
+
+#[derive(Clone)]
+struct RankSelection {
+    columns: [bool; RANK_COUNT],
+    layouts: BTreeSet<PathBuf>,
+    filters: RankFilters,
+}
+
+fn rank_layout_choices(rows: &[RankRow], filter: &str) -> Vec<usize> {
+    let filter = filter.to_ascii_lowercase();
+    let mut choices: Vec<_> = (0..rows.len())
+        .filter(|&index| {
+            rows[index].name().to_ascii_lowercase().contains(&filter)
+                || rows[index]
+                    .path()
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains(&filter)
+        })
+        .collect();
+    choices.sort_by(|&a, &b| {
+        rows[a]
+            .name()
+            .cmp(rows[b].name())
+            .then_with(|| rows[a].path().cmp(rows[b].path()))
+    });
+    choices
+}
+
+fn toggle_rank_layout(hidden: &mut BTreeSet<PathBuf>, path: &Path) {
+    if !hidden.remove(path) {
+        hidden.insert(path.to_owned());
+    }
+}
+
+fn rank_hidden_with_filters(
+    rows: &[RankRow],
+    manual: &BTreeSet<PathBuf>,
+    filters: RankFilters,
+) -> BTreeSet<PathBuf> {
+    let mut hidden = manual.clone();
+    hidden.extend(
+        rows.iter()
+            .filter(|row| {
+                (filters.hide_magic && row.has_magic())
+                    || (filters.hide_non_thumb && !row.has_thumb_letter())
+            })
+            .map(|row| row.path().to_owned()),
+    );
+    hidden
+}
+
+fn rank_filtered_order(
+    rows: &[RankRow],
+    search: &str,
+    metric: Option<usize>,
+    ascending: bool,
+    manual: &BTreeSet<PathBuf>,
+    filters: RankFilters,
+) -> Vec<usize> {
+    rank_order(
+        rows,
+        search,
+        metric,
+        ascending,
+        &rank_hidden_with_filters(rows, manual, filters),
+    )
+}
+
+fn choose_rank_settings(
     term: &mut Terminal,
-    current: &[bool; RANK_COUNT],
-) -> AppResult<Option<[bool; RANK_COUNT]>> {
-    let mut hidden = *current;
-    let mut selected = 0;
-    let mut scroll = 0;
+    rows: &[RankRow],
+    current: &RankSelection,
+    selected_path: Option<&Path>,
+    mana2: bool,
+    initial_tab: RankTab,
+) -> AppResult<Option<RankSelection>> {
+    let mut draft = current.clone();
+    let mut active = initial_tab;
+    let mut filter = String::new();
+    let initial = rank_layout_choices(rows, "");
+    let mut layout_selected = selected_path
+        .and_then(|path| initial.iter().position(|&index| rows[index].path() == path))
+        .unwrap_or(0);
+    let mut layout_scroll = (layout_selected + 6).saturating_sub(term.size.1.max(1));
+    let mut column_selected = 0;
+    let mut column_scroll = 0;
     let mut status = String::new();
+    let order = rank_catalog(mana2);
     loop {
-        let mut canvas = Canvas::new(term.width(), RANK_ORDER.len() + 6);
-        header(
-            &mut canvas,
-            "Ranker columns",
-            "",
-            "",
-            "Space toggle | d compact | a all | q save & back | Esc cancel",
-        );
-        for (index, &metric) in RANK_ORDER.iter().enumerate() {
-            canvas.text(
-                1,
-                index + 3,
-                &format!(
-                    "{} [{}] {}",
-                    if index == selected { '›' } else { ' ' },
-                    if hidden[metric] { ' ' } else { 'x' },
-                    rank_name(metric)
-                ),
-                if index == selected { YELLOW } else { FG },
-            );
-            canvas.hit(
-                Rect {
-                    x: 1,
-                    y: index + 3,
-                    w: 24,
-                    h: 1,
-                },
-                Action::Item(index),
-            );
+        let choices = rank_layout_choices(rows, &filter);
+        layout_selected = layout_selected.min(choices.len().saturating_sub(1));
+        let layout_capacity = term.size.1.saturating_sub(5).max(1);
+        let column_capacity = term.size.1.saturating_sub(4).max(1);
+        layout_scroll = layout_scroll.min(choices.len().saturating_sub(layout_capacity));
+        column_scroll = column_scroll.min(order.len().saturating_sub(column_capacity));
+        let mut canvas = match active {
+            RankTab::Layouts => Canvas::new(term.width(), term.size.1.max(6)),
+            RankTab::Columns | RankTab::Rankings => Canvas::new(term.width(), term.size.1.max(5)),
+        };
+        match active {
+            RankTab::Layouts => {
+                header(
+                    &mut canvas,
+                    "Ranker settings",
+                    "",
+                    "",
+                    "Space toggle · / search · ? help · 1/q apply · Esc cancel",
+                );
+                draw_rank_tabs(&mut canvas, active, 2);
+                let magic = format!(
+                    "[m Magic hidden: {}]",
+                    if draft.filters.hide_magic {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                let no_thumb = format!(
+                    "[t No thumb letter hidden: {}]",
+                    if draft.filters.hide_non_thumb {
+                        "ON"
+                    } else {
+                        "OFF"
+                    }
+                );
+                canvas.text(1, 3, &magic, CYAN);
+                canvas.hit(
+                    Rect {
+                        x: 1,
+                        y: 3,
+                        w: magic.chars().count(),
+                        h: 1,
+                    },
+                    Action::Setting(0),
+                );
+                let filter_x = magic.chars().count() + 2;
+                canvas.text(filter_x, 3, &no_thumb, CYAN);
+                canvas.hit(
+                    Rect {
+                        x: filter_x,
+                        y: 3,
+                        w: no_thumb.chars().count(),
+                        h: 1,
+                    },
+                    Action::Setting(1),
+                );
+                let note = if status.is_empty() {
+                    format!("Filter: {filter}")
+                } else {
+                    status.clone()
+                };
+                canvas.text(
+                    1,
+                    4,
+                    &short(&note, canvas.w.saturating_sub(2)),
+                    if status.is_empty() { MUTED } else { CYAN },
+                );
+                for index in layout_scroll..(layout_scroll + layout_capacity).min(choices.len()) {
+                    let row = choices[index];
+                    let row = &rows[row];
+                    let category_filtered = (draft.filters.hide_magic && row.has_magic())
+                        || (draft.filters.hide_non_thumb && !row.has_thumb_letter());
+                    let text = format!(
+                        "{} [{}] {}{}  ({})",
+                        if index == layout_selected { '›' } else { ' ' },
+                        if draft.layouts.contains(row.path()) {
+                            ' '
+                        } else {
+                            'x'
+                        },
+                        if category_filtered { "[filtered] " } else { "" },
+                        row.name(),
+                        row.path().display(),
+                    );
+                    canvas.text(
+                        1,
+                        index - layout_scroll + 5,
+                        &short(&text, canvas.w.saturating_sub(2)),
+                        if category_filtered {
+                            MUTED
+                        } else if index == layout_selected {
+                            YELLOW
+                        } else {
+                            FG
+                        },
+                    );
+                    canvas.hit(
+                        Rect {
+                            x: 1,
+                            y: index - layout_scroll + 5,
+                            w: canvas.w.saturating_sub(2),
+                            h: 1,
+                        },
+                        Action::Item(index),
+                    );
+                }
+                if choices.is_empty() {
+                    canvas.text(1, 5, "No layouts match the filter", MUTED);
+                }
+            }
+            RankTab::Columns | RankTab::Rankings => {
+                header(
+                    &mut canvas,
+                    "Ranker settings",
+                    "",
+                    "",
+                    "Space toggle · d compact · a all · 1/q apply · Esc cancel",
+                );
+                draw_rank_tabs(&mut canvas, active, 2);
+                for index in column_scroll..(column_scroll + column_capacity).min(order.len()) {
+                    let metric = order[index];
+                    canvas.text(
+                        1,
+                        index - column_scroll + 4,
+                        &format!(
+                            "{} [{}] {}",
+                            if index == column_selected { '›' } else { ' ' },
+                            if draft.columns[metric] { ' ' } else { 'x' },
+                            displayed_rank_name(metric, mana2)
+                        ),
+                        if index == column_selected { YELLOW } else { FG },
+                    );
+                    canvas.hit(
+                        Rect {
+                            x: 1,
+                            y: index - column_scroll + 4,
+                            w: 24,
+                            h: 1,
+                        },
+                        Action::Item(index),
+                    );
+                }
+                canvas.text(1, 3, &short(&status, canvas.w.saturating_sub(2)), CYAN);
+            }
         }
-        canvas.text(
-            1,
-            RANK_ORDER.len() + 4,
-            &short(&status, canvas.w.saturating_sub(2)),
-            CYAN,
-        );
-        canvas.h = RANK_ORDER.len() + 6;
-        term.present(&canvas, scroll)?;
-        let event = term.event()?;
-        if scroll_event(&event, &mut scroll, canvas.h, term.size.1) {
+        let (scroll, total, capacity) = if active == RankTab::Layouts {
+            (&mut layout_scroll, choices.len(), layout_capacity)
+        } else {
+            (&mut column_scroll, order.len(), column_capacity)
+        };
+        term.present(&canvas, 0)?;
+        let mut event = term.event()?;
+        if scroll_event(&event, scroll, total, capacity) {
             continue;
         }
-        if let Some(Action::Item(index)) = action_press(term, &canvas, &event, scroll) {
-            selected = index;
-            toggle_rank_column(&mut hidden, RANK_ORDER[selected]);
+        let pressed = action_press(term, &canvas, &event, 0);
+        if let Some(Action::Command(key)) = pressed {
+            event = Event::Char(key);
+        } else if let Some(Action::Item(index)) = pressed {
+            match active {
+                RankTab::Layouts => {
+                    layout_selected = index;
+                    toggle_rank_layout(&mut draft.layouts, rows[choices[index]].path());
+                }
+                RankTab::Columns | RankTab::Rankings => {
+                    column_selected = index;
+                    toggle_rank_column(&mut draft.columns, order[index], mana2);
+                }
+            }
+        } else if let Some(Action::Setting(setting)) = pressed {
+            event = Event::Char(if setting == 0 { 'm' } else { 't' });
         }
         match event {
             Event::Escape | Event::Quit => return Ok(None),
-            Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
-            Event::Down | Event::Char('j') => selected = (selected + 1).min(RANK_ORDER.len() - 1),
-            Event::Char(' ') | Event::Enter => {
-                toggle_rank_column(&mut hidden, RANK_ORDER[selected])
-            }
-            Event::Char('d') => hidden = default_rank_columns(),
-            Event::Char('a') => hidden.fill(false),
-            Event::Char('q') | Event::Char('s') => {
-                if RANK_ORDER.iter().all(|&id| hidden[id]) {
+            Event::Char('2') => active = RankTab::Layouts,
+            Event::Char('3') => active = RankTab::Columns,
+            Event::Char('1') | Event::Char('q') => {
+                if order.iter().all(|&id| draft.columns[id]) {
                     status = "Select at least one column".into();
                     continue;
                 }
-                match save_rank_columns(&hidden) {
-                    Ok(()) => return Ok(Some(hidden)),
-                    Err(error) => status = error.to_string(),
+                let saved = save_rank_selection(
+                    (!mana2).then_some(&draft.columns),
+                    draft.filters,
+                    &draft.layouts,
+                );
+                match saved {
+                    Ok(()) => return Ok(Some(draft)),
+                    Err(error) => {
+                        status = error.to_string();
+                        continue;
+                    }
+                }
+            }
+            Event::Up | Event::Char('k') => match active {
+                RankTab::Layouts => layout_selected = layout_selected.saturating_sub(1),
+                RankTab::Columns | RankTab::Rankings => {
+                    column_selected = column_selected.saturating_sub(1)
+                }
+            },
+            Event::Down | Event::Char('j') => match active {
+                RankTab::Layouts => {
+                    layout_selected = (layout_selected + 1).min(choices.len().saturating_sub(1))
+                }
+                RankTab::Columns | RankTab::Rankings => {
+                    column_selected = (column_selected + 1).min(order.len().saturating_sub(1))
+                }
+            },
+            Event::Home => match active {
+                RankTab::Layouts => layout_selected = 0,
+                RankTab::Columns | RankTab::Rankings => column_selected = 0,
+            },
+            Event::End => match active {
+                RankTab::Layouts => layout_selected = choices.len().saturating_sub(1),
+                RankTab::Columns | RankTab::Rankings => {
+                    column_selected = order.len().saturating_sub(1)
+                }
+            },
+            Event::Char(' ') | Event::Enter => match active {
+                RankTab::Layouts => {
+                    if let Some(&index) = choices.get(layout_selected) {
+                        toggle_rank_layout(&mut draft.layouts, rows[index].path());
+                    }
+                }
+                RankTab::Columns | RankTab::Rankings => {
+                    toggle_rank_column(&mut draft.columns, order[column_selected], mana2)
+                }
+            },
+            Event::Char('a') if active == RankTab::Layouts => {
+                for &index in &choices {
+                    draft.layouts.remove(rows[index].path());
+                }
+            }
+            Event::Char('n') if active == RankTab::Layouts => {
+                for &index in &choices {
+                    draft.layouts.insert(rows[index].path().to_owned());
+                }
+            }
+            Event::Char('/') if active == RankTab::Layouts => {
+                if let Some(value) = input_box(term, "Layout filter", "", &filter)? {
+                    filter = value;
+                    layout_selected = 0;
+                    layout_scroll = 0;
+                }
+            }
+            Event::Char('m') if active == RankTab::Layouts => {
+                draft.filters.hide_magic = !draft.filters.hide_magic;
+            }
+            Event::Char('t') if active == RankTab::Layouts => {
+                draft.filters.hide_non_thumb = !draft.filters.hide_non_thumb;
+            }
+            Event::Char('?') if active == RankTab::Layouts => help_popup(
+                term,
+                &canvas,
+                "Choose layouts",
+                &[
+                    "j/k or arrows\tMove through layouts".into(),
+                    "Space or Enter\tToggle the selected layout".into(),
+                    "m\tToggle hiding layouts with a bound magic/action key".into(),
+                    "t\tToggle hiding layouts with no alphabetic thumb key".into(),
+                    "a\tShow all layouts matching the name filter".into(),
+                    "n\tHide all layouts matching the name filter".into(),
+                    "/\tFilter names and paths".into(),
+                    "1 or q\tApply settings and return to rankings".into(),
+                    "2 / 3\tSwitch between layouts and columns".into(),
+                    "Esc\tCancel changes".into(),
+                ],
+            )?,
+            Event::Char('d') if active == RankTab::Columns => {
+                draft.columns = if mana2 {
+                    default_mana2_rank_columns()
+                } else {
+                    default_rank_columns()
+                };
+            }
+            Event::Char('a') if active == RankTab::Columns => {
+                for &metric in &order {
+                    draft.columns[metric] = false;
                 }
             }
             _ => {}
         }
-        let y = selected + 3;
-        if y < scroll {
-            scroll = y;
-        } else if y >= scroll + term.size.1.max(1) {
-            scroll = y + 1 - term.size.1.max(1);
+        let (selected, capacity, scroll) = if active == RankTab::Layouts {
+            (layout_selected, layout_capacity, &mut layout_scroll)
+        } else {
+            (column_selected, column_capacity, &mut column_scroll)
+        };
+        if selected < *scroll {
+            *scroll = selected;
+        } else if selected >= *scroll + capacity {
+            *scroll = selected + 1 - capacity;
         }
     }
 }
@@ -901,7 +1379,6 @@ struct RankGrid {
     name: usize,
     cell: usize,
     metrics: Vec<usize>,
-    first: usize,
     total: usize,
     capacity: usize,
 }
@@ -923,7 +1400,6 @@ impl RankGrid {
             name,
             cell,
             metrics,
-            first: columns.first,
             total: visible.len(),
             capacity,
         }
@@ -979,7 +1455,16 @@ fn rank_ranges(rows: &[RankRow], hidden: &BTreeSet<PathBuf>) -> [RankRange; RANK
     out
 }
 
-fn rank_color(m: usize, v: f64, range: RankRange) -> u8 {
+fn rank_positive_for(m: usize, aklgg: bool) -> bool {
+    if aklgg && m >= RANK_MANA_START {
+        let id = mana2_metrics::STAT_IDS[m - RANK_MANA_START];
+        return id.starts_with("alt") || id.starts_with("roll")
+            || id.starts_with("inroll") || id.starts_with("outroll");
+    }
+    rank_positive(m)
+}
+
+fn rank_color_for(m: usize, v: f64, range: RankRange, aklgg: bool) -> u8 {
     if !v.is_finite() || !range.lo.is_finite() || !range.hi.is_finite() {
         return MUTED;
     }
@@ -988,7 +1473,7 @@ fn rank_color(m: usize, v: f64, range: RankRange) -> u8 {
         return gradient(0.5);
     }
     let t = ((v - range.lo) / span).clamp(0.0, 1.0);
-    gradient(if rank_positive(m) { t } else { 1.0 - t })
+    gradient(if rank_positive_for(m, aklgg) { t } else { 1.0 - t })
 }
 
 fn rank_order(
@@ -1070,6 +1555,8 @@ fn draw_rank_table(
     ascending: bool,
     dp: usize,
     ranges: &[RankRange; RANK_COUNT],
+    mana2: bool,
+    aklgg: bool,
 ) -> usize {
     let bottom = RANK_DATA + shown.max(1);
     c.boxed(
@@ -1114,7 +1601,7 @@ fn draw_rank_table(
             g.cell,
             &format!(
                 "{}{}",
-                rank_name(m),
+                displayed_rank_name(m, mana2),
                 if metric == Some(m) { arrow } else { "" }
             ),
             if metric == Some(m) { YELLOW } else { FG },
@@ -1162,23 +1649,29 @@ fn draw_rank_table(
                 }
                 None => "n/a".into(),
             };
-            c.right(
-                g.content_x(j) + 1,
-                y,
-                g.cell - 2,
-                &text,
-                value.map(|v| rank_color(m, v, ranges[m])).unwrap_or(MUTED),
-            );
+            let color = value.map(|v| rank_color_for(m, v, ranges[m], aklgg)).unwrap_or(MUTED);
+            c.right(g.content_x(j) + 1, y, g.cell - 2, &text, color);
         }
-        // Stripe by table position so scrolling preserves the alternating rows.
-        // Plain dark rows are bold; alternating rows have a subtle red tint.
-        let plain = r % 2 == 0;
-        c.row_style(Rect {
-            x: 1,
-            y,
-            w: g.width - 2,
-            h: 1,
-        }, if plain { None } else { Some((28, 16, 18)) }, plain);
+        // Keep the four-row stripe pattern stable while scrolling.
+        let background = if r == selected {
+            Some((36, 36, 36))
+        } else {
+            match r % 4 {
+                1 => Some((30, 30, 30)),
+                3 => Some((18, 18, 18)),
+                _ => None,
+            }
+        };
+        c.row_style(
+            Rect {
+                x: 1,
+                y,
+                w: g.width - 2,
+                h: 1,
+            },
+            background,
+            false,
+        );
     }
     if order.is_empty() {
         c.text(2, RANK_DATA, "—", MUTED);
@@ -1186,13 +1679,98 @@ fn draw_rank_table(
     bottom
 }
 
+fn rank_editor_return_status(weights: &Weights, spacegrams: bool) -> String {
+    match load_app_config() {
+        Ok(config)
+            if config.weights.3 != weights.3
+                || config.weights.1 != weights.1
+                || config.weights.4 != weights.4
+                || config.ngrams.include_spacegrams != spacegrams =>
+        {
+            "Typing policy changed; showing the previous ranking snapshot. r reloads it.".into()
+        }
+        _ => "Returned from editor; r reloads saved layouts".into(),
+    }
+}
+
+fn inspect_mana2_ranked(
+    term: &mut Terminal,
+    row: &RankRow,
+    weights: &mana2_metrics::Weights,
+    mode: &str,
+) -> AppResult<()> {
+    let raw = row
+        .raw()
+        .1
+        .as_ref()
+        .ok_or("Mana2 statistics were not collected for this layout")?;
+    let stats = mana2_rank_stats(row, raw);
+    let contributions = mana2_metrics::score_contributions(&stats, weights);
+    let mut lines = vec![
+        format!("Layout: {}", row.name()),
+        if mode == "aklgg" { format!("aklgg score: {:.6} (lower is better)", row.score()) }
+        else { format!("Mana2 score: {:.6} (higher is better)", -row.score()) },
+    ];
+    if let RankRow::Action { layout, .. } = row {
+        lines.extend(action_ui::rules_and_combos(layout));
+    }
+    lines.extend([
+        String::new(),
+        format!("{:<26} {:>12} {:>12}", "Statistic", "Value", "Score"),
+    ]);
+    for &index in mana2_metrics::WEIGHTABLE_STATS {
+        let id = mana2_metrics::STAT_IDS[index];
+        let metric = RANK_MANA_START + index;
+        let value = if rank_percent(metric) {
+            format!("{:.4}%", stats.values[index])
+        } else {
+            format!("{:.6}", stats.values[index])
+        };
+        lines.push(format!(
+            "{:<26} {:>12} {:>12.6}",
+            id, value, if mode == "aklgg" { -contributions[index] } else { contributions[index] }
+        ));
+    }
+    let speed = finger_speed::calculate(&stats.speed, &finger_speed::Settings::default());
+    lines.extend([
+        String::new(),
+        "Finger detail".into(),
+        format!(
+            "{:<8} {:>10} {:>10} {:>10}",
+            "Finger", "Usage", "Fspeed", "Weighted"
+        ),
+    ]);
+    for (name, usage_index, speed_index) in [
+        ("LP", 0, 0),
+        ("LR", 1, 1),
+        ("LM", 2, 2),
+        ("LI", 3, 3),
+        ("LT", 4, 8),
+        ("RT", 5, 9),
+        ("RI", 6, 4),
+        ("RM", 7, 5),
+        ("RR", 8, 6),
+        ("RP", 9, 7),
+    ] {
+        lines.push(format!(
+            "{name:<8} {:>9.3}% {:>10.3} {:>10.3}",
+            stats.values[usage_index], speed.per_finger[speed_index], speed.weighted[speed_index],
+        ));
+    }
+    info_page(term, if mode == "aklgg" { "aklgg layout statistics" } else { "Mana2 layout statistics" }, &lines)
+}
+
 fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
     let Some(mut data) = load_ranking_tui(term, path)? else {
         return Ok(());
     };
+    ranking_loaded(term, &mut data)
+}
+
+fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> {
     let mut metric = Some(RANK_SCORE);
     let mut ascending = true;
-    let mut columns = RankColumns::new();
+    let mut columns = RankColumns::new(data.physical_catalog());
     columns.hidden = data.columns;
     columns.rows = data.hidden_layouts.clone();
     let (mut selected, mut top) = (0, 0);
@@ -1200,10 +1778,20 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
     let mut status = String::new();
 
     loop {
+        if columns.mana2 != data.physical_catalog() {
+            columns.mana2 = data.physical_catalog();
+            columns.hidden = data.columns;
+            columns.first = 0;
+            columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+            columns.redo.clear();
+            metric = Some(RANK_SCORE);
+            ascending = true;
+        }
         let rows = &data.rows;
         let errors = &data.errors;
-        let order = rank_order(rows, &filter, metric, ascending, &columns.rows);
-        let ranges = rank_ranges(rows, &columns.rows);
+        let effective_hidden = rank_hidden_with_filters(rows, &columns.rows, data.filters);
+        let order = rank_order(rows, &filter, metric, ascending, &effective_hidden);
+        let ranges = rank_ranges(rows, &effective_hidden);
         let width = term.size.0.max(64);
         let height = term.size.1.max(12);
         let capacity = height.saturating_sub(RANK_DATA + 3).max(1);
@@ -1226,19 +1814,103 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
         }
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
-        let title = if data.simple {
-            "Ranker · Simple SCORE"
-        } else if data.mana2 {
-            "Ranker · Mana2 SCORE"
+        let title = if data.mana2 {
+            "Mana2 ranker".to_string()
         } else {
-            "Ranker"
+            format!("Ranker · {} weights [s]", data.scoring)
         };
-        header(
-            &mut c,
-            title,
-            &data.name,
-            "",
-            "",
+        let alt_fingers = format!(
+            "Alternate fingers: {} [f]",
+            data.weights.alt_fingers_label()
+        );
+        let combos = format!(
+            "Combos: {} [F]",
+            if data.weights.4 {
+                "enabled"
+            } else {
+                "disabled"
+            }
+        );
+        let spacegrams = format!(
+            "Spacegrams: {} [z]",
+            if data.spacegrams { "ON" } else { "OFF" }
+        );
+        let typing = format!("{alt_fingers} · {combos} · {spacegrams}");
+        header(&mut c, &title, &data.name, "", &typing);
+        if !data.mana2 {
+            c.hit(Rect { x: 0, y: 0, w: title.chars().count(), h: 1 }, Action::Command('s'));
+        }
+        draw_rank_tabs(&mut c, RankTab::Rankings, 2);
+        let filter_buttons = [
+            ('m', "Hide magic", data.filters.hide_magic),
+            ('t', "Hide no thumb letters", data.filters.hide_non_thumb),
+        ];
+        let mut filter_x = 0;
+        for (key, label, enabled) in filter_buttons {
+            let text = format!("{key} {label}: {}", if enabled { "ON" } else { "OFF" });
+            c.text(filter_x, 3, &text, if enabled { GREEN } else { MUTED });
+            c.hit(
+                Rect {
+                    x: filter_x,
+                    y: 3,
+                    w: text.chars().count(),
+                    h: 1,
+                },
+                Action::Command(key),
+            );
+            filter_x += text.chars().count() + 3;
+        }
+        let corpus_x = title.chars().count() + 2;
+        c.hit(
+            Rect {
+                x: corpus_x,
+                y: 0,
+                w: data
+                    .name
+                    .chars()
+                    .count()
+                    .min(width.saturating_sub(corpus_x)),
+                h: 1,
+            },
+            Action::Command('C'),
+        );
+        c.hit(
+            Rect {
+                x: 0,
+                y: 1,
+                w: alt_fingers.chars().count().min(width),
+                h: 1,
+            },
+            Action::Command('f'),
+        );
+        let combos_x = alt_fingers.chars().count() + 3;
+        c.hit(
+            Rect {
+                x: combos_x,
+                y: 1,
+                w: combos.chars().count().min(width.saturating_sub(combos_x)),
+                h: 1,
+            },
+            Action::Command('F'),
+        );
+        let spacegrams_x = combos_x + combos.chars().count() + 3;
+        c.text(
+            spacegrams_x,
+            1,
+            &short(&spacegrams, width.saturating_sub(spacegrams_x)),
+            if data.spacegrams { GREEN } else { MUTED },
+        );
+        c.hit(
+            Rect {
+                x: spacegrams_x,
+                y: 1,
+                w: spacegrams
+                    .chars()
+                    .count()
+                    .min(width.saturating_sub(spacegrams_x)),
+                h: 1,
+            },
+            Action::Command('z'),
         );
         let bottom = draw_rank_table(
             &mut c,
@@ -1252,25 +1924,26 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             ascending,
             term.decimals(),
             &ranges,
+            data.physical_catalog(),
+            data.scoring == "aklgg",
         );
-        let mut footer = format!("{} layouts · ? help", order.len());
+        let mut footer = format!("{} layouts · a rules · ? help", order.len());
         if !errors.is_empty() {
             footer.push_str(&format!(" · {} errors", errors.len()));
         }
         if !data.warnings.is_empty() {
             footer.push_str(" · notes");
         }
+        // The selected layout's magic rules and combos at a glance.
+        let mut bottom = bottom;
+        if let Some(RankRow::Action { layout, .. }) = order.get(selected).map(|&i| &rows[i]) {
+            if let Some(line) = action_ui::rules_and_combos(layout) {
+                c.text(0, bottom + 1, &short(&line, width), CYAN);
+                bottom += 1;
+            }
+        }
         c.text(0, bottom + 1, &short(&footer, width), MUTED);
-        let selected_name = order.get(selected).map(|&i| rows[i].name()).unwrap_or("");
-        c.text(
-            0,
-            bottom + 2,
-            &short(
-                &status,
-                width,
-            ),
-            CYAN,
-        );
+        c.text(0, bottom + 2, &short(&status, width), CYAN);
         c.h = bottom + 3;
         term.present(&c, 0)?;
         let mut e = term.event()?;
@@ -1291,8 +1964,9 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                 continue;
             }
             if let Some(m) = grid.metric_at(x, y, shown) {
-                columns.hide(m);
-                status.clear();
+                if columns.hide(m) {
+                    status = persist_hidden_columns(&columns).unwrap_or_default();
+                }
                 continue;
             }
         }
@@ -1314,7 +1988,7 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                         ascending = !ascending;
                     } else {
                         metric = Some(m);
-                        ascending = !rank_positive(m);
+                        ascending = !rank_positive_for(m, data.scoring == "aklgg");
                     }
                     top = 0;
                     selected = 0;
@@ -1323,7 +1997,12 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
                 Action::Item(r) => {
                     if selected == r {
                         if let Some(&i) = order.get(r) {
-                            inspect_row(term, &mut data.rows[i], &data.weights)?;
+                            if data.physical_catalog() {
+                                inspect_mana2_ranked(term, &data.rows[i], &data.weights.2, &data.scoring)?;
+                            } else {
+                                open_ranked_editor(term, &mut data.rows[i], &data.weights)?;
+                                status = rank_editor_return_status(&data.weights, data.spacegrams);
+                            }
                         }
                     }
                     selected = r;
@@ -1334,148 +2013,442 @@ fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
             }
         }
         match e {
-            Event::Escape|Event::Quit|Event::Char('q') => return Ok(()),
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
+            Event::Char('s') if !data.mana2 => {
+                let mode = if data.scoring == "normal" { "aklgg" } else { "normal" };
+                let saved = load_app_config().and_then(|mut config| {
+                    config.search.mode = mode.into();
+                    save_config_sections(&[("search", search_settings_text(&config.search))])
+                });
+                match saved {
+                    Ok(()) => {
+                        rescore_rank_rows(&mut data.rows, &data.weights, mode);
+                        data.scoring = mode.into();
+                        columns.mana2 = data.physical_catalog();
+                        columns.hidden = if columns.mana2 { default_mana2_rank_columns() } else {
+                            load_app_config().map(|config| config.rank_columns).unwrap_or_else(|_| default_rank_columns())
+                        };
+                        columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                        columns.redo.clear();
+                        columns.first = 0;
+                        metric = Some(RANK_SCORE);
+                        ascending = true;
+                        top = 0;
+                        selected = 0;
+                        status = format!("{mode} weights · lower score is better");
+                    }
+                    Err(error) => status = format!("Weights unchanged: {error}"),
+                }
+            }
             Event::Char('R') => {
-                match term.request_restart() {
+                let restart = term.request_ranker_restart(&data.path);
+                match restart {
                     Ok(()) => return Ok(()),
                     Err(error) => status = error.to_string(),
                 }
-            },
-            Event::Enter => if let Some(&i) = order.get(selected) {
-                inspect_row(term, &mut data.rows[i], &data.weights)?;
-            },
-            Event::Up|Event::Char('k') => {
+            }
+            Event::Enter => {
+                if let Some(&i) = order.get(selected) {
+                    if data.physical_catalog() {
+                        inspect_mana2_ranked(term, &data.rows[i], &data.weights.2, &data.scoring)?;
+                    } else {
+                        open_ranked_editor(term, &mut data.rows[i], &data.weights)?;
+                        status = rank_editor_return_status(&data.weights, data.spacegrams);
+                    }
+                }
+            }
+            Event::Up | Event::Char('k') => {
                 selected = selected.saturating_sub(1);
                 rank_viewport(&mut top, &mut selected, order.len(), capacity, true);
-            },
-            Event::Down|Event::Char('j') => {
+            }
+            Event::Down | Event::Char('j') => {
                 selected = (selected + 1).min(order.len().saturating_sub(1));
                 rank_viewport(&mut top, &mut selected, order.len(), capacity, true);
-            },
-            Event::Left|Event::Char('h') => columns.first = columns.first.saturating_sub(1),
-            Event::Right|Event::Char('l') => columns.first = columns.first.saturating_add(1),
+            }
+            Event::Left | Event::Char('h') => columns.first = columns.first.saturating_sub(1),
+            Event::Right | Event::Char('l') => columns.first = columns.first.saturating_add(1),
             Event::Tab => columns.first = columns.first.saturating_add(grid.capacity),
             Event::Home => columns.first = 0,
             Event::End => columns.first = grid.total,
-            Event::Char('u') => {
-                if columns.undo(grid.capacity) {
+            Event::Char('u' | 'H') | Event::Redo => {
+                let hidden = columns.hidden;
+                let rows_changed = match e {
+                    Event::Char('u') => columns.undo(grid.capacity),
+                    Event::Redo => columns.redo(),
+                    _ => columns.restore(),
+                };
+                status.clear();
+                if rows_changed {
                     status = persist_hidden_rows(&columns.rows).unwrap_or_default();
                 }
-            }
-            Event::Redo => {
-                if columns.redo() {
-                    status = persist_hidden_rows(&columns.rows).unwrap_or_default();
+                if columns.hidden != hidden {
+                    if let Some(error) = persist_hidden_columns(&columns) {
+                        status = error;
+                    }
                 }
             }
-            Event::Char('H') => {
-                if columns.restore() {
-                    status = persist_hidden_rows(&columns.rows).unwrap_or_default();
-                }
-            }
-            Event::Char('v') => {
-                if let Some(hidden) = choose_rank_columns(term, &columns.hidden)? {
-                    columns.hidden = hidden;
+            Event::Char('1') => {}
+            Event::Char(ch @ ('2' | '3' | 'v' | 'V')) => {
+                let selected_path = order
+                    .get(selected)
+                    .map(|&index| rows[index].path().to_owned());
+                let current = RankSelection {
+                    columns: columns.hidden,
+                    layouts: columns.rows.clone(),
+                    filters: data.filters,
+                };
+                let tab = if matches!(ch, '2' | 'V') {
+                    RankTab::Layouts
+                } else {
+                    RankTab::Columns
+                };
+                if let Some(next) = choose_rank_settings(
+                    term,
+                    rows,
+                    &current,
+                    selected_path.as_deref(),
+                    data.physical_catalog(),
+                    tab,
+                )? {
+                    columns.hidden = next.columns;
+                    columns.rows = next.layouts;
+                    data.filters = next.filters;
                     columns.first = 0;
-                    columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                    columns.history.clear();
                     columns.redo.clear();
-                    status = format!("Saved default columns to {APP_CONFIG_FILE}");
+                    let next_order = rank_filtered_order(
+                        rows,
+                        &filter,
+                        metric,
+                        ascending,
+                        &columns.rows,
+                        data.filters,
+                    );
+                    selected = selected_path
+                        .as_ref()
+                        .and_then(|path| {
+                            next_order
+                                .iter()
+                                .position(|&index| rows[index].path() == path)
+                        })
+                        .unwrap_or_else(|| selected.min(next_order.len().saturating_sub(1)));
+                    rank_viewport(&mut top, &mut selected, next_order.len(), capacity, true);
+                    status = "Saved view".into();
                 }
             }
-            Event::Char('.') => term.precise=!term.precise,
+            Event::Char(ch @ ('m' | 't')) => {
+                let mut filters = data.filters;
+                if ch == 'm' {
+                    filters.hide_magic = !filters.hide_magic;
+                } else {
+                    filters.hide_non_thumb = !filters.hide_non_thumb;
+                }
+                match save_rank_filters(filters) {
+                    Ok(()) => {
+                        data.filters = filters;
+                        selected = 0;
+                        top = 0;
+                        status.clear();
+                    }
+                    Err(error) => status = format!("Filters unchanged: {error}"),
+                }
+            }
+            Event::Char(ch @ ('f' | 'F')) => {
+                let selected_path = order
+                    .get(selected)
+                    .map(|&index| rows[index].path().to_owned());
+                let alternate = ch == 'f';
+                let name = if alternate {
+                    "Alternate fingers"
+                } else {
+                    "Combos"
+                };
+                let old = if alternate {
+                    data.weights.3
+                } else {
+                    data.weights.4
+                };
+                let mut typing = (data.weights.3, data.weights.4);
+                if alternate {
+                    typing.0 = !typing.0;
+                } else {
+                    typing.1 = !typing.1;
+                }
+                let next_value = !old;
+                let path = data.path.clone();
+                let mana2 = data.mana2.then(|| Mana2RankSettings {
+                    weights: data.weights.2.clone(),
+                    ngrams: data.ngrams,
+                    typing,
+                });
+                match load_ranking_tui_for_settings(term, &path, mana2, Some(typing), None) {
+                    Ok(Some(next)) => {
+                        let save =
+                            save_config_sections(&[("typing", typing_config_text(&next.weights))]);
+                        match save {
+                            Ok(()) => {
+                                let next_order = rank_filtered_order(
+                                    &next.rows,
+                                    &filter,
+                                    metric,
+                                    ascending,
+                                    &columns.rows,
+                                    next.filters,
+                                );
+                                selected = selected_path
+                                    .as_ref()
+                                    .and_then(|path| {
+                                        next_order.iter().position(|&index| {
+                                            next.rows[index].path() == path.as_path()
+                                        })
+                                    })
+                                    .unwrap_or_else(|| {
+                                        selected.min(next_order.len().saturating_sub(1))
+                                    });
+                                *data = next;
+                                rank_viewport(
+                                    &mut top,
+                                    &mut selected,
+                                    next_order.len(),
+                                    capacity,
+                                    true,
+                                );
+                                status = format!(
+                                    "{name} {}{}",
+                                    if next_value { "enabled" } else { "disabled" },
+                                    "; saved to akler.conf"
+                                );
+                            }
+                            Err(error) => {
+                                status = format!("{name} unchanged; could not save: {error}");
+                            }
+                        }
+                    }
+                    Ok(None) => {
+                        status = format!(
+                            "{name} unchanged ({}; cancelled)",
+                            if old { "enabled" } else { "disabled" }
+                        );
+                    }
+                    Err(error) => {
+                        status = format!("{name} unchanged: {error}");
+                    }
+                }
+            }
+            Event::Char('z') => {
+                let selected_path = order
+                    .get(selected)
+                    .map(|&index| rows[index].path().to_owned());
+                let old = data.spacegrams;
+                let next_value = !old;
+                let path = data.path.clone();
+                let typing = (data.weights.3, data.weights.4);
+                let mut ngrams = data.ngrams;
+                ngrams.include_spacegrams = next_value;
+                let mana2 = data.mana2.then(|| Mana2RankSettings {
+                    weights: data.weights.2.clone(),
+                    ngrams,
+                    typing,
+                });
+                match load_ranking_tui_for_settings(
+                    term,
+                    &path,
+                    mana2,
+                    Some(typing),
+                    Some(next_value),
+                ) {
+                    Ok(Some(next)) => match save_spacegram_setting(next.spacegrams) {
+                        Ok(()) => {
+                            let next_order = rank_filtered_order(
+                                &next.rows,
+                                &filter,
+                                metric,
+                                ascending,
+                                &columns.rows,
+                                next.filters,
+                            );
+                            selected = selected_path
+                                .as_ref()
+                                .and_then(|path| {
+                                    next_order.iter().position(|&index| {
+                                        next.rows[index].path() == path.as_path()
+                                    })
+                                })
+                                .unwrap_or_else(|| {
+                                    selected.min(next_order.len().saturating_sub(1))
+                                });
+                            *data = next;
+                            rank_viewport(
+                                &mut top,
+                                &mut selected,
+                                next_order.len(),
+                                capacity,
+                                true,
+                            );
+                            status = format!(
+                                "Spacegrams {}{}",
+                                if next_value { "enabled" } else { "disabled" },
+                                "; saved to akler.conf"
+                            );
+                        }
+                        Err(error) => {
+                            status = format!("Spacegrams unchanged; could not save: {error}");
+                        }
+                    },
+                    Ok(None) => {
+                        status = format!(
+                            "Spacegrams unchanged ({}; cancelled)",
+                            if old { "enabled" } else { "disabled" }
+                        );
+                    }
+                    Err(error) => {
+                        status = format!("Spacegrams unchanged: {error}");
+                    }
+                }
+            }
+            Event::Char('w') => {
+                if let Some(&index) = order.get(selected) {
+                    weakness_loaded(term, data, index)?;
+                }
+            }
+            Event::Char('a') => {
+                if let Some(&index) = order.get(selected) {
+                    match &rows[index] {
+                        RankRow::Action { layout, .. } => {
+                            crate::layout_rules::show(term, &c, layout, &data.weights)?;
+                        }
+                        RankRow::Plain { .. } => {
+                            status =
+                                "This layout has no alternate fingers, combos, or actions".into();
+                        }
+                    }
+                }
+            }
+            Event::Char('.') => term.precise = !term.precise,
             Event::Char('n') => {
                 if metric.is_none() {
-                    ascending=!ascending;
+                    ascending = !ascending;
                 } else {
                     metric = None;
                     ascending = true;
                 }
                 top = 0;
                 selected = 0;
-            },
-            Event::Char('/') => if let Some(q) = input_box(term, "", "", &filter)? {
-                filter = q;
-                top = 0;
-                selected = 0;
-            },
+            }
+            Event::Char('/') => {
+                if let Some(q) = input_box(term, "", "", &filter)? {
+                    filter = q;
+                    top = 0;
+                    selected = 0;
+                }
+            }
             Event::Char('e') => info_page(term, "Errors", &errors)?,
             Event::Char('i') => info_page(term, "Corpus / n-gram limits", &data.warnings)?,
-            Event::Char('c') => if let Some(path) = select_source_path(term, false)? {
-                match load_ranking_tui(term, &path) {
+            Event::Char('c') | Event::Char('C') => {
+                let path = if matches!(e, Event::Char('C')) {
+                    let name = if data.name.eq_ignore_ascii_case("e200") {
+                        "reddit"
+                    } else {
+                        "e200"
+                    };
+                    match corpus_by_name(name) {
+                        Ok(path) => Some(path),
+                        Err(error) => {
+                            status = format!("Corpus unchanged: {error}");
+                            continue;
+                        }
+                    }
+                } else {
+                    select_source_path(term, false)?
+                };
+                let Some(path) = path else { continue };
+                let selected_path = order
+                    .get(selected)
+                    .map(|&index| rows[index].path().to_owned());
+                let mana2 = data.mana2.then(|| Mana2RankSettings {
+                    weights: data.weights.2.clone(),
+                    ngrams: data.ngrams,
+                    typing: (data.weights.3, data.weights.4),
+                });
+                match load_ranking_tui_for_settings(term, &path, mana2, None, None) {
                     Ok(Some(next)) => {
-                        data = next;
-                        columns.hidden = data.columns;
-                        columns.rows = data.hidden_layouts.clone();
-                        columns.first = 0;
-                        columns.history.retain(|item| matches!(item, Hidden::Row(_)));
-                        columns.redo.clear();
+                        let next_order = rank_filtered_order(
+                            &next.rows,
+                            &filter,
+                            metric,
+                            ascending,
+                            &columns.rows,
+                            next.filters,
+                        );
+                        selected = selected_path
+                            .as_ref()
+                            .and_then(|path| {
+                                next_order
+                                    .iter()
+                                    .position(|&index| next.rows[index].path() == path.as_path())
+                            })
+                            .unwrap_or_else(|| selected.min(next_order.len().saturating_sub(1)));
+                        rank_viewport(&mut top, &mut selected, next_order.len(), capacity, true);
+                        *data = next;
                         status.clear();
-                        top = 0;
-                        selected = 0;
                     }
                     Ok(None) => {}
-                    Err(error) => status = error.to_string(),
+                    Err(error) => status = format!("Corpus unchanged: {error}"),
                 }
-            },
+            }
             Event::Char('r') => {
                 let path = corpus_by_name(&data.name).unwrap_or_else(|_| data.path.clone());
-                match load_ranking_tui(term, &path) {
+                match load_ranking_tui_for_settings(term, &path, None, None, None) {
                     Ok(Some(next)) => {
-                        data = next;
+                        *data = next;
                         columns.hidden = data.columns;
                         columns.rows = data.hidden_layouts.clone();
                         columns.first = 0;
-                        columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                        columns
+                            .history
+                            .retain(|item| matches!(item, Hidden::Row(_)));
                         columns.redo.clear();
                         status.clear();
                     }
                     Ok(None) => {}
                     Err(error) => status = error.to_string(),
                 }
-            },
-            Event::Char('?') => {
-                let mut lines = vec![
-                    "CONTROLS".into(),
-                    "j/k or ↑/↓: select layout; Enter: open; q: back.".into(),
-                    "h/l or ←/→: scroll columns; Tab: next column page.".into(),
-                    "Mouse wheel / PgUp / PgDn: scroll layouts.".into(),
-                    "Click a header: sort; n: sort by name; /: filter; .: precision.".into(),
-                    "Middle-click: hide a row or column; u: undo; Ctrl+R: redo.".into(),
-                    "H: restore all rows and columns. Hidden layouts save automatically.".into(),
-                    "v: choose columns; q in the picker saves; Esc cancels.".into(),
-                    "c: choose corpus; r: reload files/config; R: restart rebuilt program.".into(),
-                    "e: layout errors; i: corpus/limit notes.".into(),
-                    String::new(),
-                    "CURRENT VIEW".into(),
-                    format!("Selected: {selected_name}"),
-                    format!("{} layouts hidden · {} columns hidden", columns.rows.len(),
-                        columns.hidden.iter().filter(|&&hidden| hidden).count()),
-                    format!("Columns {}–{} of {} · travel is in key units per 100 presses",
-                        grid.first + 1, grid.first + grid.metrics.len(), grid.total),
-                    if data.simple {
-                        "SCORE: [simple] weights on Mana2 patterns plus AKLER speed estimates; lower is better.".into()
-                    } else if data.mana2 {
-                        "SCORE: negative Mana2 score; lower is better.".into()
-                    } else {
-                        "SCORE: AKLER detailed weights; lower is better.".into()
-                    },
-                    "Other columns keep their own definitions. Green is preferable within each column.".into(),
-                    "Action layouts use bounded physical n-grams; COVERAGE is n/a.".into(),
-                ];
-                if !data.warnings.is_empty() {
-                    lines.extend([String::new(), "CORPUS / LIMIT NOTES".into()]);
-                    lines.extend(data.warnings.iter().cloned());
-                }
-                if !errors.is_empty() {
-                    lines.extend([String::new(), "LAYOUT ERRORS".into()]);
-                    lines.extend(errors.iter().cloned());
-                }
-                if !status.is_empty() {
-                    lines.extend([String::new(), status.clone()]);
-                }
-                help_popup(term, &c, "Ranker help", &lines)?;
-            },
-            _ => {
             }
+            Event::Char('?') => {
+                let lines = vec![
+                    "j/k · ↑/↓\tSelect layout".into(),
+                    if data.physical_catalog() {
+                        "Enter\tView physical statistics".into()
+                    } else {
+                        "Enter\tEdit selected layout".into()
+                    },
+                    "h/l · ←/→ · Tab\tScroll columns".into(),
+                    "PgUp/PgDn\tScroll layouts".into(),
+                    "n\tSort by name".into(),
+                    "s\tSwitch normal / aklgg".into(),
+                    "/\tFilter layouts".into(),
+                    ".\tChange decimal precision".into(),
+                    "u\tUndo hiding".into(),
+                    "Ctrl+R\tRedo hiding".into(),
+                    "H\tRestore manually hidden rows and columns".into(),
+                    "1/2/3\tRankings / Layouts / Columns".into(),
+                    "m\tToggle hiding magic".into(),
+                    "t\tToggle hiding layouts without thumb letters".into(),
+                    "f\tToggle alternate fingers".into(),
+                    "F\tToggle combos".into(),
+                    "z\tToggle spacegrams".into(),
+                    "a\tView layout rules".into(),
+                    "w\tWeakness report".into(),
+                    "c\tChoose corpus".into(),
+                    "r\tReload files".into(),
+                    "R\tRestart rebuilt program".into(),
+                    "e\tView layout errors".into(),
+                    "i\tView corpus notes".into(),
+                    "q\tBack".into(),
+                ];
+                help_popup(term, &c, "Ranker help", &lines)?;
+            }
+            _ => {}
         }
     }
 }
@@ -1500,13 +2473,13 @@ fn candidate_view(
         let metrics = metrics(&raw, &corpus);
         rows.push(RankRow::Plain {
             model,
-            corpus,
+            corpus: Arc::new(corpus),
             raw,
             metrics,
             score: item.score,
         });
     }
-    let mut columns = RankColumns::new();
+    let mut columns = RankColumns::new(false);
     let wanted = [
         RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, RANK_FJB, RANK_FJS, SRAF, ROLL,
     ];
@@ -1544,6 +2517,8 @@ fn candidate_view(
             ascending,
             term.decimals(),
             &ranges,
+            false,
+            false,
         );
         if let Some(&i) = order.get(current) {
             let nearest = candidates
@@ -1614,6 +2589,25 @@ mod ranker_tests {
     const CORPUS: &str = r#"{"monograms":{"a":3,"b":2},"bigrams":{"aa":1,"ab":1,"bb":1,"ba":1},"trigrams":{"aab":1,"abb":1,"bba":1}}"#;
 
     #[test]
+    fn restoring_shows_grid_hidden_columns_and_keeps_configured_ones() {
+        let mut columns = RankColumns::new(false);
+        columns.hidden = default_rank_columns();
+        let configured = columns.hidden;
+        assert!(!configured[SFB] && configured[DAFJB]);
+        assert!(columns.hide(SFB));
+        assert!(columns.hidden[SFB]);
+        assert!(columns.hide_row(PathBuf::from("layouts/a.dat")));
+        assert!(columns.restore());
+        assert_eq!(columns.hidden, configured);
+        assert!(columns.rows.is_empty());
+        // Undone hides are already shown; restoring keeps them shown.
+        assert!(columns.hide(SFS));
+        assert!(!columns.undo(10));
+        assert!(!columns.restore());
+        assert_eq!(columns.hidden, configured);
+    }
+
+    #[test]
     fn ranker_defaults_and_saved_column_round_trip() {
         let hidden = default_rank_columns();
         for metric in [SFB, SKB, SFS, SKS] {
@@ -1682,10 +2676,10 @@ mod ranker_tests {
         assert!(parse_rank_columns("# empty").is_err());
 
         let mut one = parse_rank_columns("SCORE").unwrap();
-        toggle_rank_column(&mut one, RANK_SCORE);
+        toggle_rank_column(&mut one, RANK_SCORE, false);
         assert!(!one[RANK_SCORE]);
-        toggle_rank_column(&mut one, SFB);
-        toggle_rank_column(&mut one, RANK_SCORE);
+        toggle_rank_column(&mut one, SFB, false);
+        toggle_rank_column(&mut one, RANK_SCORE, false);
         assert!(one[RANK_SCORE]);
         assert!(!one[SFB]);
     }
@@ -1695,11 +2689,15 @@ mod ranker_tests {
         assert!(!rank_positive(RANK_SCORE));
         assert!(rank_positive(RANK_MANA_START + 36)); // inroll2
         assert!(rank_positive(RANK_MANA_START + 40)); // inroll3
-        assert!(rank_positive(RANK_MANA_START + 45)); // goodrollnothumbs
-        assert!(!rank_positive(RANK_MANA_START + 10)); // offpinky
         assert!(!rank_positive(RANK_MANA_START + 15)); // lsb
         assert!(!rank_positive(RANK_MANA_START + 37)); // inroll2nothumbs
-        assert!(!rank_positive(RANK_MANA_START + 34)); // roll (zero schedule)
+        assert!(!rank_positive(RANK_MANA_START + 34)); // legacy Mana display direction
+        assert!(rank_positive_for(RANK_MANA_START + 34, true)); // AKL.GG roll
+        assert!(rank_positive_for(RANK_MANA_START + 23, true)); // AKL.GG no-thumb alt
+        let catalog = rank_catalog(true);
+        assert!(catalog.contains(&(RANK_MANA_START + 10))); // offpinky
+        assert!(catalog.contains(&(RANK_MANA_START + 45))); // goodrollnothumbs
+        assert!(!rank_percent(RANK_MANA_START + 13)); // sfbw is a rating
     }
 
     #[test]
@@ -1712,6 +2710,7 @@ mod ranker_tests {
         let progress = AtomicU64::new(0);
         let prepared = RankCorpora {
             plain: Some(Ok(source.clone())),
+            plain_cache: std::cell::RefCell::new(BTreeMap::new()),
             action: Some(Ok(Arc::new(corpus.clone()))),
         };
 
@@ -1742,6 +2741,107 @@ mod ranker_tests {
             rank_value(&plain, RANK_COVERAGE),
             Some(ordinary_corpus.coverage[1])
         );
+
+        let plain_corpus = |row: &RankRow| match row {
+            RankRow::Plain { corpus, .. } => Arc::clone(corpus),
+            _ => panic!("expected an ordinary row"),
+        };
+        let original_corpus = plain_corpus(&plain);
+        let reordered = NORMAL_LAYOUT.replace("a s", "b s").replace("v b", "v a");
+        let reused = evaluate_rank_layout(
+            parse_rank_layout(&reordered, Path::new("reordered.dat")).unwrap(),
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&original_corpus, &plain_corpus(&reused)));
+        assert_eq!(prepared.plain_cache.borrow().len(), 1);
+        let different = NORMAL_LAYOUT.replace("q w", "! w");
+        let separate = evaluate_rank_layout(
+            parse_rank_layout(&different, Path::new("different.dat")).unwrap(),
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
+        assert!(!Arc::ptr_eq(&original_corpus, &plain_corpus(&separate)));
+        assert_eq!(prepared.plain_cache.borrow().len(), 2);
+        for (text, row) in [(&reordered, &reused), (&different, &separate)] {
+            let model = Model::with_rolls(
+                board_from_text(text, Path::new("reference.dat")).unwrap(),
+                weights.rolls(),
+            );
+            let corpus = model.corpus(&source).unwrap();
+            let raw = full_raw(&model.original, &corpus, &model.geometry);
+            let expected = metrics(&raw, &corpus);
+            assert_eq!(row.raw().0.map(f64::to_bits), raw.0.map(f64::to_bits));
+            assert_eq!(
+                row.metrics().v.map(f64::to_bits),
+                expected.v.map(f64::to_bits)
+            );
+            assert_eq!(
+                row.score().to_bits(),
+                breakdown(&expected, &weights).net.to_bits()
+            );
+            let actual = plain_corpus(row);
+            assert_eq!(
+                actual.totals.map(f64::to_bits),
+                corpus.totals.map(f64::to_bits)
+            );
+            assert_eq!(
+                actual.coverage.map(f64::to_bits),
+                corpus.coverage.map(f64::to_bits)
+            );
+            assert_eq!(actual.by_symbol, corpus.by_symbol);
+        }
+        // A reload owns a new cache even when its symbols and source match.
+        // Corpus changes and parser settings likewise cannot reuse old grams.
+        for (text, limits) in [
+            (CORPUS.to_owned(), NgramLimits::default()),
+            (CORPUS.replace(":1", ":0.5"), NgramLimits::default()),
+            (
+                CORPUS.to_owned(),
+                NgramLimits {
+                    trigrams: Some(1),
+                    include_spacegrams: false,
+                    ..NgramLimits::default()
+                },
+            ),
+        ] {
+            let fresh = RankCorpora::prepare(
+                &[(
+                    PathBuf::from("normal.dat"),
+                    parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+                )],
+                &text,
+                path,
+                limits,
+                &stop,
+            );
+            assert!(fresh.plain_cache.borrow().is_empty());
+            let row = evaluate_rank_layout(
+                parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+                &fresh,
+                &weights,
+                &stop,
+            )
+            .unwrap();
+            assert!(!Arc::ptr_eq(&original_corpus, &plain_corpus(&row)));
+            let expected_corpus = model
+                .corpus(fresh.plain.as_ref().unwrap().as_ref().unwrap())
+                .unwrap();
+            let expected_raw = full_raw(&model.original, &expected_corpus, &model.geometry);
+            let expected_metrics = metrics(&expected_raw, &expected_corpus);
+            assert_eq!(
+                row.raw().0.map(f64::to_bits),
+                expected_raw.0.map(f64::to_bits)
+            );
+            assert_eq!(
+                row.score().to_bits(),
+                breakdown(&expected_metrics, &weights).net.to_bits()
+            );
+        }
 
         let action = evaluate_rank_layout(
             parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
@@ -1776,7 +2876,26 @@ mod ranker_tests {
             }
         }
 
-        let rows = vec![plain, action];
+        let mut rows = vec![plain, action];
+        let original_scores: Vec<_> = rows.iter().map(|row| row.score().to_bits()).collect();
+        let original_counts = match &rows[1] {
+            RankRow::Action { summary, .. } => Arc::clone(&summary.counts),
+            _ => unreachable!(),
+        };
+        for mode in ["aklgg"] {
+        rescore_rank_rows(&mut rows, &weights, mode);
+        for row in &rows {
+            let expected = weights.physical_score(
+                &mana2_rank_stats(row, row.raw().1.as_ref().unwrap()),
+            );
+            assert_eq!(row.score().to_bits(), expected.to_bits());
+        }
+        if let RankRow::Action { summary, .. } = &rows[1] {
+            assert!(Arc::ptr_eq(&original_counts, &summary.counts));
+        }
+        }
+        rescore_rank_rows(&mut rows, &weights, "normal");
+        assert_eq!(rows.iter().map(|row| row.score().to_bits()).collect::<Vec<_>>(), original_scores);
         let hidden = BTreeSet::new();
         let order = rank_order(&rows, "", Some(RANK_SCORE), true, &hidden);
         assert_eq!(order.len(), 2);
@@ -1784,6 +2903,64 @@ mod ranker_tests {
         assert_eq!(
             rank_order(&rows, "", Some(RANK_COVERAGE), false, &hidden),
             vec![0, 1]
+        );
+        assert!(!rows[0].has_magic());
+        assert!(rows[1].has_magic());
+        assert!(rows.iter().all(|row| !row.has_thumb_letter()));
+        let thumb_text = NORMAL_LAYOUT
+            .replace("a s", "~ s")
+            .replace("thumbs: space", "thumbs: a | space");
+        let thumb = evaluate_rank_layout(
+            parse_rank_layout(&thumb_text, Path::new("thumb.dat")).unwrap(),
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
+        assert!(thumb.has_thumb_letter());
+        let literal_at = evaluate_rank_layout(
+            parse_rank_layout(
+                &NORMAL_LAYOUT.replace("q w", "char:@ w"),
+                Path::new("literal-at.dat"),
+            )
+            .unwrap(),
+            &prepared,
+            &weights,
+            &stop,
+        )
+        .unwrap();
+        assert!(!literal_at.has_magic());
+        let mut rows = rows;
+        rows.extend([thumb, literal_at]);
+        let hidden = BTreeSet::from([
+            PathBuf::from("missing-layout.dat"),
+            rows[3].path().to_owned(),
+        ]);
+        let filters = RankFilters {
+            hide_magic: true,
+            hide_non_thumb: true,
+        };
+        assert_eq!(
+            rank_filtered_order(&rows, "", None, true, &hidden, filters),
+            vec![2]
+        );
+        assert_eq!(
+            rank_filtered_order(&rows, "", None, true, &hidden, RankFilters::default()).len(),
+            3
+        );
+        let magic_only = RankFilters {
+            hide_magic: true,
+            hide_non_thumb: false,
+        };
+        assert_eq!(
+            rank_filtered_order(&rows, "", None, true, &hidden, magic_only).len(),
+            2
+        );
+        assert_eq!(hidden.len(), 2);
+        assert!(hidden.contains(Path::new("missing-layout.dat")));
+        assert_eq!(
+            parse_rank_hidden_layouts(&rank_hidden_layouts_text(&hidden).unwrap()).unwrap(),
+            hidden
         );
     }
 
@@ -1851,6 +3028,7 @@ mod ranker_tests {
         let stop = AtomicBool::new(false);
         let prepared = RankCorpora {
             plain: None,
+            plain_cache: std::cell::RefCell::new(BTreeMap::new()),
             action: Some(Err("missing cached contexts".into())),
         };
 
@@ -1893,6 +3071,7 @@ mod ranker_tests {
         .unwrap();
         let RankRow::Action {
             layout,
+            summary,
             corpus,
             details,
             ..
@@ -1914,12 +3093,21 @@ mod ranker_tests {
         assert!(details.is_none());
 
         let first = rank_details_with(details, || {
-            action_ui::evaluate_progress(layout, corpus, &weights, &stop, &AtomicU64::new(0))
+            action_ui::evaluate_ranked(layout, corpus, &weights, summary)
                 .map(|value| Some(Arc::new(value)))
                 .map_err(|error| error.into())
         })
         .unwrap()
         .unwrap();
+        assert!(Arc::ptr_eq(&first.counts, &summary.counts));
+        assert_eq!(
+            first.raw.0.map(f64::to_bits),
+            summary.raw.0.map(f64::to_bits)
+        );
+        assert_eq!(
+            first.metrics.v.map(f64::to_bits),
+            summary.metrics.v.map(f64::to_bits)
+        );
         let reopened =
             rank_details_with(details, || panic!("cached details must not be reevaluated"))
                 .unwrap()

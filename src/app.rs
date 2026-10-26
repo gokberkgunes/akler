@@ -2,28 +2,53 @@ fn emit_evaluation(board: Board, source: Source) -> AppResult<()> {
     let weights = load_weights(Path::new(WEIGHTS_FILE))?;
     let model = Model::with_rolls(board, weights.rolls());
     let corpus = model.corpus(&source)?;
-    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, true);
     let m = metrics(&raw, &corpus);
     let b = breakdown(&m, &weights);
+    let mana = mana_stats_for_corpus(&raw, &corpus);
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
-    writeln!(out, "{{\n  \"Model\": {},\n  \"Layout\": {},\n  \"Corpus\": {},\n  \"Metrics\": {{", json_quote(MODEL_VERSION), json_quote(&model.board.name), json_quote(&corpus.name))?;
+    writeln!(
+        out,
+        "{{\n  \"Model\": {},\n  \"Layout\": {},\n  \"Corpus\": {},\n  \"Metrics\": {{",
+        json_quote(MODEL_VERSION),
+        json_quote(&model.board.name),
+        json_quote(&corpus.name)
+    )?;
     for (i, name) in METRIC_NAMES.iter().enumerate() {
-        writeln!(out, "    {}: {:.12}{}", json_quote(name), m.v[i], if i + 1 == N_METRICS {
-            ""
-        } else {
-            ","
-        })?;
+        writeln!(
+            out,
+            "    {}: {:.12}{}",
+            json_quote(name),
+            m.v[i],
+            if i + 1 == N_METRICS { "" } else { "," }
+        )?;
     }
-    writeln!(out, "  }},\n  \"Simple\": {:?},\n  \"Usage\": {:?},\n  \"Off\": {:?},\n  \"Totals\": {:?},\n  \"Coverage\": {:?},\n  \"NoThumbPair\": {},\n  \"NoThumbTriple\": {},\n  \"Objective\": {{\"Penalty\": {}, \"Credit\": {}, \"Net\": {}}},\n  \"Warnings\": [", m.simple, m.usage, m.off, corpus.totals, corpus.coverage, raw.0[SRAF_DEN], raw.0[RHYTHM_DEN], b.penalty, b.bonus, b.net)?;
+    writeln!(out, "  }},\n  \"Usage\": {:?},\n  \"Off\": {:?},\n  \"Totals\": {:?},\n  \"Coverage\": {:?},\n  \"NoThumbPair\": {},\n  \"NoThumbTriple\": {},\n  \"Score\": {{\"Penalties\": {}, \"Rewards\": {}, \"Score\": {}}},\n  \"Warnings\": [", m.usage, m.off, corpus.totals, corpus.coverage, raw.0[SRAF_DEN], raw.0[RHYTHM_DEN], b.penalty, b.bonus, b.net)?;
     for (i, line) in corpus.warnings.iter().enumerate() {
-        writeln!(out, "    {}{}", json_quote(line), if i + 1 == corpus.warnings.len() {
-            ""
-        } else {
-            ","
-        })?;
+        writeln!(
+            out,
+            "    {}{}",
+            json_quote(line),
+            if i + 1 == corpus.warnings.len() {
+                ""
+            } else {
+                ","
+            }
+        )?;
     }
-    writeln!(out, "  ]\n}}")?;
+    // Mana2 counters in akl.gg units: percentages, ratings and Fspeed values.
+    writeln!(out, "  ],\n  \"Mana\": {{")?;
+    for (i, name) in mana2_metrics::STAT_IDS.iter().enumerate() {
+        writeln!(
+            out,
+            "    {}: {:.12}{}",
+            json_quote(name),
+            mana.values[i],
+            if i + 1 == mana2_metrics::N_STATS { "" } else { "," }
+        )?;
+    }
+    writeln!(out, "  }}\n}}")?;
     out.flush()?;
     Ok(())
 }
@@ -33,16 +58,19 @@ fn corpus_order_name(order: &str) -> AppResult<(usize, Vec<&'static str>)> {
         "1" => Ok((1, vec!["letters", "monograms", "unigrams"])),
         "2" => Ok((2, vec!["bigrams"])),
         "3" => Ok((3, vec!["trigrams"])),
-        "4" => Ok((4, vec!["fourgrams", "quadrigrams", "quadgrams", "tetragrams"])),
+        "4" => Ok((
+            4,
+            vec!["fourgrams", "quadrigrams", "quadgrams", "tetragrams"],
+        )),
         "5" => Ok((5, vec!["fivegrams"])),
         "skip" => Ok((2, vec!["skipgrams"])),
-        _ => Err("order must be 1, 2, 3, 4, 5 or skip".into())
+        _ => Err("order must be 1, 2, 3, 4, 5 or skip".into()),
     }
 }
 
 fn top_ngrams(path: &Path, order: &str, limit: usize) -> AppResult<Vec<(String, f64)>> {
     let path = if corpus_is_raw(path)? {
-        let needed = order.parse:: <usize>().unwrap_or(3).max(DEFAULT_ORDER);
+        let needed = order.parse::<usize>().unwrap_or(3).max(DEFAULT_ORDER);
         ensure_corpus(path, false, Some(needed))?
     } else {
         path.to_owned()
@@ -50,10 +78,7 @@ fn top_ngrams(path: &Path, order: &str, limit: usize) -> AppResult<Vec<(String, 
     let (width, names) = corpus_order_name(order)?;
     let text = fs::read_to_string(&path)?;
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    let mut p = JsonParser {
-        text,
-        p: 0
-    };
+    let mut p = JsonParser { text, p: 0 };
     p.ws();
     p.expect(b'{')?;
     let mut table = None;
@@ -67,19 +92,17 @@ fn top_ngrams(path: &Path, order: &str, limit: usize) -> AppResult<Vec<(String, 
         p.expect(b':')?;
         if names.contains(&key.as_str()) {
             table = Some(read_frequency_table(&mut p, width, true)?);
-        }
-        else if let Ok((w, _)) = corpus_order_name(match key.as_str() {
-            "letters"|"monograms"|"unigrams" => "1",
+        } else if let Ok((w, _)) = corpus_order_name(match key.as_str() {
+            "letters" | "monograms" | "unigrams" => "1",
             "bigrams" => "2",
             "trigrams" => "3",
-            "fourgrams"|"quadgrams"|"quadrigrams"|"tetragrams" => "4",
+            "fourgrams" | "quadgrams" | "quadrigrams" | "tetragrams" => "4",
             "fivegrams" => "5",
             "skipgrams" => "skip",
-            _ => "?"
+            _ => "?",
         }) {
             read_frequency_table(&mut p, w, false)?;
-        }
-        else {
+        } else {
             p.value(0)?;
         }
         p.ws();
@@ -88,8 +111,13 @@ fn top_ngrams(path: &Path, order: &str, limit: usize) -> AppResult<Vec<(String, 
         }
         p.expect(b',')?;
     }
-    let mut rows = table.ok_or_else(|| format!("{order}-gram table is absent; rebuild from raw text with --order {}", width.max(3)))?;
-    rows.sort_by(|a, b|b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut rows = table.ok_or_else(|| {
+        format!(
+            "{order}-gram table is absent; rebuild from raw text with --order {}",
+            width.max(3)
+        )
+    })?;
+    rows.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     rows.truncate(limit);
     Ok(rows)
 }
@@ -103,11 +131,20 @@ fn corpus_info(path: &Path) -> AppResult<Vec<String>> {
     // Corpus inspection describes the stored cache, not an evaluation subset.
     let source = Source::from_text(&fs::read_to_string(&path)?, &path)?;
     let mut lines = vec![format!("{}  {}", source.name, path.display())];
-    for (i, name) in["letters", "bigrams", "skipgrams", "trigrams"].iter().enumerate() {
-        lines.push(format!("{name:<12} {:>9} rows   {:.0} events", source.tables[i].len(), source.masses[i]));
+    for (i, name) in ["letters", "bigrams", "skipgrams", "trigrams"]
+        .iter()
+        .enumerate()
+    {
+        lines.push(format!(
+            "{name:<12} {:>9} rows   {:.0} events",
+            source.tables[i].len(),
+            source.masses[i]
+        ));
     }
     let mut line = String::new();
-    BufReader::new(File::open(&path)?).take(8192).read_line(&mut line)?;
+    BufReader::new(File::open(&path)?)
+        .take(8192)
+        .read_line(&mut line)?;
     let prefix = line.trim().trim_end_matches(',');
     if let Ok(Json::Object(root)) = parse_json(&format!("{prefix}}}")) {
         if let Some(Json::Object(meta)) = root.get("source") {
@@ -115,9 +152,9 @@ fn corpus_info(path: &Path) -> AppResult<Vec<String>> {
                 lines.push(format!("maximum order  {n}"));
             }
             if let Some(Json::Array(rows)) = meta.get("rows") {
-                for (i, name) in["fourgrams", "fivegrams"].iter().enumerate() {
+                for (i, name) in ["fourgrams", "fivegrams"].iter().enumerate() {
                     if let Some(Json::Number(n)) = rows.get(i + 3) {
-                        if *n>0.0 {
+                        if *n > 0.0 {
                             lines.push(format!("{name:<12} {:>9} rows", *n as u64));
                         }
                     }
@@ -137,20 +174,20 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
             for p in corpus_paths()? {
                 println!("{:<24} {}", corpus_name(&p), p.display());
             }
-        },
+        }
         "add" => {
-            if args.len()<3 || args.len()>4 {
+            if args.len() < 3 || args.len() > 4 {
                 return Err("corpus add NAME INPUT [CONFIG.json]".into());
             }
             let path = add_corpus(&args[1], Path::new(&args[2]), args.get(3).map(Path::new))?;
             println!("{}", path.display());
-        },
+        }
         "build" => {
             let mut name = None;
             let mut order = None;
             let mut jobs = None;
             let mut i = 1;
-            while i<args.len() {
+            while i < args.len() {
                 match args[i].as_str() {
                     "--order" => {
                         i += 1;
@@ -159,14 +196,16 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
                             return Err("--order must be 3..5".into());
                         }
                         order = Some(n);
-                    },
+                    }
                     "--jobs" => {
                         i += 1;
                         let n = bounded_usize(args.get(i).ok_or("--jobs needs a value")?, 16)?;
                         jobs = Some(n);
-                    },
-                    value if !value.starts_with('-') && name.is_none() => name = Some(value.to_owned()),
-                    _ => return Err("corpus build [NAME] [--order 3|4|5] [--jobs N]".into())
+                    }
+                    value if !value.starts_with('-') && name.is_none() => {
+                        name = Some(value.to_owned())
+                    }
+                    _ => return Err("corpus build [NAME] [--order 3|4|5] [--jobs N]".into()),
                 }
                 i += 1;
             }
@@ -176,8 +215,7 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
                 paths.push(raw_corpus_for(&p)?.ok_or(
                     "raw text is needed to rebuild n-grams; existing JSON remains usable",
                 )?);
-            }
-            else {
+            } else {
                 paths = raw_corpus_paths()?;
             }
             for p in paths {
@@ -192,23 +230,27 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
                 let name = corpus_name(&p);
                 let mut last = Instant::now() - Duration::from_secs(1);
                 let output = rebuild_corpus(&p, &cfg, hash, &mut |n, total| {
-                    if last.elapsed()>Duration::from_millis(250) {
+                    if last.elapsed() > Duration::from_millis(250) {
                         eprint!("\r{name} {:3.0}%", pct(n as f64, total as f64));
                         last = Instant::now();
                     }
                 })?;
                 eprint!("\r\x1b[2K");
-                println!("{}  {:.2}s", output.display(), start.elapsed().as_secs_f64());
+                println!(
+                    "{}  {:.2}s",
+                    output.display(),
+                    start.elapsed().as_secs_f64()
+                );
             }
-        },
+        }
         "info" => {
             let path = corpus_by_name(args.get(1).ok_or("corpus info NAME")?)?;
             for line in corpus_info(&path)? {
                 println!("{line}");
             }
-        },
+        }
         "top" => {
-            if args.len()<2 || args.len()>4 {
+            if args.len() < 2 || args.len() > 4 {
                 return Err("corpus top NAME [1|2|3|4|5|skip] [COUNT]".into());
             }
             let path = corpus_by_name(&args[1])?;
@@ -221,8 +263,8 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
             for (gram, count) in top_ngrams(&path, order, n)? {
                 println!("{}\t{count}", json_quote(&gram));
             }
-        },
-        _ => return Err("corpus: list, add, build, info or top".into())
+        }
+        _ => return Err("corpus: list, add, build, info or top".into()),
     }
     Ok(())
 }
@@ -241,18 +283,11 @@ fn select_source_path(term: &mut Terminal, default: bool) -> AppResult<Option<Pa
                 info_page(term, "No corpus found", &empty_corpus_help())?;
                 return Ok(None);
             }
-            let names = paths.iter().map(|p|corpus_name(p)).collect:: <Vec<_>>();
-            menu(term, "Select corpus", &names)?.map(|i|paths[i].clone())
+            let names = paths.iter().map(|p| corpus_name(p)).collect::<Vec<_>>();
+            menu(term, "Select corpus", &names)?.map(|i| paths[i].clone())
         }
     };
     Ok(path)
-}
-
-fn select_source(term: &mut Terminal, default: bool) -> AppResult<Option<Source>> {
-    match select_source_path(term, default)? {
-        Some(p) => Ok(Some(load_source_tui(term, &p)?)),
-        None => Ok(None)
-    }
 }
 
 fn raw_corpus_for(path: &Path) -> AppResult<Option<PathBuf>> {
@@ -260,9 +295,10 @@ fn raw_corpus_for(path: &Path) -> AppResult<Option<PathBuf>> {
         return Ok(Some(path.to_owned()));
     }
 
-    if let Some(raw) = raw_corpus_paths()?.into_iter().find(|raw| {
-        corpus_name(raw).eq_ignore_ascii_case(&corpus_name(path))
-    }) {
+    if let Some(raw) = raw_corpus_paths()?
+        .into_iter()
+        .find(|raw| corpus_name(raw).eq_ignore_ascii_case(&corpus_name(path)))
+    {
         return Ok(Some(raw));
     }
     let nearby = path.with_extension("txt");
@@ -273,7 +309,7 @@ fn corpus_detail_tui(term: &mut Terminal, path: &Path) -> AppResult<()> {
     let raw = raw_corpus_for(path)?;
     let mut status = String::new();
     let mut scroll = 0;
-    let mut source = if let Some(raw)=&raw {
+    let mut source = if let Some(raw) = &raw {
         let (_, hash) = corpus_config(&corpus_config_path(raw))?;
         let cache = cached_path(raw);
         if cache_current_at_least(raw, &cache, hash, 3)? {
@@ -285,31 +321,44 @@ fn corpus_detail_tui(term: &mut Terminal, path: &Path) -> AppResult<()> {
         Some(Source::load(path)?)
     };
     loop {
-        let name = source.as_ref().map(|s|s.name.clone()).unwrap_or_else(|| corpus_name(path));
-        let mut lines = if let Some(source)=&source {
+        let name = source
+            .as_ref()
+            .map(|s| s.name.clone())
+            .unwrap_or_else(|| corpus_name(path));
+        let mut lines = if let Some(source) = &source {
             corpus_info(&source.path)?
         } else {
             vec!["No current cache. Choose the largest n-gram width to store.".into()]
         };
-        if let Some(raw)=&raw {
+        if let Some(raw) = &raw {
             lines.insert(0, format!("raw          {}", raw.display()));
-        }
-        else {
+        } else {
             lines.push("Rebuild unavailable: no matching raw text file.".into());
         }
         let lines = wrap_lines(&lines, term.width());
         let mut c = Canvas::new(term.width(), lines.len() + 6);
-        header(&mut c, "Corpora", &name, "", if raw.is_some() {
-            "3 trigrams | 4 fourgrams | 5 fivegrams | q back"
-        } else {
-            "q back"
-        });
-        for (i, line) in lines.iter().enumerate() {
-            c.text(0, i + 3, line, if line.starts_with("Rebuild unavailable") {
-                YELLOW
+        header(
+            &mut c,
+            "Corpora",
+            &name,
+            "",
+            if raw.is_some() {
+                "3 trigrams | 4 fourgrams | 5 fivegrams | q back"
             } else {
-                FG
-            });
+                "q back"
+            },
+        );
+        for (i, line) in lines.iter().enumerate() {
+            c.text(
+                0,
+                i + 3,
+                line,
+                if line.starts_with("Rebuild unavailable") {
+                    YELLOW
+                } else {
+                    FG
+                },
+            );
         }
         c.text(0, lines.len() + 4, &short(&status, c.w), CYAN);
         c.h = lines.len() + 6;
@@ -319,27 +368,28 @@ fn corpus_detail_tui(term: &mut Terminal, path: &Path) -> AppResult<()> {
             continue;
         }
         match e {
-            Event::Escape|Event::Quit|Event::Char('q') => return Ok(()),
-            Event::Char(ch @('3'|'4'|'5')) => if let Some(raw)=&raw {
-                let order = ch.to_digit(10).unwrap() as usize;
-                let (mut cfg, hash) = corpus_config(&corpus_config_path(raw))?;
-                cfg.order = order;
-                match rebuild_source_tui(term, raw, cfg, hash) {
-                    Ok(cache) => match Source::load(&cache) {
-                        Ok(next) => {
-                            source = Some(next);
-                            status = format!("rebuilt through {order}-grams");
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
+            Event::Char(ch @ ('3' | '4' | '5')) => {
+                if let Some(raw) = &raw {
+                    let order = ch.to_digit(10).unwrap() as usize;
+                    let (mut cfg, hash) = corpus_config(&corpus_config_path(raw))?;
+                    cfg.order = order;
+                    match rebuild_source_tui(term, raw, cfg, hash) {
+                        Ok(cache) => match Source::load(&cache) {
+                            Ok(next) => {
+                                source = Some(next);
+                                status = format!("rebuilt through {order}-grams");
+                            }
+                            Err(e) => status = e.to_string(),
                         },
-                        Err(e) => status = e.to_string()
-                    },
-                    Err(e) => status = e.to_string(),
+                        Err(e) => status = e.to_string(),
+                    }
+                    scroll = 0;
+                } else {
+                    status = "raw text is required to rebuild".into();
                 }
-                scroll = 0;
-            } else {
-                status = "raw text is required to rebuild".into();
-            },
-            _ => {
             }
+            _ => {}
         }
     }
 }
@@ -365,7 +415,8 @@ fn import_corpus_tui(term: &mut Terminal) -> AppResult<()> {
         "Import corpus: text file path (any extension)",
         "",
         "",
-    )? else {
+    )?
+    else {
         return Ok(());
     };
     let input = PathBuf::from(input);
@@ -394,7 +445,7 @@ fn corpus_tui(term: &mut Terminal) -> AppResult<()> {
         };
         let i = match menu(term, title, &names)? {
             Some(i) => i,
-            None => return Ok(())
+            None => return Ok(()),
         };
 
         let result = if i == paths.len() {
@@ -411,6 +462,150 @@ fn corpus_tui(term: &mut Terminal) -> AppResult<()> {
     Ok(())
 }
 
+#[derive(Default)]
+struct HomeState {
+    tab: usize,
+    selected: [usize; 3],
+}
+
+const HOME_TABS: [&str; 3] = [" [1] Workbench ", " [2] Analysis ", " [3] Data "];
+
+const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
+    &[
+        (0, "Editor", "Inspect and edit one layout"),
+        (1, "Ranker", "Compare layouts on a corpus"),
+        (2, "Optimizer", "Search for a better layout"),
+    ],
+    &[
+        (5, "Weakness report", "Find the layout's largest problems"),
+        (6, "Magic designer", "Design and compare magic keys"),
+        (8, "Scissor test", "Type words and rate scissor pairs"),
+    ],
+];
+
+const HOME_DATA_ITEMS: [(usize, &str, &str); 2] = [
+    (3, "Corpora", "Inspect, import, and rebuild corpora"),
+    (7, "Reload program", "Restart into the rebuilt executable"),
+];
+
+fn home_items(tab: usize) -> &'static [(usize, &'static str, &'static str)] {
+    match tab {
+        0 => HOME_ITEMS[0],
+        1 => HOME_ITEMS[1],
+        _ => &HOME_DATA_ITEMS,
+    }
+}
+
+fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usize>> {
+    loop {
+        term.refresh_size()?;
+        state.tab = state.tab.min(HOME_TABS.len() - 1);
+        let items = home_items(state.tab);
+        state.selected[state.tab] = state.selected[state.tab].min(items.len() - 1);
+
+        let height = term.size.1.max(1);
+        let mut canvas = Canvas::new(term.width(), height);
+        workspace_tabs(&mut canvas, state.tab, &HOME_TABS);
+        let section = match state.tab {
+            0 => "Build and compare keyboard layouts",
+            1 => "Inspect patterns and design changes",
+            _ => "Manage application data",
+        };
+        if height >= 10 {
+            canvas.text(2, 2, section, MUTED);
+        }
+        let first_row = if height >= 10 { 4 } else { 1 };
+        let stride = if height >= 10 { 2 } else { 1 };
+        let footer = height.saturating_sub(1);
+        let capacity = footer.saturating_sub(first_row).div_ceil(stride).max(1);
+        let start = state.selected[state.tab].saturating_sub(capacity - 1);
+        for (row, (action, name, description)) in items.iter().skip(start).take(capacity).enumerate() {
+            let y = first_row + row * stride;
+            if y >= footer { break; }
+            let selected = row + start == state.selected[state.tab];
+            if selected {
+                canvas.row_style(
+                    Rect {
+                        x: 1,
+                        y,
+                        w: canvas.w.saturating_sub(2),
+                        h: 1,
+                    },
+                    Some((38, 38, 38)),
+                    false,
+                );
+            }
+            let marker = if selected { ">" } else { " " };
+            canvas.text(2, y, marker, CYAN);
+            canvas.text(4, y, &short(name, canvas.w.saturating_sub(5)), if selected { FG } else { MUTED });
+            let description_x = 24;
+            if canvas.w >= 48 {
+                canvas.text(
+                    description_x,
+                    y,
+                    &short(description, canvas.w.saturating_sub(description_x)),
+                    MUTED,
+                );
+            }
+            canvas.hit(
+                Rect {
+                    x: 1,
+                    y,
+                    w: canvas.w.saturating_sub(2),
+                    h: 1,
+                },
+                Action::Item(*action),
+            );
+        }
+
+        if height > 1 {
+            canvas.text(2, footer, "? Help   q Quit", MUTED);
+        }
+        term.present(&canvas, 0)?;
+
+        let mut event = term.event()?;
+        if let Some(action) = action_press(term, &canvas, &event, 0) {
+            match action {
+                Action::Command(ch) => event = Event::Char(ch),
+                Action::Item(action) => return Ok(Some(action)),
+                _ => {}
+            }
+        }
+        match event {
+            Event::Char(ch @ ('1'..='3')) => state.tab = (ch as usize) - ('1' as usize),
+            Event::Left | Event::Char('h') => {
+                state.tab = state.tab.checked_sub(1).unwrap_or(HOME_TABS.len() - 1)
+            }
+            Event::Right | Event::Char('l') => state.tab = (state.tab + 1) % HOME_TABS.len(),
+            Event::Up | Event::Char('k') => {
+                let selected = &mut state.selected[state.tab];
+                *selected = selected.checked_sub(1).unwrap_or(items.len() - 1);
+            }
+            Event::Down | Event::Char('j') => {
+                let selected = &mut state.selected[state.tab];
+                *selected = (*selected + 1) % items.len();
+            }
+            Event::Enter => return Ok(Some(items[state.selected[state.tab]].0)),
+            Event::Char('?') => help_popup(
+                term,
+                &canvas,
+                "Home",
+                &[
+                    "1 2 3\tSwitch section".into(),
+                    "h l / ← →\tSwitch section".into(),
+                    "j k / ↑ ↓\tSelect".into(),
+                    "Enter\tOpen".into(),
+                    "R\tReload program".into(),
+                    "q\tQuit".into(),
+                ],
+            )?,
+            Event::Char('R') => return Ok(Some(7)),
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
+            _ => {}
+        }
+    }
+}
+
 // Layout discovery inspects contents so uploaded files do not need a suffix.
 // Invalid but recognizable layouts remain visible and report their parse errors
 // when opened; corpus caches and optimizer reports do not become chooser rows.
@@ -422,22 +617,27 @@ fn recognizable_layout(text: &str) -> bool {
             Ok(_) => false,
             Err(_) => fields.iter().any(|field| {
                 let quoted = format!("\"{field}\"");
-                text.match_indices(&quoted).any(|(index, _)| {
-                    text[index + quoted.len()..].trim_start().starts_with(':')
-                })
+                text.match_indices(&quoted)
+                    .any(|(index, _)| text[index + quoted.len()..].trim_start().starts_with(':'))
             }),
         };
     }
 
-    let first = text.trim_start_matches('\u{feff}').lines()
-        .find(|line| !line.trim().is_empty()).unwrap_or("");
+    let first = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
     let tokens: Vec<_> = first.split_whitespace().collect();
-    let key_tokens = tokens.iter().filter(|token| {
-        token.chars().count() == 1
-            || matches!(**token, "space" | "blank" | "empty" | "none")
-            || token.starts_with('@')
-            || token.starts_with("char:")
-    }).count();
+    let key_tokens = tokens
+        .iter()
+        .filter(|token| {
+            token.chars().count() == 1
+                || matches!(**token, "space" | "blank" | "empty" | "none")
+                || token.starts_with('@')
+                || token.starts_with("char:")
+        })
+        .count();
     (8..=13).contains(&tokens.len()) && key_tokens >= 8
 }
 
@@ -450,7 +650,10 @@ fn same_discovered_layout(a: &action_keys::Layout, b: &action_keys::Layout) -> b
 }
 
 fn layout_file_label(path: &Path) -> String {
-    clean_text(&path.file_name().unwrap_or_default().to_string_lossy())
+    let label = path
+        .strip_prefix(Path::new(LAYOUT_DIR))
+        .unwrap_or_else(|_| Path::new(path.file_name().unwrap_or_default()));
+    clean_text(&label.to_string_lossy())
 }
 
 fn layout_companion_priority(path: &Path) -> Option<u8> {
@@ -466,17 +669,36 @@ fn internal_layout_artifact(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    name.starts_with(".akler-") || name.starts_with(".layouter-") || name.strip_suffix(".bak")
-        .and_then(|name| name.rsplit_once('.'))
-        .is_some_and(|(original, stamp)| {
-            !original.is_empty() && stamp.len() >= 16 && stamp.bytes().all(|byte| byte.is_ascii_digit())
-        })
+    name.starts_with(".akler-")
+        || name.starts_with(".layouter-")
+        || name
+            .strip_suffix(".bak")
+            .and_then(|name| name.rsplit_once('.'))
+            .is_some_and(|(original, stamp)| {
+                !original.is_empty()
+                    && stamp.len() >= 16
+                    && stamp.bytes().all(|byte| byte.is_ascii_digit())
+            })
 }
 
 fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
+    let mut paths = Vec::new();
+    for entry in
+        fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+    {
+        paths.push(entry?.path());
+    }
+    let optimized = directory.join("optimized");
+    if optimized.is_dir() {
+        for entry in
+            fs::read_dir(&optimized).map_err(|error| format!("{}: {error}", optimized.display()))?
+        {
+            paths.push(entry?.path());
+        }
+    }
+
     let mut candidates = Vec::new();
-    for entry in fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))? {
-        let path = entry?.path();
+    for path in paths {
         if !path.is_file() || internal_layout_artifact(&path) {
             continue;
         }
@@ -492,20 +714,24 @@ fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
     // Generated companions share a stem. Prefer DAT only after confirming that
     // both files parse to the same complete layout; independent edits stay visible.
     candidates.sort_by(|(a, _), (b, _)| {
-        layout_companion_priority(a).unwrap_or(3)
+        layout_companion_priority(a)
+            .unwrap_or(3)
             .cmp(&layout_companion_priority(b).unwrap_or(3))
             .then_with(|| a.cmp(b))
     });
     let mut layouts: Vec<(PathBuf, Option<action_keys::Layout>)> = Vec::new();
     for (path, layout) in candidates {
         let duplicate = layout.as_ref().is_some_and(|layout| {
-            layout_companion_priority(&path).is_some() && layouts.iter().any(|(other_path, other)| {
-                path.file_stem() == other_path.file_stem()
-                    && path.parent() == other_path.parent()
-                    && path.extension() != other_path.extension()
-                    && layout_companion_priority(other_path).is_some()
-                    && other.as_ref().is_some_and(|other| same_discovered_layout(layout, other))
-            })
+            layout_companion_priority(&path).is_some()
+                && layouts.iter().any(|(other_path, other)| {
+                    path.file_stem() == other_path.file_stem()
+                        && path.parent() == other_path.parent()
+                        && path.extension() != other_path.extension()
+                        && layout_companion_priority(other_path).is_some()
+                        && other
+                            .as_ref()
+                            .is_some_and(|other| same_discovered_layout(layout, other))
+                })
         });
         if !duplicate {
             layouts.push((path, layout));
@@ -514,7 +740,11 @@ fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
     let mut paths: Vec<_> = layouts.into_iter().map(|(path, _)| path).collect();
     paths.sort();
     if paths.is_empty() {
-        return Err(format!("no DAT, JSON, or JSONC layout contents in {}", directory.display()).into());
+        return Err(format!(
+            "no DAT, JSON, or JSONC layout contents in {}",
+            directory.display()
+        )
+        .into());
     }
     Ok(paths)
 }
@@ -585,12 +815,7 @@ fn tui_mode(
             match layout {
                 OpenLayout::Action(layout) => {
                     if let Some(corpus) = session.action_tui(term, &corpus_path)? {
-                        crate::action_ui::action_editor(
-                            term,
-                            layout,
-                            corpus,
-                            mode == "optimizer",
-                        )?;
+                        crate::action_ui::action_editor(term, layout, corpus, mode == "optimizer")?;
                     }
                 }
                 OpenLayout::Plain(layout) => {
@@ -661,83 +886,124 @@ pub(crate) fn restart_program_path() -> AppResult<PathBuf> {
 }
 
 #[cfg(unix)]
-fn restart_program(path: &Path) -> AppResult<()> {
+fn restart_program(path: &Path, arguments: &[std::ffi::OsString]) -> AppResult<()> {
     use std::os::unix::process::CommandExt;
 
-    let error = Command::new(path)
-        .args(std::env::args_os().skip(1))
-        .exec();
+    let error = Command::new(path).args(arguments).exec();
     Err(format!("cannot reload {}: {error}", path.display()).into())
 }
 
-fn run() -> AppResult<bool> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
+    let os_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    let resume_ranker = if os_args
+        .first()
+        .is_some_and(|arg| arg == std::ffi::OsStr::new("--resume-ranker"))
+    {
+        if os_args.len() != 2 {
+            return Err("internal --resume-ranker requires one corpus path".into());
+        }
+        let path = PathBuf::from(&os_args[1]);
+        if !path.is_file() {
+            return Err(format!("corpus {} not found", path.display()).into());
+        }
+        Some(path)
+    } else {
+        None
+    };
+    let args: Vec<String> = if resume_ranker.is_none() {
+        std::env::args().skip(1).collect()
+    } else {
+        Vec::new()
+    };
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
-            "--help"|"-h"|"help" => {
-                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler atomic LAYOUT CORPUS --patterns bigrams|trigrams|skip1 [--query QUERY] [--output PATH]\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
-                return Ok(false);
-            },
-            "corpus" => return corpus_command(&args[1..]).map(|_| false),
-            "atomic" => return crate::atomic_report::command(&args[1..]).map(|_| false),
+            "--help" | "-h" | "help" => {
+                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                return Ok(None);
+            }
+            "corpus" => return corpus_command(&args[1..]).map(|_| None),
+            "bench" => return crate::bench::command(&args[1..]).map(|_| None),
             "import" => {
                 let mut rest = vec!["add".to_string()];
                 rest.extend_from_slice(&args[1..]);
-                return corpus_command(&rest).map(|_| false);
-            },
+                return corpus_command(&rest).map(|_| None);
+            }
             "eval" => {
-                if args.len()<2 || args.len()>3 {
+                if args.len() < 2 || args.len() > 3 {
                     return Err("eval LAYOUT [CORPUS]".into());
                 }
                 let corpus = if let Some(name) = args.get(2) {
                     corpus_by_name(name)?
                 } else {
-                    default_corpus_path()?.ok_or("corpus-reddit.json not found; provide a corpus path")?
+                    default_corpus_path()?
+                        .ok_or("corpus-reddit.json not found; provide a corpus path")?
                 };
                 return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?)
-                    .map(|_| false);
-            },
-            "editor"|"edit"|"optimizer"|"optimize"|"ranker"|"rank" => {
+                    .map(|_| None);
+            }
+            "editor" | "edit" | "optimizer" | "optimize" | "ranker" | "rank" => {
                 let mode = match cmd.as_str() {
                     "edit" => "editor",
                     "optimize" => "optimizer",
                     "rank" => "ranker",
-                    s => s
+                    s => s,
                 };
-                if args.len()>if mode == "ranker" {
-                    2
-                } else {
-                    3
-                }
-                {
+                if args.len() > if mode == "ranker" { 2 } else { 3 } {
                     return Err("too many arguments".into());
                 }
                 let mut term = Terminal::open()?;
                 let result = if mode == "ranker" {
                     tui_mode(&mut term, mode, None, args.get(1).map(String::as_str))
                 } else {
-                    tui_mode(&mut term, mode, args.get(1).map(Path::new), args.get(2).map(String::as_str))
+                    tui_mode(
+                        &mut term,
+                        mode,
+                        args.get(1).map(Path::new),
+                        args.get(2).map(String::as_str),
+                    )
                 };
-                let restart = term.restart_requested;
+                let restart = if term.restart_requested {
+                    Some(
+                        term.restart_arguments
+                            .take()
+                            .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
+                    )
+                } else {
+                    None
+                };
                 drop(term);
                 result?;
                 return Ok(restart);
-            },
-            _ => return Err(format!("unknown mode {cmd}; use akler --help").into())
+            }
+            _ => return Err(format!("unknown mode {cmd}; use akler --help").into()),
         }
     }
     let mut term = Terminal::open()?;
-    let items = vec!["Editor".into(), "Ranker".into(), "Optimizer".into(), "Corpora".into(), "Atomic editor".into(), "Reload program".into()];
+    if let Some(path) = resume_ranker {
+        if let Err(error) = ranking(&mut term, &path) {
+            if !term.quitting {
+                info_page(&mut term, "Error", &[error.to_string()])?;
+            }
+        }
+    }
+    let mut home = HomeState::default();
     while !term.quitting {
-        let choice = match menu(&mut term, "akler", &items)? {
+        let choice = match home_menu(&mut term, &mut home)? {
             Some(i) => i,
-            None => break
+            None => break,
         };
         let result = match choice {
             3 => corpus_tui(&mut term),
-            4 => crate::atomic_ui::open(&mut term),
-            5 => term.request_restart(),
-            _ => tui_mode(&mut term, ["editor", "ranker", "optimizer"][choice], None, None),
+            5 => weakness_open(&mut term),
+            6 => magic_designer_main(&mut term),
+            8 => scissor_test(&mut term),
+            7 => term.request_restart(),
+            _ => tui_mode(
+                &mut term,
+                ["editor", "ranker", "optimizer"][choice],
+                None,
+                None,
+            ),
         };
         if let Err(e) = result {
             if !term.quitting {
@@ -745,13 +1011,28 @@ fn run() -> AppResult<bool> {
             }
         }
     }
-    let restart = term.restart_requested;
+    let restart = if term.restart_requested {
+        Some(
+            term.restart_arguments
+                .take()
+                .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
+        )
+    } else {
+        None
+    };
     drop(term);
     Ok(restart)
 }
 
 fn main() {
-    if let Some(outcome) = crate::action_ui::dispatch(&std::env::args().skip(1).collect:: <Vec<_>>()) {
+    let resuming_ranker =
+        std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--resume-ranker"));
+    let action_outcome = if resuming_ranker {
+        None
+    } else {
+        crate::action_ui::dispatch(&std::env::args().skip(1).collect::<Vec<_>>())
+    };
+    if let Some(outcome) = action_outcome {
         if let Err(error) = outcome {
             eprintln!("{error}");
             std::process::exit(1);
@@ -759,14 +1040,16 @@ fn main() {
         return;
     }
     match run() {
-        Ok(true) => match restart_program_path().and_then(|path| restart_program(&path)) {
-            Ok(()) => unreachable!(),
-            Err(error) => {
-                eprintln!("{error}");
-                std::process::exit(1);
+        Ok(Some(arguments)) => {
+            match restart_program_path().and_then(|path| restart_program(&path, &arguments)) {
+                Ok(()) => unreachable!(),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
             }
-        },
-        Ok(false) => {}
+        }
+        Ok(None) => {}
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
@@ -800,7 +1083,8 @@ mod corpus_menu_tests {
 mod layout_dispatch_tests {
     use super::*;
 
-    const ROWS: &str = "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+    const ROWS: &str =
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
 
     #[test]
     fn normal_and_action_layouts_select_only_the_required_engine() {
@@ -850,11 +1134,24 @@ mod layout_dispatch_tests {
     #[test]
     fn jsonc_dispatch_uses_contents_with_any_filename() {
         for path in [Path::new("seconds"), Path::new("misleading.dat")] {
-            assert!(matches!(parse_open_layout(PLAIN_JSON, path).unwrap(), OpenLayout::Plain(_)));
+            assert!(matches!(
+                parse_open_layout(PLAIN_JSON, path).unwrap(),
+                OpenLayout::Plain(_)
+            ));
             let literal_at = PLAIN_JSON.replace("l ;", "l @");
-            assert!(matches!(parse_open_layout(&literal_at, path).unwrap(), OpenLayout::Plain(_)));
-            let magic = literal_at.replacen("    }", "    }, \"magic\": {\"key\": \"@\", \"rules\": []}", 1);
-            assert!(matches!(parse_open_layout(&magic, path).unwrap(), OpenLayout::Action(_)));
+            assert!(matches!(
+                parse_open_layout(&literal_at, path).unwrap(),
+                OpenLayout::Plain(_)
+            ));
+            let magic = literal_at.replacen(
+                "    }",
+                "    }, \"magic\": {\"key\": \"@\", \"rules\": []}",
+                1,
+            );
+            assert!(matches!(
+                parse_open_layout(&magic, path).unwrap(),
+                OpenLayout::Action(_)
+            ));
         }
     }
 
@@ -875,25 +1172,42 @@ mod layout_dispatch_tests {
         assert!(board.symbols.contains(&b'@'));
 
         let dat = ROWS.replace("l ;", "l @");
-        assert!(matches!(parse_open_layout(&dat, Path::new("literal.dat")).unwrap(), OpenLayout::Plain(_)));
+        assert!(matches!(
+            parse_open_layout(&dat, Path::new("literal.dat")).unwrap(),
+            OpenLayout::Plain(_)
+        ));
         let declared = format!("{dat}action @ = repeat-output\n");
-        let OpenLayout::Action(magic) = parse_open_layout(&declared, Path::new("magic.dat")).unwrap() else {
+        let OpenLayout::Action(magic) =
+            parse_open_layout(&declared, Path::new("magic.dat")).unwrap()
+        else {
             panic!("declared @ action must use the action evaluator");
         };
-        assert!(magic.slots.iter().any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
+        assert!(magic
+            .slots
+            .iter()
+            .any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
         let saved = magic.text();
         assert!(saved.contains("action @ = repeat-output"));
         let round = crate::action_keys::Layout::parse(&saved, Path::new("round.dat")).unwrap();
-        assert!(round.slots.iter().any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
+        assert!(round
+            .slots
+            .iter()
+            .any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
     }
 
     #[test]
     fn discovery_recognizes_invalid_layouts_without_absorbing_reports() {
         assert!(recognizable_layout("{\"layout\":"));
         assert!(recognizable_layout("q w e r t | y u i o p\nshort row\n"));
-        assert!(!recognizable_layout(r#"{"letters":{"a":1},"bigrams":{"aa":1}}"#));
-        assert!(!recognizable_layout("model = test\n[original]\nq w e r t | y u i o p\n"));
-        assert!(!recognizable_layout("Read the manual before changing layout settings."));
+        assert!(!recognizable_layout(
+            r#"{"letters":{"a":1},"bigrams":{"aa":1}}"#
+        ));
+        assert!(!recognizable_layout(
+            "model = test\n[original]\nq w e r t | y u i o p\n"
+        ));
+        assert!(!recognizable_layout(
+            "Read the manual before changing layout settings."
+        ));
     }
 
     struct LayoutDirectory(PathBuf);
@@ -905,13 +1219,18 @@ mod layout_dispatch_tests {
     }
 
     #[test]
-    fn discovery_accepts_extensionless_and_misnamed_contents_and_keeps_different_companions() {
-        let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        let directory = LayoutDirectory(std::env::temp_dir().join(format!(
-            "akler-discovery-{}-{unique}", std::process::id(),
-        )));
+    fn discovery_accepts_optimized_extensionless_and_distinct_companions() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = LayoutDirectory(
+            std::env::temp_dir().join(format!("akler-discovery-{}-{unique}", std::process::id(),)),
+        );
         fs::create_dir(&directory.0).unwrap();
-        let dat = action_keys::Layout::parse(PLAIN_JSON, Path::new("inline")).unwrap().text();
+        let dat = action_keys::Layout::parse(PLAIN_JSON, Path::new("inline"))
+            .unwrap()
+            .text();
         for (name, text) in [
             ("seconds", PLAIN_JSON),
             ("misleading.bin", dat.as_str()),
@@ -924,18 +1243,55 @@ mod layout_dispatch_tests {
             ("broken.dat", "{\"layout\":"),
             ("broken.txt", "q w e r t | y u i o p\nshort row\n"),
             ("corpus.json", "{\"letters\":{\"a\":1}}"),
-            ("candidate.run.txt", "model = test\n[original]\nq w e r t | y u i o p\n"),
+            (
+                "candidate.run.txt",
+                "model = test\n[original]\nq w e r t | y u i o p\n",
+            ),
         ] {
             fs::write(directory.0.join(name), text).unwrap();
         }
-        fs::write(directory.0.join("different.jsonc"), PLAIN_JSON.replace("q w", "w q")).unwrap();
-        let names: BTreeSet<_> = discover_layouts(&directory.0).unwrap().into_iter()
-            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        fs::write(
+            directory.0.join("different.jsonc"),
+            PLAIN_JSON.replace("q w", "w q"),
+        )
+        .unwrap();
+        let optimized = directory.0.join("optimized");
+        fs::create_dir(&optimized).unwrap();
+        fs::write(optimized.join("saved.jsonc"), PLAIN_JSON).unwrap();
+        fs::write(optimized.join("paired.dat"), &dat).unwrap();
+        fs::write(optimized.join("paired.jsonc"), PLAIN_JSON).unwrap();
+        let nested = optimized.join("nested");
+        fs::create_dir(&nested).unwrap();
+        fs::write(nested.join("ignored.jsonc"), PLAIN_JSON).unwrap();
+        let names: BTreeSet<_> = discover_layouts(&directory.0)
+            .unwrap()
+            .into_iter()
+            .map(|path| {
+                path.strip_prefix(&directory.0)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         let expected: BTreeSet<_> = [
-            "seconds", "misleading.bin", "saved.dat", "different.dat", "different.jsonc",
-            "broken.dat", "broken.txt",
-        ].into_iter().map(str::to_string).collect();
+            "seconds",
+            "misleading.bin",
+            "saved.dat",
+            "different.dat",
+            "different.jsonc",
+            "broken.dat",
+            "broken.txt",
+            "optimized/saved.jsonc",
+            "optimized/paired.dat",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
         assert_eq!(names, expected);
-    }
 
+        assert_eq!(
+            layout_file_label(Path::new("layouts/optimized/saved.jsonc")),
+            "optimized/saved.jsonc"
+        );
+    }
 }

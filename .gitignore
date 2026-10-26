@@ -14,6 +14,7 @@ Cargo.lock
 /layouts/*.run.txt
 /layouts/*-batch-*.csv
 /optimized/
+/scissors/
 # Local patch handoffs and logs
 /*.patch
 *.log

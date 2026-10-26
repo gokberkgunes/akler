@@ -1,498 +1,171 @@
-# Usage, configuration, and profiling
+# Usage and settings
 
-[README](../README.md) · [Layouts](LAYOUTS.md) · [Metrics and weights](METRICS.md)
+[README](../README.md) · [Metrics](METRICS.md) · [Layouts](LAYOUTS.md)
 
-Run commands from your project/data directory. Replace uppercase placeholder
-paths with your files. Layout files under `layouts/` are editable user data;
-tests contain inline layouts and do not require that directory.
+## Commands
 
-Layouts are recognized by their contents: DAT, JSON, and JSONC work with any
-filename, including `seconds` without an extension. Directory discovery ignores
-unrelated files and reports errors for recognized but invalid layouts. Equivalent
-same-stem `.dat`/`.json`/`.jsonc` companions appear once, preferring `.dat`;
-companions with different bindings, rules, or geometry remain separate layouts.
+```sh
+akler                                   # home menu
+akler ranker [CORPUS]
+akler editor|optimizer [LAYOUT] [CORPUS]
+akler eval LAYOUT [CORPUS]
+akler bench LAYOUT CORPUS [options]     # see Benchmarking
+akler magic trace LAYOUT "some text"    # also trace-keys, report
+akler corpus list|info|add|build|top ...
+```
 
-## Configuration
+The home menu has three tabs: **Workbench** (editor, ranker, optimizer),
+**Analysis** (weakness report, magic designer, scissor test) and **Data**
+(corpora, reload program). Press `?` on any screen for its controls.
 
-Edit the commented [akler.conf](../akler.conf) in the current directory:
+The scissor test asks for the layout you type on, shows words that press
+each same-hand, cross-row pair of fingers (or a drill like `ab ab ab`), and
+asks you to rate your dislike from 0 (fine) to 4 (awful). Ratings, timings,
+key geometry and Mana2's rating go to `scissors/LAYOUT.csv`; a later run
+continues the pass, then starts the next.
+
+## akler.conf
 
 | Section | Contents |
 |---|---|
-| `[weights]` | Detailed metric, finger-usage, and off-home weights; see [METRICS.md](METRICS.md). |
-| `[mana2]` | Progressive slope schedules for Mana2 stat IDs. |
-| `[simple]` | Flat weights for selected Mana2 pattern stats. |
-| `[search]` | Search options, scoring mode, and `corpus.NAME` mixture shares. |
-| `[rolls]` | Independent `include_thumbs`, `include_scissors`, and `include_stretches` toggles. |
-| `[ranker]` | `columns = SCORE SFB SFS ...`; `hidden_layouts = ["layouts/example.dat"]`. |
-| `[ngrams]` | `include_spacegrams` and independent `trigrams`, `tetragrams`, and `pentagrams` maximum counts. |
+| `[weights]` | Normal-mode weights; see [METRICS.md](METRICS.md). |
+| `[aklgg]` | AKL.GG-mode weights; see [AKLGG.md](AKLGG.md). |
+| `[search]` | Optimizer settings (below). |
+| `[typing]` | `alt_fingers`, `combos`: use a layout's alternate fingers and combos. |
+| `[alts]` | Alternate fingers by key position; see [ALTFINGERS.md](ALTFINGERS.md). |
+| `[rolls]` | `include_thumbs`, `include_scissors`, `include_stretches` for roll metrics. |
+| `[magic]` | Magic-key locations and rule fitting; see [MAGIC.md](MAGIC.md). |
+| `[combos]` | Combo fitting; see [COMBOS.md](COMBOS.md). |
+| `[adaptive]` | Adaptive-swap fitting; see [LAYOUTS.md](LAYOUTS.md#fitting-swaps). |
+| `[ranker]` | Visible `columns`, `hide_magic`, `hide_non_thumb`. |
+| `[ngrams]` | `include_spacegrams` and `trigrams`/`tetragrams`/`pentagrams` caps. |
 
-Entries use `name = value`; `#` starts a comment. Missing entries use built-in
-defaults. Either optimizer's setup `s` saves weights, roll filters, and search settings;
-the ranker's column chooser `q` saves columns and returns. These saves update their sections
-while preserving comments and other settings. Unknown/duplicate sections or keys,
-empty values, and invalid numbers are errors. Layout rules and geometry remain
-in each layout file; normalization remains in each corpus's `.config.json`.
+Entries are `name = value`; `#` starts a comment; missing entries use
+defaults. Unknown sections or keys are errors. Saving from the TUI (`s` in
+optimizer setup, `q` in the ranker's column chooser, the `f`/`F`/`z` toggles)
+updates only the affected settings and keeps comments. Hiding a ranker column
+by clicking it also saves `columns`; `u`, Ctrl+R and `H` undo, redo and
+restore hides made in the grid.
 
-An existing `layouter.conf` is read when `akler.conf` is absent. The first TUI
-configuration save copies its settings to `akler.conf`. Older
-`optimizer-weights.conf`, `optimizer-search.conf`, and `ranker-columns.conf`
-are read only when neither unified file exists. The first TUI configuration
-save then migrates those values to `akler.conf`.
-To migrate manually, copy the old weight/search entries under `[weights]`/`[search]`, and
-put the old column list after `columns =` under `[ranker]`. Once the unified file
-exists, legacy files are not merged into it. All n-gram limits default to `all`,
-which preserves the existing full-cache behavior.
+### Spacegrams
 
-## Roll settings
+A spacegram is an n-gram containing Space (`e␠`, `␠t`, `e␠t`).
+`include_spacegrams = false` drops them when loading the corpus, which changes
+the denominators. Press `z` in the editor or ranker to toggle it.
 
-```ini
-[rolls]
-include_thumbs = false
-include_scissors = true
-include_stretches = true
-```
+### N-gram caps
 
-Defaults preserve all directional rolls without thumbs. Set both movement
-flags to `false` for rolls without scissors or stretches; either flag can also
-be disabled independently. `include_stetches` is accepted as an alias for
-`include_stretches`. Use `true`/`false`, not numbers.
+`trigrams`, `tetragrams` and `pentagrams` accept `all` or a count. Caps keep
+the most frequent entries in memory and never rewrite the corpus file. They
+are faster but approximate: results can change, so compare layouts with the
+same caps. Unigrams and bigrams are never capped.
 
-The switches apply to IN2/OUT2/IN3/OUT3, INROLL/OUTROLL, and combined ROLL in
-editor, ranker, evaluation, and both optimizer objectives. They therefore
-change the independently weighted inward/outward roll credits and can change
-optimizer decisions. They do not change
-how magic keys type the corpus or how other metrics are classified.
+## Search settings
 
-Filters check consecutive pairs AB and BC, not skip pair AC. They use
-akler's adjacent discordant jump and lateral-stretch definitions. Those movement
-classifiers exclude thumb pairs; when thumbs are enabled, a main-finger pair
-within the same trigram can still veto its roll. Thumb is inward of index.
+| Setting | Meaning | Default |
+|---|---|---|
+| `method` | `hybrid` (annealing, then greedy sweeps) or `sweep`. | hybrid |
+| `workers` | Parallel searches; 0 = all CPUs, 1 = serial. | 0 |
+| `restarts` | Search restarts. Magic/action optimizers abandon restarts that fall behind early. | 12 |
+| `passes` | Greedy sweep passes per local search. | 80 |
+| `anneal_steps` | Annealing steps per restart, ordinary optimizer. | 30000 |
+| `magic_anneal_steps` | Annealing steps per restart, magic/action optimizers. | 12000 |
+| `temperature_start` / `temperature_end` | Annealing schedule. | 0.30 / 0.003 |
+| `cycle_probability` | Share of three-key cycle moves. | 0.20 |
+| `seconds` | Time limit; 0 = none. | 30 |
+| `seed` | Random seed, decimal or `0x` hex. | `0x8a5c3d9127e4b6f1` |
+| `archive` | Candidates kept. | 12 |
+| `max_sfb_increase` / `max_sfs_increase` | Allowed increase over the original layout, in percentage points; `none` = no cap. | 0 / 0 |
+| `max_travel_increase` / `max_sftravel_increase` | Same, in key units per 100. | none / none |
+| `design` | `refine` the input, start `random`, or `evolve` from earlier results. | refine |
+| `mode` | Scoring: `normal` ([weights]) or `aklgg` ([aklgg]). | normal |
+| `preset` | Cap preset: `balanced`, `strict`, `low-travel`, `explore`, `custom`. | custom |
+| `min_distance` | Minimum differing positions between kept candidates. | 6 |
+| `corpus.NAME` | Training share for a corpus mixture. | none |
 
-The denominator is **all mapped trigrams permitted by `include_thumbs`**,
-including non-rolls and rolls rejected by either movement filter. Enabling
-thumbs changes only roll denominators, not ALT/RED/etc. Excluding thumbs
-never joins presses across a thumb.
-
-`[ngrams] include_spacegrams = true` is the default. Set it to `false` to
-exclude stored n-grams containing a space from evaluation and optimization,
-including magic layouts. This changes the available populations and their
-denominators. It filters data when the corpus is loaded; it does not rewrite
-the corpus file or join presses across a space. `include_thumbs` still controls
-whether thumb-containing patterns *that remain in the population* can count
-as rolls. A non-space thumb key is unaffected by the spacegram switch.
-Explicit skipgram tables store only the two endpoints, so this switch cannot
-identify a space in the omitted middle position. When skipgrams are derived
-from trigrams, space-containing trigrams are filtered before derivation.
-
-After editing the file, use `r` in the ranker or optimizer setup; reopen an
-editor to load new settings. Existing open ranker details keep their original
-settings until the ranker is reloaded. Corpus tables can be reused: only the
-geometry/evaluation state depends on these switches. Saved optimization run
-records include the active `[rolls]` settings.
+Lower scores are better in both modes. Caps always use AKLER's own SFB/SFS
+and travel definitions and are checked per training corpus. In the optimizer,
+`t` switches the scoring mode and tab `4` (**Score**) breaks the score down
+by stat.
 
 ## Ranker and editor
 
-```sh
-./target/release/akler ranker CORPUS.json
-./target/release/akler editor LAYOUT CORPUS.json
-./target/release/akler optimizer LAYOUT CORPUS.json
-./target/release/akler eval LAYOUT CORPUS.json
-```
+- **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns. `s` switches the
+  scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
+  without a thumb letter, `u` restores the last hidden row or column, `H`
+  restores everything, `r` reloads, `R` restarts the rebuilt binary. Hidden
+  layouts are stored in `ranker-hidden.json`. Enter opens a layout in the
+  editor.
+- **Editor:** click a metric to see its contributors. `m` switches between
+  simple and detailed stats, `d` toggles comparing against the last edit or
+  the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
+  (with backups), `S` saves a copy.
+- **Optimizer:** click keys to lock them, `H` locks the home row, `U`/`L`
+  unlock/lock everything. Space starts a search, `q` stops it and keeps the
+  best result. Results are saved under `layouts/optimized/` with a `.run.txt`
+  record.
 
-The ranker evaluates ordinary and magic/adaptive layouts with their existing
-evaluators. Each layout uses its own supported events, so check coverage and
-ignored characters before comparing different key sets. Scores use detailed
-weights in `detailed` mode, `[mana2]` progressive schedules in `mana2` mode,
-or `[simple]` flat weights on selected Mana2 stats in `simple` mode. Lower
-SCORE is better in every mode. Visible metric columns keep their documented
-definitions, and hiding a column never removes its score contribution.
-
-Press `v` in the ranker to choose columns: arrows or j/k move, Space/Enter toggle,
-`d` selects compact defaults, `a` selects all, and `q` saves `[ranker] columns` in
-`akler.conf` and returns. Escape cancels. Defaults are
-shared by ordinary and action layouts. `FJB` and `FJS` each sum four full-jump
-categories: discordant/concordant and adjacent/nonadjacent. They are display
-columns, not extra score weights. Old detailed full-jump ranker columns load as
-`FJB` or `FJS`. The column value accepts
-whitespace-separated metric names (case-insensitive); at least one is required.
-Compact defaults are SCORE, SFB, SKB, SFS, SKS, TRAVEL, SFTRAVEL, FSB, HSB,
-FSS, HSS, FJB, FJS, LSB, LSS, RED, INSRAF, OUTSRAF, INROLL, OUTROLL, ALT, and COVERAGE.
-Combined SRAF/ROLL and IN2/OUT2/IN3/OUT3 are available in the column picker;
-other saved column selections are preserved. `u` restores the last hidden row or column,
-and Ctrl+R hides it again. Row hiding, undo, redo, and `H` save automatically to
-`[ranker] hidden_layouts`. Hidden layouts stay hidden across reloads, corpus changes,
-and program restarts. Paths are exact, quoted filenames; removed files remain listed
-so they stay hidden if added back. `H` restores all rows permanently and all columns
-for the current session. Column selections are saved by opening `v`, then pressing `q`.
-`?` opens a scrollable help popup with controls, current-view details, warnings,
-and layout errors. Escape, Enter, or `?` closes it. The main table keeps a compact footer.
-Ranker `r` reloads configuration, including weights/limits, and the layouts.
-Ranker `R`, or **Reload program** in the main menu, restarts into the current
-executable at its launch path after a rebuild. Arguments, working directory, and
-environment are retained. Terminal state is restored before restarting. With a
-menu launch, restart returns to the main menu; CLI launches repeat their arguments.
-Restart is available from the main menu and ranker, not active layout editors.
-Opened inspectors use the same weight snapshot as their ranking results. Magic
-rows initially retain exact summary values. Opening one prepares its detailed
-physical reports with a cancellable progress screen, then reuses that result on
-subsequent opens. Cancellation leaves the summary intact and lets you retry.
-Reloading the ranking or changing corpus discards these cached details. There
-is no background prefetch. `i` shows corpus notes, including retained-count/
-frequency-mass warnings.
-
-Click metrics in the editor/results to inspect physical contributors; magic
-labels denote actual action slots, not their emitted characters. `.` toggles
-precision. The help popup (`?`) lists mode-specific controls over the current
-editor or optimizer screen. Editor `c` changes
-corpus while keeping your arrangement, comparison baseline, and undo history.
-Action editor `w` edits weights, `t` traces output text, and `p` traces specified
-physical presses. Its `s` saves a new layout copy and `r` restores the original;
-these editor keys do not save/reload configuration. Action `i` shows corpus notes.
-
-Each layout save writes both `.dat` and `.jsonc` with the same stem. Ordinary
-editor `s` confirms replacement of that pair and keeps backups; `S` saves a new
-pair. Imported `.json` and extensionless source files remain separate. Action
-editor and optimizer saves always choose a new stem, skipping any existing
-companion or run record. Optimizer pairs share one `.run.txt` record.
-
-Both optimizer setup screens use Space to run, `s` to save settings, `r` to
-reload settings, `p` for presets, `g` for design, `m` to cycle between detailed
-and Mana2 scoring, `n` for a new seed, and `x` for corpus shares. `d` restores
-default settings; `o` restores
-the original arrangement. Setup reload updates weights/search; corpus n-gram
-limits stay with the loaded corpus until it is reopened. Click keys to toggle
-locks, `H` restores default locks, `U` unlocks all keys including Space, and `L` locks all. Refine defaults
-lock home and thumb keys; magic refinement also locks named actions. Generation
-starts unlocked. Space can move when its physical slot is unlocked. Keyboard drawings label it `SP`.
-Detailed weights also control action typing effort when Mana2 is the search
-objective.
-
-In Mana2 mode, click a weight to edit its full schedule, such as
-`[-4, 0.5, -13, 1, -26]`, or enter a single weight such as `-4`.
-Invalid entries leave the previous weight intact; Esc cancels. `s` saves the
-edited schedules to `[mana2]` in `akler.conf`, preserving its comments.
-
-Search results use `q`, Esc, or `r` to return to setup with the selected
-candidate kept in memory. Returning does not save a layout; `o` in setup
-restores the original. During search, `q` stops and returns to setup with the
-latest best candidate.
-
-Magic search results use Space to refine the selected
-candidate with a new seed, `b` to choose a retained candidate, and `[`/`]` to
-navigate candidates. Caps continue to reference the original loaded layout.
-`s` saves the current layout with its run record; `S` saves each retained
-candidate and its record (without the ordinary optimizer's batch CSV). The
-candidate chooser lists objectives; it has no side-by-side comparison grid.
-Detailed metrics are prepared on first viewing each candidate. Contributor rows
-show physical action labels; `d` sorts and `a` switches between top rows and all
-rows. The labeled search objective uses
-the configured mode and training mixture; the metric cards describe the selected
-corpus. Live search shows the keyboard, metric and finger-usage panels, and
-progress. See [layout syntax](LAYOUTS.md) for supported rules.
-
-Explicit action diagnostics are also available:
-
-```sh
-./target/release/akler magic trace LAYOUT "some text"
-./target/release/akler magic trace-keys LAYOUT "h @"
-./target/release/akler magic report LAYOUT CORPUS.json report.json
-```
-
-Trace mode is a separate diagnostic and is not a replacement for the bounded
-n-gram evaluation used by the editor, ranker, and optimizer.
+`f`, `F` and `z` toggle alternate fingers, combos and spacegrams.
 
 ## Corpora
 
 ```sh
-./target/release/akler corpus add mycorpus /path/to/input
-./target/release/akler corpus build mycorpus --order 5
-./target/release/akler corpus info mycorpus
-./target/release/akler corpus top mycorpus 3 20
+akler corpus add NAME /path/to/text
+akler corpus build NAME --order 5 --jobs 4
+akler corpus info NAME
+akler corpus top NAME 3 20
 ```
 
-Without a corpus, Editor, Ranker, and Optimizer show setup instructions.
-**Corpora → Import text corpus** remains available even when the corpus list
-is empty: enter the text file's path and a corpus name. Import copies the source
-and builds its cache with the usual cancellable progress display. Cancelling
-the build leaves the imported text available for a later rebuild.
-
-Raw text files can have any extension or no extension. Place them directly in
-`corpus/raw/`, or import them through the TUI or `corpus add`. Imports retain the
-existing internal `NAME.txt` naming convention; your input file needs no suffix.
-Files ending in `.config.json` are reserved for corpus configuration and are
-not offered as text sources. Outside `corpus/raw/`, `.json` paths remain frequency
-caches; use import for a raw text file named with that suffix.
-Keep corpus names unique: `book`, `book.txt`, and `book.md` share the same cache
-name, so keeping more than one of them in `corpus/raw/` produces an error.
-
-Raw text lives in `corpus/raw/`; the built cache is
-`corpus/processed/corpus-mycorpus.json`. `--order 3`, `4`, or `5` selects maximum
-order; `--jobs N` selects corpus-build workers. The Corpora TUI also supports
-rebuilding with keys 3/4/5. Rebuilding requires raw text; an existing JSON can
-still be evaluated without it. Runtime evaluation reads cached n-grams, not an
-ordered raw-corpus traversal.
-
-An optional `corpus/raw/mycorpus.config.json` contains these JSON properties:
+Raw text goes in `corpus/raw/` (any extension); the cache is written to
+`corpus/processed/corpus-NAME.json`. Corpus names must be unique ignoring
+extension. An optional `corpus/raw/NAME.config.json` can set:
 
 | Property | Meaning / default |
 |---|---|
-| `input_graphemes` | Allowed one-character ASCII outputs. Omitted: printable ASCII, with uppercase normalized to lowercase. An explicit list defines its own accepted characters. |
-| `normalization` | Map individual Unicode input characters to one accepted printable ASCII output, e.g. `{"é":"e"}`. Default empty. |
-| `word_separator` | One printable ASCII separator. Default Space. Repeated separators are collapsed and leading/trailing separators omitted. |
-| `min_sequence_length` | Minimum normalized sequence length retained; default 1, allowed 1–1,000,000. |
-| `max_order` | Maximum stored contiguous n-gram order; default 5, allowed 3–5. |
-| `jobs` | Build worker count, 1–16. Default available parallelism capped at 4. |
+| `input_graphemes` | Allowed ASCII characters. Default: printable ASCII, lowercased. |
+| `normalization` | Character mapping, e.g. `{"é":"e"}`. |
+| `word_separator` | Separator character; default Space. |
+| `min_sequence_length` | Shortest sequence kept; default 1. |
+| `max_order` | Longest n-gram stored, 3–5; default 5. |
+| `jobs` | Build workers, 1–16. |
 
-`corpus add NAME INPUT CONFIG.json` copies an optional configuration.
-Unsupported input characters form boundaries while building a corpus. A layout
-may also lack a character that is present in the stored corpus. Such characters
-are not deleted to join their neighbors: `abc!def` never becomes `abcdef`.
-Stored adjacent pairs/triples require every character they contain to be available.
+Unsupported characters split the text; they are never deleted to join their
+neighbours. Ordinary skipgrams only need their endpoints (`a!b` counts as
+`a…b`). Magic and action layouts use 4- and 5-grams as typing context.
 
-Ordinary skipgrams deliberately use **endpoints only**: the stored `a…b` from
-`a!b` counts when `a` and `b` are available, even if `!` is not. This applies to
-all ordinary skip metrics and their denominators. It never creates an adjacent
-`ab` bigram. Imported endpoint-only skip tables remain usable without reconstructing
-or validating their middle characters.
+## Benchmarking
 
-Action evaluation is different: its physical histories are produced by typing
-selection, and an unavailable output resets that history and action memory.
-It therefore does not create a physical skipgram across the gap. Ordinary and
-action skip totals can differ on layouts with unavailable corpus characters.
-Use the same supported character set when comparing them.
-
-Skipgrams derived from an already-pruned trigram file describe only that file's
-remaining evidence; evaluation cannot recover missing source data.
-
-Ordinary layouts use unigrams, bigrams, skipgrams, and trigrams. Stored fourth/
-fifth orders provide additional typing context for action layouts, not new
-four/five-key ergonomic metric definitions. Actions use the highest contiguous
-order available, up to 5, and require consistent frequency scales across orders.
-
-Each action context is mapped from a fresh bounded history; shorter residual
-contexts account for sequence starts. Only its terminal press/pair/triple is
-counted with that context's frequency. Physical skipgrams come from mapped
-trigrams. This is an estimate of stateful typing, not exact whole-text decoding.
-Increasing context length does not prove exactness for arbitrary repeat chains.
-
-### Optional n-gram limits
-
-The default keeps every entry. To set separate maximum counts, edit:
-
-```ini
-[ngrams]
-include_spacegrams = false
-trigrams = 2000
-tetragrams = 2000
-pentagrams = 2000
+```sh
+akler bench layouts/packet.dat corpus-reddit --seeds 10 --set mode=aklgg
 ```
 
-Each accepts `all` or a positive integer. These are evaluation limits; they do
-not rewrite your corpus JSON or change which orders the corpus builder stores.
-Read the retained-count/frequency-mass warnings when comparing limited results.
-`corpus info` and `corpus top` inspect the full stored data, regardless of these
-evaluation limits.
+Runs the optimizer without the TUI.
 
-For action evaluation the original tables are validated first. Trigrams are
-ranked by frequency, with lexical order breaking ties. Higher orders are first
-restricted to entries whose shorter suffix remains, then ranked/capped the same
-way. Each order has its own hard maximum, but the retained sets interact: a tight
-trigram limit also restricts which tetragrams/pentagrams can survive. No parent
-table is silently enlarged past its limit.
-
-An order may retain no entries even with its own limit set to `all` if its
-shorter suffixes were removed. The source context-order label stays unchanged;
-it describes available source order, not a guarantee of retained long history.
-Warnings list each changed order's retained unique count and frequency percentage.
-
-Unigrams and bigrams remain complete. Dropped longer contexts fall back to
-shorter residual contexts, preserving terminal text-frequency mass within the
-existing floating-point tolerances. No characters are joined across gaps. This loses
-typing history: magic/repeat selection, physical counts, metrics, caps, accepted
-swaps, and rankings may change. A cap of 2,000 is a speed/coverage tradeoff, not
-an exact substitute for full evaluation. Increasing any limit can also change
-results; use identical settings across comparisons.
-
-Ordinary evaluation applies only the trigram limit. Skipgrams are not pruned by
-that limit; if absent, they are derived from the original stored trigrams before
-limiting. Ordinary SFB/SFS therefore use the full stored usable pair/endpoint-skip
-evidence, while trigram/rhythm statistics use the retained trigrams.
-Tetragram/pentagram limits only affect action evaluation.
-
-Imported caches may already be pruned; limits cannot recover missing evidence.
-Coverage refers to stored source tables, not original raw text. Use `all` for
-final comparisons against the existing full-cache behavior. Action evaluation
-remains a bounded-context estimate even with `all`.
-
-## Search settings
-
-Detailed weights live under `[weights]` in `akler.conf`; definitions/defaults
-are in [METRICS.md](METRICS.md). Both ordinary and magic optimizers consume the
-following settings under `[search]` in the same file.
-
-| Setting | Meaning | Default |
-|---|---|---|
-| `method` | `hybrid` adds annealing before greedy sweeps; `sweep` uses sweeps. | hybrid |
-| `restarts` | Maximum search restarts. | 12 |
-| `passes` | Maximum greedy sweep passes per local search. | 80 |
-| `anneal_steps` | Annealing proposals per restart. | 6000 |
-| `temperature_start` / `temperature_end` | Geometric annealing schedule; permits some worse feasible moves. | 0.30 / 0.003 |
-| `cycle_probability` | Fraction of annealing moves using three-key cycles. | 0.20 |
-| `seconds` | Search wall-time budget; 0 disables the time limit. | 30 |
-| `seed` | Random seed, decimal or `0x` hexadecimal. | `0x8a5c3d9127e4b6f1` |
-| `archive` | Maximum retained candidates. | 12 |
-| `max_sfb_increase` / `max_sfs_increase` | Allowed increase from the original layout, in percentage points, per training corpus; `none` disables. | 0 / 0 |
-| `max_travel_increase` / `max_sftravel_increase` | Analogous limits in key units/100; `none` disables. | none / none |
-| `design` | `refine` improves the input; `random` starts shuffled layouts; `evolve` can cross/mutate retained parents. | refine |
-| `mode` | Scoring mode; choices listed below. | detailed |
-| `preset` | Name recorded for the selected preset. Choosing a preset applies its mode and caps immediately; loading this value from the file does not reapply it. | custom |
-| `min_distance` | Minimum differing letter positions for candidate diversity, and from the template for generation. | 6 |
-| `corpus.NAME` | Relative training share; positive shares are normalized to sum to 1. No mixture means selected corpus only. | No mixture |
-
-Scoring modes:
-
-* `detailed`: Score with the weights in `akler.conf`.
-* `mana2`: Score with Mana2 stats and the progressive schedules under `[mana2]`.
-* `simple`: Score selected Mana2 stats with flat weights under `[simple]`; lower is better.
-
-In Simple mode, click a weight in optimizer setup to edit it; `s` saves it.
-`m` cycles Detailed → Mana2 → Simple. Positive Simple weights penalize;
-negative weights reward; zero disables a term. For example, `sfb = 12` makes
-0.4% SFB cost 4.8 points. Stretch/scissor values are ratings, not percentages.
-Bigram and skipgram weights are separate. Inward/outward totals include both
-roll2 and roll3; weighting them alongside total `roll` deliberately adds their
-contributions. Simple uses the All variants, including thumbs under Mana2's
-rules. Its starting weights are editable examples, not calibrated ergonomic costs.
-`fspeed` and `weighted_speed` independently weight finger-motion estimates.
-The optimizer shows per-finger Usage, Fspeed and Weighted, plus hand totals.
-Click speed weights, `speed_skip_ratio`, or `speed_strength_*` to edit; `s` saves.
-Higher strength makes a finger's movement cheaper. Speed uses available bigrams
-and skip1 only; it is a motion rating, not WPM or an exact screenshot match.
-Both nonzero speed weights add both costs, alongside your other Simple weights.
-
-`metrics` aliases `mode`; legacy `max_sfb`/`max_sfs` are also baseline-relative
-increase limits, not absolute ceilings. Caps are checked per training corpus,
-not just on the mixture's mean score. Detailed weights and floating search
-settings must be finite/nonnegative; cycle probability is at most 1, and hybrid mode requires
-0 < end temperature ≤ start temperature. Iteration counts must be positive.
-Legacy combined SRAF/ROLL reward names remain accepted and initialize both
-directions unless the corresponding directional setting is explicit.
-
-Set `mode = mana2` to use Mana2's progressive score; akler minimizes its negative. The ranker uses the same
-mode for its `SCORE` column, labeled `Mana2 SCORE`, while other ranker columns
-remain akler's detailed metrics. Mana2 stat definitions, schedules, and the
-input/population limits of this port are described in [METRICS.md](METRICS.md#mana2-ranking-and-search-mode).
-
-Choosing any non-custom preset in either optimizer selects Mana2 mode and applies
-the caps below immediately. Other search settings remain as configured. `custom`
-only records the selection and keeps current values.
-
-| Preset | Effect |
+| Option | Effect |
 |---|---|
-| balanced | Mana2 mode; SFB +0.05 pp and SFS +0.25 pp caps; travel caps disabled. |
-| strict | Mana2 mode; zero increase allowed in SFB, SFS, TRAVEL, and SFTRAVEL. |
-| low-travel | Mana2 mode; balanced SFB/SFS caps and zero increase in TRAVEL/SFTRAVEL. |
-| explore | Mana2 mode; SFB/SFS and travel caps disabled. |
-| custom | Keeps current values. |
-
-Magic search supports the same hybrid/sweep methods, restarts, annealing,
-three-key cycles, time budget, detailed/Mana2 objectives, corpus mixtures, all
-four caps, generation modes, and candidate archive controls. This intentionally
-changes its search behavior: the unchanged defaults now mean hybrid search with
-a 30-second budget, rather than the old fixed 40-pass greedy search. Neither
-optimizer invents action rules or changes finger assignments.
-
-Action mapping still uses detailed effort weights and its existing exact
-incremental evaluator. It retains its 128-commit rebase schedule; the ordinary
-evaluator has a different rebase schedule. Algorithm support does not imply
-identical decisions between the two evaluators. Caps use the original layout's
-metrics separately on each positive-share training corpus. Space remains fixed.
-Magic diversity counts lowercase physical key labels, including adaptive letter
-keys. Generation excludes known layouts only when geometry, action definitions,
-and the binding permutation are compatible.
+| `--seeds N` | Number of seeds (default 6). |
+| `--set key=value` | Override one `[search]` setting for this run. |
+| `--config FILE` | Read FILE instead of `akler.conf`. `bench/akler.conf` is a frozen baseline. |
+| `--unlocked` | Free every key. |
+| `--full-ngrams` / `--rescore-full` | Search without caps / also print each score on all n-grams. |
+| `--swaps N` | No search: print the best N single and double swaps. |
+| `--chain K` | No search: print the best rotations of exactly K keys (2–12); `--swaps N` sets how many (default 15). |
+| `--move A=B` | With `--chain`: only rotations that move key A into B's place. |
+| `--hand left\|right` | With `--swaps` or `--chain`: move only that hand's keys. |
+| `--keep-wred` | With `--chain`: drop rotations that add weak redirects on either hand. |
+| `--combos K`, `--fit-combos K` | Combo limit for a run / fit combos only. |
+| `--adaptive K`, `--fit-swaps K` | Swap limit for a run / fit swaps only. |
+| `--save DIR`, `--tag NAME` | Save each seed's result. |
+| `--show` | Print fitted rules, swaps and combos. |
+| `--ranker CORPUS` | Time three full ranker loads. |
 
 ## Profiling
 
 ```sh
-AKLER_PROFILE_LOAD=1 ./target/release/akler ranker CORPUS.json 2>ranker-load.txt
-AKLER_PROFILE_LOAD=1 ./target/release/akler editor LAYOUT CORPUS.json 2>load-profile.txt
-AKLER_PROFILE=1 ./target/release/akler optimizer LAYOUT CORPUS.json 2>search-profile.txt
+AKLER_PROFILE_LOAD=1 akler ranker CORPUS 2>load.txt
+AKLER_PROFILE=1 akler optimizer LAYOUT CORPUS 2>search.txt
 ```
 
-Reports redirected to a file are written as each operation finishes. Without
-redirection, reports are buffered while the TUI is active and printed to stderr
-after exiting the TUI, once the terminal is restored. This prevents timing text
-from corrupting the screen. Buffered text uses memory only when reports are
-produced; redirect to a file for long profiling sessions. The loading variable
-is `AKLER_PROFILE_LOAD`, not `PROFILE_LOAD`.
-
-Menu-driven editor/optimizer loading selects a corpus path and layout before
-preparing the required evaluator. Switching layouts within that chooser reuses
-the parsed corpus; switching between ordinary and magic prepares only the
-missing engine from the same retained JSON text. Layouts, action rules, and
-geometry are reparsed on each open. No optimizer context cache is reused between
-layouts.
-
-This session cache checks the resolved corpus path, file metadata, and n-gram
-limits before reuse. Changed corpus metadata discards its text and engines;
-changed limits retain the text but rebuild the engines. Leaving the chooser or
-changing corpus starts fresh. The chooser's **Reload corpus snapshot** item
-forces a fresh read if an external replacement escaped metadata detection.
-Memory holds one JSON text plus the evaluators requested during that chooser
-session; there is no global cache or speculative background preparation.
-
-Ranker startup separately discovers layouts first, reads its corpus file once,
-and prepares only the required evaluators. An action-only ranking avoids ordinary
-corpus preparation; a mixed ranking runs two different table parsers over the
-one read. The action corpus is shared across layouts. Loading progress covers
-discovery and evaluation without restarting for each layout.
-
-Action ranking still maps every context for every layout and accumulates
-transient physical histograms in the original order, preserving exact summary
-values. It discards those histograms after scoring and defers detailed
-metric-adapter construction until that row is opened. The action corpus is
-shared between rows; opened details are cached until ranking reload/corpus
-change. Ordinary rows retain their existing eager metric data. Use the phase
-report to measure startup, first-open latency, and repeated opens locally;
-loading on demand does not eliminate per-layout mapping.
-
-Load profiling reports coarse operation phases; nested operation reports overlap
-and must not be summed. `AKLER_PROFILE=1` enables action-search phase timings
-and operation counters, with no per-context clock reads. `=2` additionally times
-each mapping/contribution update and has more overhead. Other values disable it.
-Press Space to start search; one aggregate report is collected at completion or
-cancellation and routed as described above. No output is printed inside
-candidate/context loops.
-
-Top-level search phases are setup, affected-list construction, mapping/scoring,
-normalization, cap/improvement checks, commit, rebase, and other. Named-action
-time overlaps these phases; level-2 mapping/contribution times are nested within
-mapping/scoring. Search timing excludes idle UI time and final detailed reporting.
-With corpus mixtures, context counters sum all training corpora while candidates count search
-moves. Sweep probes count as rejected; accepted commits count their separate
-reevaluation. Restart/local-optimum restoration remaps tails outside the candidate
-counters and appears in other time. These counts therefore differ from the old
-single-corpus greedy loop even on the same layout.
-
-Before checking a patch locally:
-
-```sh
-cargo check --release
-cargo test --release -- --test-threads=1
-cargo build --release
-```
-
-For speed comparisons set `seconds = 0` and keep input layouts, corpus, limits,
-weights, method, restarts, passes, annealing steps, seed, caps, and locks identical.
-Use profiling **disabled** and restart before each run:
-
-```sh
-env -u AKLER_PROFILE -u AKLER_PROFILE_LOAD ./target/release/akler optimizer MAGIC.dat CORPUS.json
-env -u AKLER_PROFILE -u AKLER_PROFILE_LOAD ./target/release/akler optimizer ORDINARY.dat CORPUS.json
-```
-
-Start search with Space. Repeat with matching `AKLER_PROFILE=1` runs to
-compare candidate/context/action operation counts. Profiling adds overhead, so
-those timings are not the uninstrumented benchmark. A nonzero `seconds` budget
-compares results achieved within a time limit rather than fixed-work runtime;
-wall-clock cutoffs can stop seeded runs at different points.
+`AKLER_PROFILE=2` adds finer timings at more overhead. Without redirection,
+reports print after the TUI exits. For speed comparisons, disable profiling
+and set `seconds = 0` so runs do fixed work.

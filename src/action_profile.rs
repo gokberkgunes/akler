@@ -14,6 +14,11 @@ pub(crate) struct MappingCounts {
     pub terminal_shortcuts: u64,
     pub positions_processed: u64,
     pub positions_reused: u64,
+    pub literal_contexts: u64,
+    pub transition_hits: u64,
+    pub transition_misses: u64,
+    pub prepared_terminal_hits: u64,
+    pub prepared_terminal_misses: u64,
     pub action_attempts: u64,
     pub action_no_output: u64,
     pub action_mismatch: u64,
@@ -39,6 +44,10 @@ pub(crate) struct MappingCounts {
 pub(crate) struct Profile {
     pub total: Duration,
     pub setup: Duration,
+    pub snapshot: Duration,
+    pub passes: Vec<Duration>,
+    pub candidate_workers: usize,
+    pub parallel_wall: Duration,
     pub affected: Duration,
     pub contexts: Duration,
     pub score: Duration,
@@ -62,6 +71,7 @@ pub(crate) struct Profile {
     pub unaffected: u64,
     pub mapped: u64,
     pub changed: u64,
+    pub counter_skipped: u64,
     pub rebases: u64,
     pub ops: MappingCounts,
 }
@@ -84,20 +94,40 @@ pub(crate) fn elapsed<const ON: bool>(start: Option<Instant>) -> Duration {
     }
 }
 
+pub(crate) fn level() -> u8 {
+    match std::env::var("AKLER_PROFILE")
+        .or_else(|_| std::env::var("LAYOUTER_PROFILE"))
+        .as_deref()
+    {
+        Ok("1") => 1,
+        Ok("2") => 2,
+        _ => 0,
+    }
+}
+
 impl Profile {
     fn accounted(&self) -> Duration {
-        self.setup
-            + self.affected
-            + self.contexts
-            + self.score
-            + self.checks
-            + self.commit
-            + self.rebase
+        let candidates = if self.candidate_workers > 1 {
+            self.parallel_wall
+        } else {
+            self.affected + self.contexts + self.score + self.checks
+        };
+        self.setup + candidates + self.commit + self.rebase + self.snapshot
     }
 
     pub(crate) fn report(
         &self,
         out: &mut impl Write,
+        status: &str,
+        detailed: bool,
+    ) -> io::Result<()> {
+        self.report_named(out, "Magic optimizer", status, detailed)
+    }
+
+    pub(crate) fn report_named(
+        &self,
+        out: &mut impl Write,
+        name: &str,
         status: &str,
         detailed: bool,
     ) -> io::Result<()> {
@@ -112,14 +142,21 @@ impl Profile {
         let average = |n: u64, d: u64| if d > 0 { n as f64 / d as f64 } else { 0.0 };
         writeln!(
             out,
-            "\nMagic optimizer profile ({status}; level {})",
+            "\n{name} profile ({status}; level {})",
             if detailed { 2 } else { 1 }
         )?;
-        writeln!(
-            out,
-            "Total search: {:.3} s (worker wall time; excludes editor/final report)",
-            seconds
-        )?;
+        writeln!(out, "Total search: {:.3} s (worker wall time; includes setup and snapshots, excludes corpus loading and terminal rendering)", seconds)?;
+        if self.candidate_workers > 1 {
+            writeln!(out, "Candidate workers: {}; sweep wall time {:.3} s; candidate phase timers below sum across workers and can exceed elapsed time", self.candidate_workers, self.parallel_wall.as_secs_f64())?;
+        }
+        for (index, duration) in self.passes.iter().enumerate() {
+            writeln!(
+                out,
+                "Pass {} pair sweep: {:.6} s (overlaps phases below)",
+                index + 1,
+                duration.as_secs_f64()
+            )?;
+        }
         writeln!(
             out,
             "Candidates: {} evaluated / {} attempted; accepted: {}; rejected: {}; incomplete: {}",
@@ -142,6 +179,7 @@ impl Profile {
             ("Cap/improvement checks", self.checks),
             ("Commit (excluding rebase)", self.commit),
             ("Periodic rebase", self.rebase),
+            ("Snapshot/callback delivery", self.snapshot),
             (
                 "Other/unaccounted",
                 self.total.saturating_sub(self.accounted()),
@@ -178,7 +216,7 @@ impl Profile {
         )?;
         writeln!(
             out,
-            "Named-action full scans: {}; candidate time {:.3} s ({:.1}%; OVERLAPS phases above)",
+            "Full-context scans: {}; named-action candidate time {:.3} s ({:.1}%; OVERLAPS phases above)",
             self.full_scans,
             self.named_time.as_secs_f64(),
             percent(self.named_time)
@@ -188,10 +226,22 @@ impl Profile {
             "Changed context tails: {}; rebases: {}",
             self.changed, self.rebases
         )?;
+        writeln!(
+            out,
+            "Raw-counter updates skipped: {} (certified empty replacement)",
+            self.counter_skipped
+        )?;
         writeln!(out, "Operations (candidate mapping only): action resolutions {}; recursive {}; suffix checks {}; effort lookups {}; effort comparisons {}",
             self.ops.resolutions, self.ops.recursive, self.ops.suffix_checks, self.ops.effort_lookups, self.ops.effort_comparisons)?;
         writeln!(out, "Suffix-index lookups {}; terminal-call shortcuts {} (suffix checks now count longer packed comparisons)", self.ops.suffix_index_lookups, self.ops.terminal_shortcuts)?;
         writeln!(out, "Mapper positions: newly processed {}; prefix reused {} (reused positions perform no action attempts)", self.ops.positions_processed, self.ops.positions_reused)?;
+        writeln!(
+            out,
+            "Terminal literal shortcuts: {} contexts",
+            self.ops.literal_contexts
+        )?;
+        writeln!(out, "Cached action/duplicate transitions: {} reused; {} resolved (reused transitions make no action attempts)", self.ops.transition_hits, self.ops.transition_misses)?;
+        writeln!(out, "Cached prepared histories: {} reused; {} mapped (reused histories perform no mapping work)", self.ops.prepared_terminal_hits, self.ops.prepared_terminal_misses)?;
         writeln!(
             out,
             "Action-key attempts: {}; no output {}; target mismatch {}; target match {}",
@@ -231,7 +281,11 @@ impl Profile {
         } else {
             writeln!(out, "Mapping/contribution split not timed at level 1; use AKLER_PROFILE=2. Action/suffix/effort internals are counts only.")?;
         }
-        writeln!(out, "Phases sum to total before rounding. UI runs concurrently; other is worker overhead, not UI CPU time.")
+        if self.candidate_workers > 1 {
+            writeln!(out, "Candidate phases overlap across workers. Other uses sweep wall time, not their summed durations. UI time is excluded.")
+        } else {
+            writeln!(out, "Phases sum to total before rounding. UI runs concurrently; other is worker overhead, not UI CPU time.")
+        }
     }
 }
 
@@ -262,5 +316,24 @@ mod tests {
         assert!(!text.contains("NaN"));
         assert!(!text.contains("inf"));
         assert!(clock::<false>().is_none());
+        profile.passes.push(Duration::from_millis(125));
+        let mut named = Vec::new();
+        profile
+            .report_named(&mut named, "Mana2 action optimizer", "paused/partial", true)
+            .unwrap();
+        let named = String::from_utf8(named).unwrap();
+        assert!(named.contains("Mana2 action optimizer profile (paused/partial; level 2)"));
+        assert!(named.contains("Pass 1 pair sweep: 0.125000 s"));
+        let mut parallel = Profile::default();
+        parallel.total = Duration::from_secs(5);
+        parallel.setup = Duration::from_secs(1);
+        parallel.candidate_workers = 2;
+        parallel.parallel_wall = Duration::from_secs(3);
+        assert_eq!(parallel.accounted(), Duration::from_secs(4));
+        let mut report = Vec::new();
+        parallel.report(&mut report, "completed", false).unwrap();
+        let report = String::from_utf8(report).unwrap();
+        assert!(report.contains("Candidate workers: 2"));
+        assert!(report.contains("Other/unaccounted: 1.000 s (20.0%)"));
     }
 }

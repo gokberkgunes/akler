@@ -1,9 +1,7 @@
 //! Text-producing keyboard actions. This module never equates output bytes with physical presses.
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use std::fs::{self, File, OpenOptions};
-
-use std::io::{Read, Write};
+use std::fs;
 
 use std::path::{Path, PathBuf};
 
@@ -11,19 +9,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const DEFAULT_STATE_LIMIT: usize = 500_000;
 
-pub const SEQUENCE_HEADER: &[u8] = b"AKLER-SEQUENCES-1\n";
-const LEGACY_SEQUENCE_HEADER: &[u8] = b"LAYOUTER-SEQUENCES-1\n";
-
 pub type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Binding {
     Empty,
     Text(Vec<u8>),
     Named(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Slot {
     pub binding: Binding,
     pub label: String,
@@ -37,7 +32,7 @@ pub struct Slot {
     pub main: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Basis {
     Text,
     Press,
@@ -47,14 +42,14 @@ pub enum Basis {
     Remembered,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Emission {
     Text(Vec<u8>),
     Call(String),
     None,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     Text(Vec<u8>),
     Rules {
@@ -78,6 +73,12 @@ pub struct Layout {
     pub right_outer: bool,
     pub(crate) row_stagger: RowStagger,
     pub(crate) action_mode: bool,
+    pub(crate) alt_fingers: Vec<crate::alt_fingers::Rule>,
+    /// `alt_fingers` name key positions instead of letters while an
+    /// optimizer runs; see `alt_fingers::pin`.
+    pub(crate) alt_spots: bool,
+    pub(crate) combos: Vec<crate::Json>,
+    pub(crate) source_warnings: Vec<String>,
 }
 
 fn err<T>(message: impl Into<String>) -> Result<T> {
@@ -486,7 +487,7 @@ fn binding(token: &str) -> Result<(Binding, String)> {
     if matches!(s, "~" | "blank" | "·") {
         return Ok((Binding::Empty, "·".into()));
     }
-    if s.eq_ignore_ascii_case("space") || s == "␠" {
+    if s.eq_ignore_ascii_case("space") || (s == "␠" || s == "␣") {
         return Ok((Binding::Text(vec![b' ']), "␠".into()));
     }
     // A display symbol for a named action, never a UTF-8 text emission.
@@ -539,7 +540,7 @@ fn finger(col: i8) -> (usize, i8, i8) {
         5 | 6 => (4, 3, 1),
         7 => (5, 2, 1),
         8 => (6, 1, 1),
-        9 | 10 | 11 => (7, 0, 1),
+        9..=12 => (7, 0, 1),
         _ => unreachable!(),
     }
 }
@@ -604,11 +605,18 @@ fn main_rows(lines: &[&str], absolute: bool) -> Result<(Vec<Slot>, bool, bool)> 
             };
             (tokens[..n].to_vec(), tokens[n..].to_vec())
         };
-        if !(5..=6).contains(&left.len()) || !(5..=6).contains(&right.len()) {
+        let max_hand_width = if absolute && left.len() + right.len() == 13 {
+            7
+        } else {
+            6
+        };
+        if !(5..=max_hand_width).contains(&left.len())
+            || !(5..=max_hand_width).contains(&right.len())
+        {
             return err("each hand must have five or six columns");
         }
-        left_outer |= left.len() == 6;
-        right_outer |= right.len() == 6;
+        left_outer |= left.len() >= 6;
+        right_outer |= right.len() >= 6;
         let start = if left.len() == 6 && !absolute { -1 } else { 0 };
         for (j, t) in left.iter().enumerate() {
             out.push(make_slot(t, r as i8, start + j as i8)?);
@@ -1029,12 +1037,50 @@ impl Layout {
         let mut short_tables = BTreeMap::new();
         let mut stagger_mode = None;
         let mut key_labels = None;
+        let mut thumb_columns = None;
+        let mut alt_fingers = None;
+        let mut combos = None;
         for (i, line) in lines.iter().enumerate().skip(3) {
             let s = line.trim();
             if s.is_empty() || s.starts_with('#') {
                 continue;
             }
             let fail = |e: String| format!("{}:{}: {e}", path.display(), i + 1);
+            if let Some(value) = s.strip_prefix("thumb-columns:") {
+                if thumb_columns.is_some() {
+                    return err(fail("thumb-columns is defined twice".into()));
+                }
+                let columns = value
+                    .split_whitespace()
+                    .map(|value| {
+                        value.parse::<i8>().map_err(|_| {
+                            fail("thumb-columns needs integer columns in -128..127".into())
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                thumb_columns = Some(columns);
+                continue;
+            }
+            if let Some(value) = s.strip_prefix("alts:") {
+                if alt_fingers.is_some() {
+                    return err(fail("alts is defined twice".into()));
+                }
+                let json = crate::parse_json(value.trim()).map_err(|e| fail(e.to_string()))?;
+                alt_fingers = Some(crate::alt_fingers::parse_json(&json).map_err(fail)?);
+                continue;
+            }
+            if let Some(value) = s.strip_prefix("combos:") {
+                if combos.is_some() {
+                    return err(fail("combos is defined twice".into()));
+                }
+                let crate::Json::Array(values) =
+                    crate::parse_json(value.trim()).map_err(|e| fail(e.to_string()))?
+                else {
+                    return err(fail("combos needs a JSON array".into()));
+                };
+                combos = Some(values);
+                continue;
+            }
             if let Some(labels) = s.strip_prefix("key-labels:") {
                 if key_labels.is_some() {
                     return err(fail("key-labels is defined twice".into()));
@@ -1217,7 +1263,7 @@ impl Layout {
             || thumbs
                 .iter()
                 .flatten()
-                .any(|t| t.eq_ignore_ascii_case("space") || t == "␠");
+                .any(|t| t.eq_ignore_ascii_case("space") || (t == "␠" || t == "␣"));
         let explicit_absence = thumbs.iter().flatten().any(|token| token == "none");
         if !has_space && !explicit_absence {
             match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
@@ -1281,6 +1327,9 @@ impl Layout {
             .map(|s| s.col)
             .max()
             .unwrap_or(0);
+        if shape.iter().any(|&width| width == 13) && geometry.fingers.is_none() {
+            return err("13-column layouts require an explicit fingermap");
+        }
         geometry.validate(shape, minimum, maximum)?;
         let mut columns = [0; 3];
         for slot in slots.iter_mut().filter(|slot| slot.main) {
@@ -1347,6 +1396,15 @@ impl Layout {
                 }
             }
         }
+        if let Some(columns) = thumb_columns {
+            let thumbs: Vec<_> = slots.iter_mut().filter(|slot| !slot.main).collect();
+            if columns.len() != thumbs.len() {
+                return err("thumb-columns needs one column for every thumb slot, left hand then right hand");
+            }
+            for (slot, col) in thumbs.into_iter().zip(columns) {
+                slot.col = col;
+            }
+        }
         if let Some(labels) = key_labels {
             if labels.len() != slots.len() {
                 return err(
@@ -1399,11 +1457,20 @@ impl Layout {
             right_outer,
             row_stagger: stagger_mode.unwrap_or_default(),
             action_mode,
+            alt_fingers: alt_fingers.unwrap_or_default(),
+            alt_spots: false,
+            source_warnings: if combos.as_ref().is_some_and(|values| !values.is_empty()) {
+                vec!["Combos are preserved; [typing] combos controls their scoring.".into()]
+            } else {
+                Vec::new()
+            },
+            combos: combos.unwrap_or_default(),
         })
     }
 
-    /// A physical text-magic key repeats remembered output when no rule matches.
-    /// Adaptive keys are the exception: their own literal output remains fallback.
+    /// Keep the legacy repeat default when a text-magic key has no literal
+    /// default. Explicit literal defaults (including Spark defaults) survive
+    /// DAT save/reload, even when their character differs from the key label.
     pub(crate) fn normalize_magic_fallbacks(&mut self) {
         let mut repeat = "repeat-output".to_string();
         if !matches!(self.actions.get(&repeat), Some(Action::RepeatOutput)) {
@@ -1433,7 +1500,7 @@ impl Layout {
                 let adaptive = !dedicated
                     && matches!(fallback, Emission::Text(bytes)
                     if bytes.len() == 1 && (bytes.as_slice() == slot.label.to_ascii_lowercase().as_bytes() || bytes.as_slice() == name.to_ascii_lowercase().as_bytes()));
-                if !adaptive {
+                if !adaptive && !matches!(fallback, Emission::Text(_)) {
                     *fallback = Emission::Call(repeat.clone());
                 }
             }
@@ -1441,9 +1508,10 @@ impl Layout {
     }
 
     pub fn extended(&self) -> bool {
-        self.action_mode
+        self.action_mode || !self.alt_fingers.is_empty() || !self.combos.is_empty()
     }
 
+    #[cfg(test)]
     pub fn home(&self, i: usize) -> bool {
         let s = &self.slots[i];
         s.main && s.row == 1 && matches!(s.col, 0 | 1 | 2 | 3 | 6 | 7 | 8 | 9)
@@ -1582,6 +1650,35 @@ impl Layout {
             let labels: Vec<_> = self.slots.iter().map(|slot| crate::json_quote(&slot.label)).collect();
             out.push_str(&format!("key-labels: [{}]\n", labels.join(", ")));
         }
+        let thumb_columns: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|slot| !slot.main)
+            .map(|slot| slot.col)
+            .collect();
+        let default_columns: Vec<_> = self
+            .slots
+            .iter()
+            .filter(|slot| !slot.main)
+            .enumerate()
+            .map(|(index, slot)| {
+                if index == 0 && slot.hand == 1 {
+                    1
+                } else {
+                    index as i8
+                }
+            })
+            .collect();
+        if thumb_columns != default_columns {
+            out.push_str(&format!(
+                "thumb-columns: {}\n",
+                thumb_columns
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ));
+        }
         let mut needed = std::collections::BTreeSet::new();
         fn gather(
             name: &str,
@@ -1673,6 +1770,18 @@ impl Layout {
                 }
             }
         }
+        if !self.alt_fingers.is_empty() {
+            out.push_str(&format!(
+                "\nalts: {}\n",
+                crate::alt_fingers::json_text(&self.alt_fingers)
+            ));
+        }
+        if !self.combos.is_empty() {
+            out.push_str(&format!(
+                "\ncombos: {}\n",
+                crate::alt_fingers::compact_json(&crate::Json::Array(self.combos.clone()))
+            ));
+        }
         out
     }
 
@@ -1747,6 +1856,22 @@ struct Resolved {
     output: Vec<u8>,
     remember: bool,
     reason: String,
+}
+
+/// Adaptive keys: a key named after the character it types, whose rules
+/// each name one character of context. As on keyboards (and akl.gg), that
+/// context is the key pressed before: "after r" means after the r key, even
+/// where another rule made it type something else.
+pub(crate) fn key_context(
+    name: &str,
+    basis: Basis,
+    rules: &BTreeMap<Vec<u8>, Emission>,
+    fallback: &Emission,
+) -> bool {
+    basis == Basis::Text
+        && name.len() == 1
+        && *fallback == Emission::Text(name.as_bytes().to_vec())
+        && rules.keys().all(|context| context.len() == 1)
 }
 
 fn context<'a>(basis: Basis, l: &'a Layout, mem: &'a Memory, prefix: &'a [u8]) -> &'a [u8] {
@@ -1861,6 +1986,11 @@ fn resolve_named(
             rules,
             fallback,
         } => {
+            let basis = &if key_context(name, *basis, rules, fallback) {
+                Basis::Press
+            } else {
+                *basis
+            };
             let ctx = context(*basis, l, m, prefix);
             let selected = if *basis == Basis::Text {
                 rules
@@ -2063,14 +2193,64 @@ impl<'a> WindowMapper<'a> {
     where
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
+        self.map_impl(text, None, None, effort)
+    }
+
+    /// Map forced combo roots while treating every marked source position as
+    /// part of one chord event. Returned roots retain all chord-key identities
+    /// for usage accounting, while physical movement history is cleared.
+    pub(crate) fn map_chords<F>(
+        &mut self,
+        text: &[u8],
+        forced: &[Option<usize>],
+        chords: &[bool],
+        effort: &F,
+    ) -> Result<[Option<usize>; 5]>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
+        if forced.len() != text.len() || chords.len() != text.len() {
+            return err("forced roots and chord mask must match cached context length");
+        }
+        if forced
+            .iter()
+            .flatten()
+            .any(|&key| key >= self.layout.slots.len())
+        {
+            return err("forced root is not a physical slot");
+        }
+        if chords
+            .iter()
+            .zip(forced)
+            .any(|(&chord, root)| chord && root.is_none())
+        {
+            return err("chord position requires a forced physical root");
+        }
+        self.map_impl(text, Some(forced), Some(chords), effort)
+    }
+
+    fn map_impl<F>(
+        &mut self,
+        text: &[u8],
+        forced: Option<&[Option<usize>]>,
+        chords: Option<&[bool]>,
+        effort: &F,
+    ) -> Result<[Option<usize>; 5]>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
         if text.is_empty() || text.len() > 5 {
             return err("cached context must contain 1 to 5 characters");
         }
-        let common = text
-            .iter()
-            .zip(&self.previous[..self.previous_len])
-            .take_while(|(a, b)| a == b)
-            .count();
+        let common = forced.map_or_else(
+            || {
+                text.iter()
+                    .zip(&self.previous[..self.previous_len])
+                    .take_while(|(a, b)| a == b)
+                    .count()
+            },
+            |_| 0,
+        );
         let common = if common > 0
             && (common < text.len() || common < self.previous_len)
             && self.may_look_ahead[common - 1]
@@ -2084,73 +2264,104 @@ impl<'a> WindowMapper<'a> {
             let start = self.starts[at];
             let mut best: Option<(usize, Resolved, f64)> = None;
             let mut may_look_ahead = false;
-            for &key in self.literals[text[at] as usize]
-                .iter()
-                .chain(self.actions.iter())
-            {
-                let Some(r) =
-                    resolve_slot(key, self.layout, mem, &text[start..at], &mut Vec::new())
-                else {
-                    continue;
-                };
-                if r.output.as_slice() != &text[at..at + 1] {
-                    continue;
-                }
-                let cost = effort(mem.previous, mem.last, key);
-                if !cost.is_finite() {
-                    return err("non-finite typing effort");
-                }
-                if let Some((old_key, _, old_cost)) = &best {
-                    let literal = matches!(self.layout.slots[*old_key].binding, Binding::Text(_));
-                    let priority = literal.then(|| self.action_priority(key, mem)).flatten();
-                    may_look_ahead |= priority != Some(false);
-                    let projected = if priority != Some(false) && at + 1 < text.len() {
-                        let next = &self.literals[text[at + 1] as usize];
-                        if (!literal
-                            || next.iter().all(|&n| {
-                                self.layout.slots[n].finger == self.layout.slots[key].finger
-                            }))
-                            && !next.is_empty()
-                        {
-                            let mut nonfinite = false;
-                            let mut next_cost = |current| {
-                                next.iter()
-                                    .map(|&n| {
-                                        let value = effort(mem.last, Some(current), n);
-                                        nonfinite |= !value.is_finite();
-                                        value
-                                    })
-                                    .fold(f64::INFINITY, f64::min)
-                            };
-                            let action_total = cost + next_cost(key);
-                            let literal_total = *old_cost + next_cost(*old_key);
-                            if nonfinite || !action_total.is_finite() || !literal_total.is_finite()
-                            {
-                                return err("non-finite typing effort");
-                            }
-                            Some(
-                                action_total < literal_total
-                                    || (priority == Some(true) && action_total == literal_total),
-                            )
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+            if let Some(key) = forced.and_then(|roots| roots[at]) {
+                best = Some((
+                    key,
+                    Resolved {
+                        output: vec![text[at]],
+                        remember: true,
+                        reason: "forced physical root".into(),
+                    },
+                    0.0,
+                ));
+            } else {
+                for &key in self.literals[text[at] as usize]
+                    .iter()
+                    .chain(self.actions.iter())
+                {
+                    let Some(r) =
+                        resolve_slot(key, self.layout, mem, &text[start..at], &mut Vec::new())
+                    else {
+                        continue;
                     };
-                    if priority == Some(false)
-                        || match projected {
-                            Some(wins) => !wins,
-                            None => priority != Some(true) && cost >= *old_cost,
-                        }
-                    {
+                    if r.output.as_slice() != &text[at..at + 1] {
                         continue;
                     }
+                    let cost = effort(mem.previous, mem.last, key);
+                    if !cost.is_finite() {
+                        return err("non-finite typing effort");
+                    }
+                    if let Some((old_key, _, old_cost)) = &best {
+                        let literal =
+                            matches!(self.layout.slots[*old_key].binding, Binding::Text(_));
+                        let priority = literal.then(|| self.action_priority(key, mem)).flatten();
+                        may_look_ahead |= priority != Some(false);
+                        let next_is_chord =
+                            chords.is_some_and(|mask| mask.get(at + 1) == Some(&true));
+                        let projected =
+                            if priority != Some(false) && at + 1 < text.len() && !next_is_chord {
+                                let forced_next;
+                                let next =
+                                    if let Some(slot) = forced.and_then(|roots| roots[at + 1]) {
+                                        forced_next = [slot];
+                                        &forced_next[..]
+                                    } else {
+                                        &self.literals[text[at + 1] as usize]
+                                    };
+                                if (!literal
+                                    || next.iter().all(|&n| {
+                                        self.layout.slots[n].finger == self.layout.slots[key].finger
+                                    }))
+                                    && !next.is_empty()
+                                {
+                                    let mut nonfinite = false;
+                                    let mut next_cost = |current| {
+                                        next.iter()
+                                            .map(|&n| {
+                                                let value = effort(mem.last, Some(current), n);
+                                                nonfinite |= !value.is_finite();
+                                                value
+                                            })
+                                            .fold(f64::INFINITY, f64::min)
+                                    };
+                                    let action_total = cost + next_cost(key);
+                                    let literal_total = *old_cost + next_cost(*old_key);
+                                    if nonfinite
+                                        || !action_total.is_finite()
+                                        || !literal_total.is_finite()
+                                    {
+                                        return err("non-finite typing effort");
+                                    }
+                                    Some(
+                                        action_total < literal_total
+                                            || (priority == Some(true)
+                                                && action_total == literal_total),
+                                    )
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                        if priority == Some(false)
+                            || match projected {
+                                Some(wins) => !wins,
+                                None => priority != Some(true) && cost >= *old_cost,
+                            }
+                        {
+                            continue;
+                        }
+                    }
+                    best = Some((key, r, cost));
                 }
-                best = Some((key, r, cost));
             }
             if let Some((key, r, _)) = best {
-                let next = advance(mem, key, &r);
+                let mut next = advance(mem, key, &r);
+                if chords.is_some_and(|mask| mask[at]) {
+                    next.previous = None;
+                    next.last = None;
+                    next.remembered_key = None;
+                }
                 self.keys[at] = Some(key);
                 self.memories[at + 1] = next;
                 self.starts[at + 1] = start;
@@ -2162,7 +2373,7 @@ impl<'a> WindowMapper<'a> {
             self.may_look_ahead[at] = may_look_ahead;
         }
         self.previous[..text.len()].copy_from_slice(text);
-        self.previous_len = text.len();
+        self.previous_len = if forced.is_some() { 0 } else { text.len() };
         Ok(self.keys)
     }
 }
@@ -2179,35 +2390,6 @@ pub fn decode<F>(
 where
     F: Fn(Option<usize>, Option<usize>, usize) -> f64,
 {
-    decode_impl(layout, text, limit, cancel, effort, false)
-}
-
-/// Corpus policy: type the longest reachable prefix; when no path can proceed,
-/// skip one byte and restart with empty typing history. Never delete and join text.
-fn decode_corpus<F>(
-    layout: &Layout,
-    text: &[u8],
-    limit: usize,
-    cancel: &AtomicBool,
-    effort: F,
-) -> Result<Vec<Step>>
-where
-    F: Fn(Option<usize>, Option<usize>, usize) -> f64,
-{
-    decode_impl(layout, text, limit, cancel, effort, true)
-}
-
-fn decode_impl<F>(
-    layout: &Layout,
-    text: &[u8],
-    limit: usize,
-    cancel: &AtomicBool,
-    effort: F,
-    skip_missing: bool,
-) -> Result<Vec<Step>>
-where
-    F: Fn(Option<usize>, Option<usize>, usize) -> f64,
-{
     if text.is_empty() {
         return Ok(Vec::new());
     }
@@ -2220,34 +2402,17 @@ where
     let mut frontiers: Vec<BTreeMap<Memory, usize>> =
         (0..=text.len()).map(|_| BTreeMap::new()).collect();
     frontiers[0].insert(Memory::default(), 0);
-    let mut furthest = 0;
-    let mut context_start = 0;
     for at in 0..text.len() {
         if cancel.load(Ordering::Relaxed) {
             return err("cancelled");
         }
         let frontier = std::mem::take(&mut frontiers[at]);
-        let best = if skip_missing {
-            frontier.values().copied().min_by(|&a, &b| {
-                arena[a]
-                    .cost
-                    .presses
-                    .cmp(&arena[b].cost.presses)
-                    .then_with(|| arena[a].cost.effort.total_cmp(&arena[b].cost.effort))
-            })
-        } else {
-            None
-        };
         for (_, node_id) in frontier {
             let old = arena[node_id].clone();
             for key in 0..layout.slots.len() {
-                let Some(resolved) = resolve_slot(
-                    key,
-                    layout,
-                    &old.memory,
-                    &text[context_start..at],
-                    &mut Vec::new(),
-                ) else {
+                let Some(resolved) =
+                    resolve_slot(key, layout, &old.memory, &text[..at], &mut Vec::new())
+                else {
                     continue;
                 };
                 if resolved.output.is_empty() || !text[at..].starts_with(&resolved.output) {
@@ -2286,25 +2451,6 @@ where
                     }),
                 });
                 frontiers[end].insert(memory, i);
-                furthest = furthest.max(end);
-            }
-        }
-        if skip_missing && furthest == at {
-            if let Some(from) = best {
-                if limit > 0 && arena.len() >= limit {
-                    return err(format!("typing exceeded {limit} states at byte {at}; increase the state limit or use shorter true sequences"));
-                }
-                let cost = arena[from].cost;
-                let i = arena.len();
-                arena.push(Node {
-                    memory: Memory::default(),
-                    cost,
-                    from: Some(from),
-                    step: None,
-                });
-                frontiers[at + 1].insert(Memory::default(), i);
-                context_start = at + 1;
-                furthest = at + 1;
             }
         }
     }
@@ -2359,264 +2505,10 @@ pub fn trace_keys(layout: &Layout, keys: &[usize]) -> Result<Vec<Step>> {
     Ok(steps)
 }
 
-#[derive(Clone, Default, Debug)]
-pub struct Counts {
-    pub tables: [BTreeMap<Vec<usize>, u64>; 5],
-    pub skip: BTreeMap<Vec<usize>, u64>,
-    pub characters: u64,
-    pub presses: u64,
-    pub action_presses: u64,
-    pub ignored_characters: u64,
-}
-
-impl Counts {
-    pub fn add(&mut self, steps: &[Step], weight: u64, layout: &Layout) -> Result<()> {
-        let mut run_start = 0;
-        for (i, step) in steps.iter().enumerate() {
-            if i > 0 && steps[i - 1].end != step.start {
-                run_start = i;
-            }
-            self.presses = self.presses.checked_add(weight).ok_or("count overflow")?;
-            self.characters = self
-                .characters
-                .checked_add(
-                    (step.output.len() as u64)
-                        .checked_mul(weight)
-                        .ok_or("count overflow")?,
-                )
-                .ok_or("count overflow")?;
-            if matches!(layout.slots[step.key].binding, Binding::Named(_)) {
-                self.action_presses = self
-                    .action_presses
-                    .checked_add(weight)
-                    .ok_or("count overflow")?;
-            }
-            for n in 1..=5.min(i + 1 - run_start) {
-                let k = steps[i + 1 - n..=i].iter().map(|s| s.key).collect();
-                let e = self.tables[n - 1].entry(k).or_default();
-                *e = e.checked_add(weight).ok_or("count overflow")?;
-            }
-            if i - run_start >= 2 {
-                let e = self
-                    .skip
-                    .entry(vec![steps[i - 2].key, step.key])
-                    .or_default();
-                *e = e.checked_add(weight).ok_or("count overflow")?;
-            }
-        }
-        Ok(())
-    }
-
-    fn report_json(&self, layout: &Layout) -> String {
-        let mut out = String::from("{\n  \"kind\": \"physical-keystrokes\",\n  \"policy\": \"minimum presses, then local effort\",\n  \"keys\": [");
-        for (i, s) in layout.slots.iter().enumerate() {
-            if i > 0 {
-                out.push(',');
-            }
-            out.push_str(&crate::json_quote(&s.label));
-        }
-        out.push_str("],\n  \"ngrams\": [\n");
-        for (n, t) in self.tables.iter().enumerate() {
-            if n > 0 {
-                out.push_str(",\n");
-            }
-            out.push_str("    [");
-            for (j, (keys, count)) in t.iter().enumerate() {
-                if j > 0 {
-                    out.push(',');
-                }
-                out.push_str(&format!("[{:?},{}]", keys, count));
-            }
-            out.push(']');
-        }
-        out.push_str(&format!(
-            "\n  ],\n  \"presses\": {},\n  \"characters\": {},\n  \"ignored_characters\": {}\n}}\n",
-            self.presses, self.characters, self.ignored_characters
-        ));
-        out
-    }
-
-    pub fn write_report(&self, layout: &Layout, path: &Path) -> Result<()> {
-        let out = self.report_json(layout);
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|e| e.to_string())?;
-        f.write_all(out.as_bytes()).map_err(|e| e.to_string())
-    }
-}
-
-/// ASCII normalization matching the plain default: collapsed spaces, hard control/non-ASCII boundaries.
-/// Bytes crossing I/O buffers remain in the same sequence.
-pub fn normalize(reader: &mut dyn Read, writer: &mut dyn Write) -> Result<()> {
-    let (mut have, mut space) = (false, false);
-    let mut buf = [0u8; 65536];
-    loop {
-        let n = reader.read(&mut buf).map_err(|e| e.to_string())?;
-        if n == 0 {
-            break;
-        }
-        for &b in &buf[..n] {
-            match b {
-                b' ' => {
-                    space = have;
-                }
-                32..=126 => {
-                    if space {
-                        writer.write_all(b" ").map_err(|e| e.to_string())?;
-                    }
-                    writer
-                        .write_all(&[b.to_ascii_lowercase()])
-                        .map_err(|e| e.to_string())?;
-                    have = true;
-                    space = false;
-                }
-                _ => {
-                    if have {
-                        writer.write_all(b"\n").map_err(|e| e.to_string())?;
-                    }
-                    have = false;
-                    space = false;
-                }
-            }
-        }
-    }
-    if have {
-        writer.write_all(b"\n").map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-#[derive(Clone, Debug)]
-pub struct TextCorpus {
-    pub name: String,
-    pub sequences: Vec<(Vec<u8>, u64)>,
-}
-
-impl TextCorpus {
-    pub fn from_bytes(name: &str, bytes: &[u8]) -> Result<Self> {
-        let mut normalized = Vec::new();
-        normalize(&mut &bytes[..], &mut normalized)?;
-        Self::from_normalized(name, &normalized)
-    }
-
-    fn from_normalized(name: &str, bytes: &[u8]) -> Result<Self> {
-        let mut map: BTreeMap<Vec<u8>, u64> = BTreeMap::new();
-        for s in bytes.split(|b| *b == b'\n') {
-            if s.is_empty() {
-                continue;
-            }
-            let n = map.entry(s.to_vec()).or_default();
-            *n = n.checked_add(1).ok_or("sequence count overflow")?;
-        }
-        if map.is_empty() {
-            return err("no usable text sequences");
-        }
-        Ok(Self {
-            name: name.into(),
-            sequences: map.into_iter().collect(),
-        })
-    }
-
-    pub fn load(path: &Path) -> Result<Self> {
-        let name = path
-            .file_stem()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .trim_start_matches("corpus-")
-            .to_string();
-        if path.extension().is_some_and(|s| s == "seq") {
-            let b = fs::read(path).map_err(|e| e.to_string())?;
-            let body = b
-                .strip_prefix(SEQUENCE_HEADER)
-                .or_else(|| b.strip_prefix(LEGACY_SEQUENCE_HEADER))
-                .ok_or("unrecognized ordered-text sidecar")?;
-            return Self::from_normalized(&name, body);
-        }
-        if path.extension().is_some_and(|s| s == "txt") {
-            if path.with_extension("config.json").exists() {
-                return err("custom normalization is not guessed: provide an explicitly normalized .seq for action layouts");
-            }
-            let b = fs::read(path).map_err(|e| e.to_string())?;
-            return Self::from_bytes(&name, &b);
-        }
-        let raw = Path::new("corpus/raw").join(format!("{name}.txt"));
-        let nearby = path.with_extension("txt");
-        // Raw text wins so edits cannot leave action statistics silently stale.
-        for p in [raw, nearby] {
-            if p.exists() {
-                let config = p.with_extension("config.json");
-                if config.exists() {
-                    return err(format!("{} uses a custom normalizer; supply already normalized .seq text for actions instead of silently applying ASCII defaults", p.display()));
-                }
-                return Self::load(&p);
-            }
-        }
-        let seq = path.with_extension("seq");
-        if seq.exists() {
-            return Self::load(&seq);
-        }
-        err(format!("{} contains frequencies, not ordered typing history. Add corpus/raw/{name}.txt or a matching .seq sidecar; five-gram tables alone cannot reconstruct arbitrary actions.", path.display()))
-    }
-
-    pub fn evaluate<F>(
-        &self,
-        layout: &Layout,
-        limit: usize,
-        cancel: &AtomicBool,
-        effort: F,
-    ) -> Result<Counts>
-    where
-        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
-    {
-        let mut counts = Counts::default();
-        for (text, weight) in &self.sequences {
-            if cancel.load(Ordering::Relaxed) {
-                return err("cancelled");
-            }
-            let steps = decode_corpus(layout, text, limit, cancel, &effort)?;
-            let retained: usize = steps.iter().map(|s| s.output.len()).sum();
-            let ignored = ((text.len() - retained) as u64)
-                .checked_mul(*weight)
-                .ok_or("count overflow")?;
-            counts.ignored_characters = counts
-                .ignored_characters
-                .checked_add(ignored)
-                .ok_or("count overflow")?;
-            counts.add(&steps, *weight, layout)?;
-        }
-        Ok(counts)
-    }
-}
-
-pub fn write_sidecar(raw: &Path, json: &Path) -> Result<PathBuf> {
-    if raw.with_extension("config.json").exists() {
-        return err("custom-normalized corpora need an explicitly normalized sequence source for action decoding");
-    }
-    let path = json.with_extension("seq");
-    let tmp = path.with_extension(format!("seq.{}.tmp", std::process::id()));
-    let mut output = std::io::BufWriter::new(File::create(&tmp).map_err(|e| e.to_string())?);
-    output
-        .write_all(SEQUENCE_HEADER)
-        .map_err(|e| e.to_string())?;
-    let result = normalize(
-        &mut File::open(raw).map_err(|e| e.to_string())?,
-        &mut output,
-    )
-    .and_then(|_| output.flush().map_err(|e| e.to_string()));
-    drop(output);
-    if let Err(e) = result {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
-    Ok(path)
-}
-
 /// Count text n-grams directly; useful for checking the project's parallel generator.
-pub fn text_ngrams(bytes: &[u8]) -> [HashMap<Vec<u8>, u64>; 5] {
-    let mut out = std::array::from_fn(|_| HashMap::new());
+#[cfg(test)]
+pub fn text_ngrams(bytes: &[u8]) -> [std::collections::HashMap<Vec<u8>, u64>; 5] {
+    let mut out = std::array::from_fn(|_| std::collections::HashMap::new());
     for s in bytes.split(|b| *b == b'\n') {
         for n in 1..=5 {
             for w in s.windows(n) {
@@ -2669,34 +2561,6 @@ mod tests {
             .into_iter()
             .flat_map(|step| step.output)
             .collect()
-    }
-
-    #[test]
-    fn physical_report_preserves_unicode_and_escaped_key_labels() {
-        let mut layout = make("outer-left: ~ ◇ ~\n◇ hr\n");
-        let steps = trace_keys(&layout, &[key(&layout, "h"), key(&layout, "◇")]).unwrap();
-        let mut counts = Counts::default();
-        counts.add(&steps, 1, &layout).unwrap();
-
-        // Programmatic labels must be valid JSON too, even when they contain
-        // characters that are not accepted in a .dat key token.
-        layout.slots[0].label = "\"\\\n\t".into();
-        let report = counts.report_json(&layout);
-        let crate::Json::Object(root) = crate::parse_json(&report).unwrap() else {
-            panic!("expected report object");
-        };
-        let Some(crate::Json::Array(labels)) = root.get("keys") else {
-            panic!("expected key labels");
-        };
-
-        assert_eq!(labels.len(), layout.slots.len());
-        for (value, slot) in labels.iter().zip(&layout.slots) {
-            let crate::Json::String(label) = value else {
-                panic!("expected string label");
-            };
-            assert_eq!(label, &slot.label);
-        }
-        assert!(report.contains("\"◇\""));
     }
 
     #[test]
@@ -3106,23 +2970,6 @@ mod tests {
         }
     }
     #[test]
-    fn keystrokes_and_emitted_characters_are_not_ngrams_of_each_other() {
-        let l = make("outer-left: ~ @macro ~\naction macro = text \"the\"\n");
-        let steps = trace_keys(&l, &vec![key(&l, "macro"); 5]).unwrap();
-        let mut c = Counts::default();
-        c.add(&steps, 2, &l).unwrap();
-        assert_eq!(c.characters, 30);
-        assert_eq!(c.presses, 10);
-        assert_eq!(c.tables[4].values().sum::<u64>(), 2);
-        assert_eq!(c.skip.values().sum::<u64>(), 6);
-    }
-    #[test]
-    fn normalized_boundaries_and_spaces() {
-        let mut out = Vec::new();
-        normalize(&mut &b"  A  B\r\nC\tD  "[..], &mut out).unwrap();
-        assert_eq!(out, b"a b\nc\nd\n");
-    }
-    #[test]
     fn fivegrams_do_not_cross_sequences() {
         let t = text_ngrams(b"abcde\nfghij\n");
         assert_eq!(t[4].len(), 2);
@@ -3137,130 +2984,6 @@ mod tests {
     fn press_rule_distinguishes_magic_key_from_output() {
         let l = make("outer-left: @macro @next ~\naction macro = text \"xy\"\naction next = press-magic\nmap next \"macro\" = \"z\"\n");
         assert_eq!(typed(&l, &["macro", "next"]), b"xyz");
-    }
-    #[test]
-    fn plain_corpus_counts_have_correct_total() {
-        let l = make("");
-        let c = TextCorpus::from_bytes("x", b"abcde\nabcde\n").unwrap();
-        let counts = c
-            .evaluate(&l, 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.tables[0].values().sum::<u64>(), 10);
-        assert_eq!(counts.tables[4].values().sum::<u64>(), 2);
-    }
-    #[test]
-    fn corpus_ignores_missing_characters_without_joining_runs() {
-        let l = make("outer-left: ~ @rep ~\naction rep = repeat-output\n");
-        let c = TextCorpus::from_bytes("x", b"abc!def\nabc!def\n!!!\n").unwrap();
-        let counts = c
-            .evaluate(&l, 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.characters, 12);
-        assert_eq!(counts.ignored_characters, 5);
-        assert_eq!(counts.presses, 12);
-        assert_eq!(counts.tables[1].values().sum::<u64>(), 8);
-        assert_eq!(counts.tables[2].values().sum::<u64>(), 4);
-        assert!(counts.tables[3].is_empty());
-        assert_eq!(counts.skip.values().sum::<u64>(), 4);
-    }
-    #[test]
-    fn missing_characters_reset_magic_text_context() {
-        let l = make("outer-left: ~ @m ~\naction m = magic\nmap m \"a\" = \"bc\"\n");
-        let c = TextCorpus::from_bytes("x", b"a!bc").unwrap();
-        let counts = c
-            .evaluate(&l, 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.presses, 3);
-        assert_eq!(counts.action_presses, 0);
-    }
-    #[test]
-    fn magic_only_punctuation_is_preserved() {
-        let l = make("outer-left: ~ @m ~\naction m = magic\nmap m \"i\" = \"'\"\n");
-        let c = TextCorpus::from_bytes("x", b"i'!i'").unwrap();
-        let counts = c
-            .evaluate(&l, 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.characters, 4);
-        assert_eq!(counts.action_presses, 2);
-        assert_eq!(counts.tables[1].values().sum::<u64>(), 2);
-    }
-    #[test]
-    fn entirely_unsupported_corpus_is_empty() {
-        let c = TextCorpus::from_bytes("x", b"!!!").unwrap();
-        let counts = c
-            .evaluate(&make(""), 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.presses, 0);
-        assert_eq!(counts.ignored_characters, 3);
-        assert!(counts.tables.iter().all(|t| t.is_empty()));
-    }
-    #[test]
-    fn corpus_still_reports_decoder_limits() {
-        let c = TextCorpus::from_bytes("x", b"!abc!").unwrap();
-        assert!(c
-            .evaluate(&make(""), 1, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap_err()
-            .contains("exceeded"));
-    }
-    #[test]
-    fn corpus_handles_contextually_unavailable_punctuation() {
-        let l = Layout::parse(
-            crate::action_keys::test_layouts::SHORTHAND,
-            Path::new("sample.dat"),
-        )
-        .unwrap();
-        let c = TextCorpus::from_bytes("x", b"' it's so delicious.").unwrap();
-        let counts = c
-            .evaluate(&l, 100000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.ignored_characters, 3);
-        // Two apostrophes and the period.
-        assert_eq!(counts.characters, 17);
-        let steps =
-            decode_corpus(&l, b"it'a", 100000, &AtomicBool::new(false), |_, _, _| 0.0).unwrap();
-        assert_eq!(
-            steps.iter().map(|s| s.start).collect::<Vec<_>>(),
-            vec![0, 1, 3]
-        );
-        let mut counts = Counts::default();
-        counts.add(&steps, 1, &l).unwrap();
-        assert_eq!(counts.tables[1].values().sum::<u64>(), 1);
-        assert!(counts.tables[2].is_empty());
-        assert!(counts.skip.is_empty());
-    }
-    #[test]
-    fn corpus_does_not_truncate_macros_or_ignore_valid_longer_paths() {
-        let l = make("outer-left: ~ @macro ~\naction macro = text \"a!b\"\n");
-        let steps =
-            decode_corpus(&l, b"a!bc", 10000, &AtomicBool::new(false), |_, _, _| 0.0).unwrap();
-        assert_eq!(steps.len(), 2);
-        assert_eq!(steps[0].output, b"a!b");
-        assert_eq!(steps[1].start, 3);
-        let c = TextCorpus::from_bytes("x", b"a!c").unwrap();
-        let counts = c
-            .evaluate(&l, 10000, &AtomicBool::new(false), |_, _, _| 0.0)
-            .unwrap();
-        assert_eq!(counts.characters, 2);
-        assert_eq!(counts.ignored_characters, 1);
-        assert!(counts.tables[1].is_empty());
-    }
-    #[test]
-    fn corpus_boundaries_reset_effort_and_repeat_history() {
-        let l = make("outer-left: ~ @rep ~\naction rep = repeat-output\n");
-        let steps = decode_corpus(
-            &l,
-            b"a!a",
-            10000,
-            &AtomicBool::new(false),
-            |previous, last, _| {
-                assert!(previous.is_none());
-                assert!(last.is_none());
-                0.0
-            },
-        )
-        .unwrap();
-        assert!(steps.iter().all(|s| s.reason == "literal"));
-        assert_eq!(steps.len(), 2);
     }
     #[test]
     fn strict_text_trace_still_rejects_missing_output() {

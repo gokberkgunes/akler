@@ -123,51 +123,92 @@ const RAW_SRAF: usize = RHYTHM_DEN + 1;
 
 const RAW_ALT: usize = RAW_SRAF + 1;
 
-const ROW1_BI: usize = RAW_ALT + 1;
-
-const ROW1_SK: usize = ROW1_BI + 1;
-
-const ROW2_BI: usize = ROW1_SK + 1;
-
-const ROW2_SK: usize = ROW2_BI + 1;
-
-const SIMPLE_ROLL: usize = ROW2_SK + 1;
-
-const ROLL_DEN: usize = SIMPLE_ROLL + 1;
+const ROLL_DEN: usize = RAW_ALT + 1;
 
 const N_RAW: usize = ROLL_DEN + 1;
 
-const SIMPLE_NAMES: [&str; 9] = ["SFB", "SFS", "Lat. stretch", "1-row change", "2-row change", "IN SRAF", "OUT SRAF", "INROLL", "OUTROLL"];
-
-const SIMPLE_KEYS: [&str; 9] = ["sfb", "sfs", "lateral", "row1", "row2", "insraf_reward", "outsraf_reward", "inroll_reward", "outroll_reward"];
-
-
 const METRIC_NAMES: [&str; N_METRICS] = [
-    "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS",
-    "dnFJB", "dnFJS", "RED", "WRED", "WISH", "SRAF", "ROLL",
-    "daFJB", "caFJB", "daFJS", "caFJS", "ALT", "cnFJB", "cnFJS",
-    "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL",
-    "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL", "INSRAF", "OUTSRAF",
-    "daHJB", "caHJB", "daHJS", "caHJS", "dnHJB", "cnHJB", "dnHJS", "cnHJS",
+    "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS", "dnFJB", "dnFJS", "RED",
+    "WRED", "WISH", "SRAF", "ROLL", "daFJB", "caFJB", "daFJS", "caFJS", "ALT", "cnFJB", "cnFJS",
+    "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL", "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL",
+    "INSRAF", "OUTSRAF", "daHJB", "caHJB", "daHJS", "caHJS", "dnHJB", "cnHJB", "dnHJS", "cnHJS",
 ];
 
 // Adjacent discordant jump subsets and combined rhythm totals are display-only.
 const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
-    "sfb", "sfs", "skb", "sks", "fsb", "hsb", "fss", "hss", "lsb", "lss", "dnfjb", "dnfjs",
-    "red", "wred", "wish", "sraf_reward", "roll_reward",
-    "dafjb", "cafjb", "dafjs", "cafjs", "alt_reward", "cnfjb", "cnfjs",
-    "travel", "vtravel", "ltravel", "sftravel",
-    "in2", "out2", "in3", "out3", "inroll", "outroll", "insraf_reward", "outsraf_reward",
-    "dahjb", "cahjb", "dahjs", "cahjs", "dnhjb", "cnhjb", "dnhjs", "cnhjs",
-    "off_pinky", "off_ring", "off_middle", "off_index",
-    "usage_pinky", "usage_ring", "usage_middle", "usage_index",
+    "sfb",
+    "sfs",
+    "skb",
+    "sks",
+    "fsb",
+    "hsb",
+    "fss",
+    "hss",
+    "lsb",
+    "lss",
+    "dnfjb",
+    "dnfjs",
+    "red",
+    "wred",
+    "wish",
+    "sraf_reward",
+    "roll_reward",
+    "dafjb",
+    "cafjb",
+    "dafjs",
+    "cafjs",
+    "alt_reward",
+    "cnfjb",
+    "cnfjs",
+    "travel",
+    "vtravel",
+    "ltravel",
+    "sftravel",
+    "in2",
+    "out2",
+    "in3",
+    "out3",
+    "inroll",
+    "outroll",
+    "insraf_reward",
+    "outsraf_reward",
+    "dahjb",
+    "cahjb",
+    "dahjs",
+    "cahjs",
+    "dnhjb",
+    "cnhjb",
+    "dnhjs",
+    "cnhjs",
+    "off_pinky",
+    "off_ring",
+    "off_middle",
+    "off_index",
+    "usage_pinky",
+    "usage_ring",
+    "usage_middle",
+    "usage_index",
 ];
 
 fn weight_display_name(i: usize) -> &'static str {
     if matches!(
         i,
-        DAFJB | CAFJB | DAFJS | CAFJS | DNFJB | CNFJB | DNFJS | CNFJS
-            | DAHJB | CAHJB | DAHJS | CAHJS | DNHJB | CNHJB | DNHJS | CNHJS
+        DAFJB
+            | CAFJB
+            | DAFJS
+            | CAFJS
+            | DNFJB
+            | CNFJB
+            | DNFJS
+            | CNFJS
+            | DAHJB
+            | CAHJB
+            | DAHJS
+            | CAHJS
+            | DNHJB
+            | CNHJB
+            | DNHJS
+            | CNHJS
     ) {
         METRIC_NAMES[i]
     } else {
@@ -225,7 +266,7 @@ const METRIC_HELP: [&str; N_METRICS] = [
 ];
 
 fn physical_metric(m: usize) -> bool {
-    matches!(m, TRAVEL|VTRAVEL|LTRAVEL|SFTRAVEL)
+    matches!(m, TRAVEL | VTRAVEL | LTRAVEL | SFTRAVEL)
 }
 
 fn metric_unit(m: usize) -> &'static str {
@@ -241,7 +282,10 @@ fn bit(m: usize) -> u128 {
 }
 
 fn is_skip(m: usize) -> bool {
-    matches!(m, SFS|SKS|FSS|HSS|LSS|DNFJS|DAFJS|CAFJS|CNFJS|DAHJS|CAHJS|DNHJS|CNHJS)
+    matches!(
+        m,
+        SFS | SKS | FSS | HSS | LSS | DNFJS | DAFJS | CAFJS | CNFJS | DAHJS | CAHJS | DNHJS | CNHJS
+    )
 }
 
 fn is_rhythm(m: usize) -> bool {
@@ -252,17 +296,23 @@ fn is_rhythm(m: usize) -> bool {
 }
 
 fn higher_better(m: usize) -> bool {
-    matches!(m, SRAF | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL | INSRAF | OUTSRAF)
+    matches!(
+        m,
+        SRAF | ROLL | ALT | IN2 | OUT2 | IN3 | OUT3 | INROLL | OUTROLL | INSRAF | OUTSRAF
+    )
 }
 
 fn aggregate(m: usize) -> bool {
-    matches!(m, FSB | FSS | HSB | HSS | SRAF | ROLL | IN2 | OUT2 | IN3 | OUT3)
+    matches!(
+        m,
+        FSB | FSS | HSB | HSS | SRAF | ROLL | IN2 | OUT2 | IN3 | OUT3
+    )
 }
 
 fn raw_positive(m: usize) -> Option<usize> {
     match m {
         SRAF => Some(RAW_SRAF),
-        _ => None
+        _ => None,
     }
 }
 
@@ -282,18 +332,16 @@ fn display_symbol(b: u8) -> char {
     if blank(b) {
         '·'
     } else if b == b' ' {
-        '␠'
+        '␣'
     } else {
         b as char
     }
 }
 
 fn clean_text(s: &str) -> String {
-    s.chars().map(|c| if c.is_control() {
-        '?'
-    } else {
-        c
-    }).collect()
+    s.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 fn short(s: &str, width: usize) -> String {
@@ -314,7 +362,7 @@ struct Key {
     finger: usize,
     rank: i8,
     hand: i8,
-    main: bool
+    main: bool,
 }
 
 impl Key {
@@ -344,21 +392,22 @@ impl Key {
         self.main && self.rank <= 1
     }
 
+    #[cfg(test)]
     fn home(self) -> bool {
-        self.main && self.row == 1 && matches!(self.col, 0|1|2|3|6|7|8|9)
+        self.main && self.row == 1 && matches!(self.col, 0 | 1 | 2 | 3 | 6 | 7 | 8 | 9)
     }
 }
 
 fn main_key_at(row: usize, col: i8) -> Key {
     let (finger, rank, hand) = match col {
-        -1|0 => (0, 0, 0),
+        -1 | 0 => (0, 0, 0),
         1 => (1, 1, 0),
         2 => (2, 2, 0),
-        3|4 => (3, 3, 0),
-        5|6 => (4, 3, 1),
+        3 | 4 => (3, 3, 0),
+        5 | 6 => (4, 3, 1),
         7 => (5, 2, 1),
         8 => (6, 1, 1),
-        9|10|11 => (7, 0, 1),
+        9 | 10 | 11 => (7, 0, 1),
         _ => unreachable!(),
     };
     Key {
@@ -369,7 +418,7 @@ fn main_key_at(row: usize, col: i8) -> Key {
         finger,
         rank,
         hand,
-        main: true
+        main: true,
     }
 }
 
@@ -386,7 +435,7 @@ fn thumb_key(slot: usize) -> Key {
         finger: 8 + slot,
         rank: -1,
         hand: slot as i8,
-        main: false
+        main: false,
     }
 }
 
@@ -398,31 +447,25 @@ fn same_hand(a: Key, b: Key) -> bool {
 enum RowMotion {
     None,
     Discordant,
-    Concordant
+    Concordant,
 }
 
 fn row_motion(a: Key, b: Key) -> RowMotion {
     if !same_hand(a, b) || a.finger == b.finger || a.row == b.row {
         return RowMotion::None;
     }
-    let (upper, lower) = if a.row<b.row {
-        (a, b)
-    } else {
-        (b, a)
-    };
-    if upper.length()<lower.length() {
+    let (upper, lower) = if a.row < b.row { (a, b) } else { (b, a) };
+    if upper.length() < lower.length() {
         RowMotion::Discordant
-    }
-    else if upper.length()>lower.length() {
+    } else if upper.length() > lower.length() {
         RowMotion::Concordant
-    }
-    else {
+    } else {
         RowMotion::None
     }
 }
 
 fn scissor_kind(a: Key, b: Key) -> u8 {
-    if !same_hand(a, b) ||(a.rank - b.rank).abs() != 1 {
+    if !same_hand(a, b) || (a.rank - b.rank).abs() != 1 {
         return 0;
     }
     match (a.row - b.row).abs() {
@@ -434,19 +477,23 @@ fn scissor_kind(a: Key, b: Key) -> u8 {
 
 fn is_lateral_stretch(a: Key, b: Key) -> bool {
     let df = (a.rank - b.rank).abs();
-    same_hand(a, b) && df >= 1 &&a.horizontal_delta(b).abs() >= (df + 1) as f64
+    same_hand(a, b) && df >= 1 && a.horizontal_delta(b).abs() >= (df + 1) as f64
 }
 
 fn is_diagonal_stretch(a: Key, b: Key) -> bool {
-    (a.row - b.row).abs() == 2 &&(a.rank - b.rank).abs() != 1 && row_motion(a, b) == RowMotion::Discordant
+    (a.row - b.row).abs() == 2
+        && (a.rank - b.rank).abs() != 1
+        && row_motion(a, b) == RowMotion::Discordant
 }
 
 fn is_concordant_jump(a: Key, b: Key) -> bool {
-    (a.row - b.row).abs() == 2 &&(a.rank - b.rank).abs() != 1 && row_motion(a, b) == RowMotion::Concordant
+    (a.row - b.row).abs() == 2
+        && (a.rank - b.rank).abs() != 1
+        && row_motion(a, b) == RowMotion::Concordant
 }
 
 fn sraf_shape(a: Key, b: Key) -> bool {
-    same_hand(a, b) && a.row == b.row &&(a.rank - b.rank).abs() == 1
+    same_hand(a, b) && a.row == b.row && (a.rank - b.rank).abs() == 1
 }
 
 fn is_redirect(a: Key, b: Key, c: Key) -> bool {
@@ -457,11 +504,14 @@ fn is_redirect(a: Key, b: Key, c: Key) -> bool {
     d1 != 0 && d2 != 0 && d1.signum() != d2.signum()
 }
 
+/// Classification policy compiled into `Geometry`: `[rolls]` and `[alts]`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct RollSettings {
     include_thumbs: bool,
     include_scissors: bool,
     include_stretches: bool,
+    /// `[alts]` position-based alternate fingers; see `alt_fingers::AltRules`.
+    alts: Option<&'static crate::alt_fingers::AltRules>,
 }
 
 impl Default for RollSettings {
@@ -470,6 +520,7 @@ impl Default for RollSettings {
             include_thumbs: false,
             include_scissors: true,
             include_stretches: true,
+            alts: None,
         }
     }
 }
@@ -490,6 +541,7 @@ fn roll_metric(metric: usize) -> bool {
 
 // Rank increases from pinky toward index on either hand. Basic rolls depend
 // only on physical fingers and hands, never on row or distance penalties.
+#[cfg(test)]
 fn roll_kind(a: Key, b: Key, c: Key) -> Option<usize> {
     roll_kind_with_settings(a, b, c, RollSettings::default())
 }
@@ -506,11 +558,7 @@ fn roll_kind_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Op
     // Thumb rank is -1 elsewhere; for roll direction it is inward of index.
     let rank = |key: Key| if key.main { key.rank } else { 4 };
     if a.hand != c.hand {
-        let (from, to) = if a.hand == b.hand {
-            (a, b)
-        } else {
-            (b, c)
-        };
+        let (from, to) = if a.hand == b.hand { (a, b) } else { (b, c) };
         return Some(if rank(from) < rank(to) { IN2 } else { OUT2 });
     }
 
@@ -534,12 +582,24 @@ fn alternation_shape(a: Key, b: Key, c: Key) -> bool {
 struct PairFlags {
     bi: u128,
     sk: u128,
-    main: bool
+    main: bool,
 }
 
 // Local movement events veto SRAF credit. ALT uses hand order alone.
 // Finger load is an aggregate penalty, not a local movement veto.
-const BAD_BI: u128 = (1<<SFB)|(1<<SKB)|(1<<FSB)|(1<<DAFJB)|(1<<CAFJB)|(1<<HSB)|(1<<DAHJB)|(1<<CAHJB)|(1<<LSB)|(1<<DNFJB)|(1<<CNFJB)|(1<<DNHJB)|(1<<CNHJB);
+const BAD_BI: u128 = (1 << SFB)
+    | (1 << SKB)
+    | (1 << FSB)
+    | (1 << DAFJB)
+    | (1 << CAFJB)
+    | (1 << HSB)
+    | (1 << DAHJB)
+    | (1 << CAHJB)
+    | (1 << LSB)
+    | (1 << DNFJB)
+    | (1 << CNFJB)
+    | (1 << DNHJB)
+    | (1 << CNHJB);
 
 fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     let mut f = PairFlags {
@@ -547,81 +607,66 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         ..PairFlags::default()
     };
     if same_key {
-        f.bi|=bit(SKB);
-        f.sk|=bit(SKS);
+        f.bi |= bit(SKB);
+        f.sk |= bit(SKS);
     } else if a.finger == b.finger {
-        f.bi|=bit(SFB);
-        f.sk|=bit(SFS);
+        f.bi |= bit(SFB);
+        f.sk |= bit(SFS);
     }
     match scissor_kind(a, b) {
         1 => {
-            f.bi|=bit(HSB);
-            f.sk|=bit(HSS);
-        },
+            f.bi |= bit(HSB);
+            f.sk |= bit(HSS);
+        }
         2 => {
-            f.bi|=bit(FSB);
-            f.sk|=bit(FSS);
-        },
-        _ => {
-        },
+            f.bi |= bit(FSB);
+            f.sk |= bit(FSS);
+        }
+        _ => {}
     }
     match ((a.row - b.row).abs(), row_motion(a, b)) {
         (2, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi|=bit(DAFJB);
-            f.sk|=bit(DAFJS);
-        },
+            f.bi |= bit(DAFJB);
+            f.sk |= bit(DAFJS);
+        }
         (2, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi|=bit(CAFJB);
-            f.sk|=bit(CAFJS);
-        },
+            f.bi |= bit(CAFJB);
+            f.sk |= bit(CAFJS);
+        }
         (1, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi|=bit(DAHJB);
-            f.sk|=bit(DAHJS);
-        },
+            f.bi |= bit(DAHJB);
+            f.sk |= bit(DAHJS);
+        }
         (1, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi|=bit(CAHJB);
-            f.sk|=bit(CAHJS);
-        },
+            f.bi |= bit(CAHJB);
+            f.sk |= bit(CAHJS);
+        }
         (1, RowMotion::Discordant) => {
-            f.bi|=bit(DNHJB);
-            f.sk|=bit(DNHJS);
-        },
+            f.bi |= bit(DNHJB);
+            f.sk |= bit(DNHJS);
+        }
         (1, RowMotion::Concordant) => {
-            f.bi|=bit(CNHJB);
-            f.sk|=bit(CNHJS);
-        },
-        _ => {},
+            f.bi |= bit(CNHJB);
+            f.sk |= bit(CNHJS);
+        }
+        _ => {}
     }
     if is_lateral_stretch(a, b) {
-        f.bi|=bit(LSB);
-        f.sk|=bit(LSS);
+        f.bi |= bit(LSB);
+        f.sk |= bit(LSS);
     }
     if is_diagonal_stretch(a, b) {
-        f.bi|=bit(DNFJB);
-        f.sk|=bit(DNFJS);
+        f.bi |= bit(DNFJB);
+        f.sk |= bit(DNFJS);
     }
     if is_concordant_jump(a, b) {
-        f.bi|=bit(CNFJB);
-        f.sk|=bit(CNFJS);
-    }
-    if same_hand(a, b) && a.finger != b.finger {
-        match (a.row - b.row).abs() {
-            1 => {
-                f.bi|=bit(ROW1_BI);
-                f.sk|=bit(ROW1_SK);
-            },
-            2 => {
-                f.bi|=bit(ROW2_BI);
-                f.sk|=bit(ROW2_SK);
-            },
-            _ => {
-            }
-        }
+        f.bi |= bit(CNFJB);
+        f.sk |= bit(CNFJS);
     }
     if sraf_shape(a, b) {
-        f.bi|=bit(RAW_SRAF);
-        if f.bi&BAD_BI == 0 {
-            f.bi|=bit(SRAF) | bit(if a.rank < b.rank { INSRAF } else { OUTSRAF });
+        f.bi |= bit(RAW_SRAF);
+        if f.bi & BAD_BI == 0 {
+            f.bi |= bit(SRAF) | bit(if a.rank < b.rank { INSRAF } else { OUTSRAF });
         }
     }
     f
@@ -630,7 +675,68 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
 #[derive(Clone, Copy, Debug, Default)]
 struct TriFlags {
     bits: u128,
-    main: bool
+    main: bool,
+}
+
+const _: () = assert!(N_RAW <= 128);
+
+/// Raw counters a trigram adds to: its flags plus `RHYTHM_DEN` for an
+/// all-main-key trigram.
+fn tri_raw_bits(flags: TriFlags) -> u128 {
+    flags.bits | if flags.main { bit(RHYTHM_DEN) } else { 0 }
+}
+
+/// The cubic trigram table stores 4-byte masks over only the counters some
+/// trigram on this board sets, so it stays cache-resident during search.
+#[derive(Clone)]
+struct TriTable {
+    masks: Vec<u32>,
+    /// Raw counter of each compact bit.
+    counters: Vec<usize>,
+}
+
+impl TriTable {
+    fn new(raw: &[u128]) -> Self {
+        let used = raw.iter().fold(0, |all, bits| all | bits);
+        let counters: Vec<usize> = (0..128).filter(|&bit| used >> bit & 1 != 0).collect();
+        assert!(counters.len() <= 32, "trigram flags exceed the compact table");
+        let masks = raw
+            .iter()
+            .map(|&bits| {
+                counters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &counter)| bits >> counter & 1 != 0)
+                    .fold(0, |mask, (compact, _)| mask | 1 << compact)
+            })
+            .collect();
+        Self { masks, counters }
+    }
+
+    /// The raw counter bits of entry `index`.
+    fn raw(&self, index: usize) -> u128 {
+        let mut mask = self.masks[index];
+        let mut bits = 0;
+        while mask != 0 {
+            bits |= 1 << self.counters[mask.trailing_zeros() as usize];
+            mask &= mask - 1;
+        }
+        bits
+    }
+
+    /// Move `f` from entry `from`'s counters to entry `to`'s; counters set in
+    /// both are untouched.
+    #[inline(always)]
+    fn move_counters(&self, raw: &mut Raw, from: usize, to: usize, f: f64) {
+        let signed = [-f, f];
+        let to = self.masks[to];
+        let mut changed = self.masks[from] ^ to;
+        while changed != 0 {
+            let bit = changed.trailing_zeros() as usize;
+            raw.0[self.counters[bit]] += signed[(to >> bit) as usize & 1];
+            changed &= changed - 1;
+        }
+    }
 }
 
 fn trigram_penalties(a: Key, b: Key, c: Key) -> u128 {
@@ -639,20 +745,21 @@ fn trigram_penalties(a: Key, b: Key, c: Key) -> u128 {
     }
     let red = is_redirect(a, b, c);
     let weak = red && !(a.index() || b.index() || c.index());
-    let wish = red && !weak &&(a.weak() || b.weak() || c.weak());
+    let wish = red && !weak && (a.weak() || b.weak() || c.weak());
     let mut bits = 0;
     if red {
-        bits|=bit(REDIR);
+        bits |= bit(REDIR);
     }
     if weak {
-        bits|=bit(WRED);
+        bits |= bit(WRED);
     }
     if wish {
-        bits|=bit(WISH);
+        bits |= bit(WISH);
     }
     bits
 }
 
+#[cfg(test)]
 fn tri_flags(a: Key, b: Key, c: Key) -> TriFlags {
     tri_flags_with_settings(a, b, c, RollSettings::default())
 }
@@ -679,7 +786,7 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
             } else {
                 OUTROLL
             };
-            bits |= bit(kind) | bit(direction) | bit(ROLL) | bit(SIMPLE_ROLL);
+            bits |= bit(kind) | bit(direction) | bit(ROLL);
         }
     }
 
@@ -696,18 +803,22 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
     TriFlags { bits, main }
 }
 
+#[cfg(test)]
 fn is_sraf(a: Key, b: Key) -> bool {
-    pair_flags(a, b, false).bi&bit(SRAF) != 0
+    pair_flags(a, b, false).bi & bit(SRAF) != 0
 }
 
+#[cfg(test)]
 fn is_roll(a: Key, b: Key, c: Key) -> bool {
-    tri_flags(a, b, c).bits&bit(ROLL) != 0
+    tri_flags(a, b, c).bits & bit(ROLL) != 0
 }
 
+#[cfg(test)]
 fn is_alternation(a: Key, b: Key, c: Key) -> bool {
-    tri_flags(a, b, c).bits&bit(ALT) != 0
+    tri_flags(a, b, c).bits & bit(ALT) != 0
 }
 
+#[cfg(test)]
 fn home_travel(k: Key) -> [f64; 3] {
     if !k.main {
         return [0.0; 3];
@@ -731,27 +842,28 @@ impl HomeAnchors {
         let shift: [i8; 2] = std::array::from_fn(|hand| {
             let mut counts = BTreeMap::new();
             let mut seen = BTreeSet::new();
-            for key in keys.iter().filter(|key| {
-                key.main && key.row == 1 && key.hand == hand as i8
-            }) {
+            for key in keys
+                .iter()
+                .filter(|key| key.main && key.row == 1 && key.hand == hand as i8)
+            {
                 if seen.insert((key.finger, key.col)) {
-                    *counts.entry(key.col - HOME_COLUMNS[key.finger]).or_insert(0usize) += 1;
+                    *counts
+                        .entry(key.col - HOME_COLUMNS[key.finger])
+                        .or_insert(0usize) += 1;
                 }
             }
             let mut best = (0i8, 0usize);
             for (candidate, count) in counts {
                 if count > best.1
-                    || count == best.1
-                        && (candidate.abs(), candidate) < (best.0.abs(), best.0)
+                    || count == best.1 && (candidate.abs(), candidate) < (best.0.abs(), best.0)
                 {
                     best = (candidate, count);
                 }
             }
             best.0
         });
-        let columns = std::array::from_fn(|finger| {
-            HOME_COLUMNS[finger] + shift[usize::from(finger >= 4)]
-        });
+        let columns =
+            std::array::from_fn(|finger| HOME_COLUMNS[finger] + shift[usize::from(finger >= 4)]);
         let slots = std::array::from_fn(|finger| {
             let target = columns[finger];
             keys.iter()
@@ -785,15 +897,16 @@ impl HomeAnchors {
     }
 
     fn contains(self, k: Key) -> bool {
-        k.main
-            && self.slots[k.finger]
-                .is_some_and(|home| home.row == k.row && home.col == k.col)
+        k.main && self.slots[k.finger].is_some_and(|home| home.row == k.row && home.col == k.col)
     }
 }
 
 fn home_slot_mask(keys: &[Key]) -> Vec<bool> {
     let anchors = HomeAnchors::new(keys);
-    keys.iter().copied().map(|key| anchors.contains(key)).collect()
+    keys.iter()
+        .copied()
+        .map(|key| anchors.contains(key))
+        .collect()
 }
 
 fn home_travel_for(k: Key, keys: &[Key]) -> [f64; 3] {
@@ -811,11 +924,17 @@ struct Geometry {
     rolls: RollSettings,
     keys: Vec<Key>,
     pair: Vec<PairFlags>,
-    tri: Vec<TriFlags>,
+    tri: TriTable,
     n: usize,
+    /// Each key's distance from home (total, vertical, lateral).
     home: Vec<[f64; 3]>,
     is_home: Vec<bool>,
-    sf_distance: Vec<f64>
+    sf_distance: Vec<f64>,
+    /// `[alts]` rules for these keys.
+    alts: crate::alt_fingers::Resolver,
+    /// Mana2 classifications for these keys, built on first use and shared
+    /// by clones. Only searches that maintain Mana2 counters need them.
+    mana2: Arc<std::sync::OnceLock<mana2_metrics::GeometryContributions>>,
 }
 
 impl Geometry {
@@ -823,38 +942,60 @@ impl Geometry {
         Self::with_rolls(keys, RollSettings::default())
     }
 
+    /// Tables for action evaluation, which applies `[alts]` rules per context
+    /// window instead (see `alt_fingers::AltPolicy`).
     fn with_rolls(keys: Vec<Key>, rolls: RollSettings) -> Self {
+        Self::build(keys, rolls, crate::alt_fingers::Resolver::none())
+    }
+
+    /// Tables for the ordinary model, with `[alts]` rules applied within each
+    /// pair and triple: ordinary grams carry no context beyond themselves.
+    fn with_alts(keys: Vec<Key>, rolls: RollSettings) -> Self {
+        let alts = rolls
+            .alts
+            .map_or_else(crate::alt_fingers::Resolver::none, |rules| rules.resolver(&keys));
+        Self::build(keys, rolls, alts)
+    }
+
+    fn build(keys: Vec<Key>, rolls: RollSettings, alts: crate::alt_fingers::Resolver) -> Self {
         let n = keys.len();
-        let mut pair = vec![PairFlags::default(); n*n];
-        let mut tri = vec![TriFlags::default(); n*n*n];
+        let mut pair = vec![PairFlags::default(); n * n];
+        let mut tri = vec![0; n * n * n];
+        let mut sf_distance = vec![0.0; n * n];
         for a in 0..n {
             for b in 0..n {
-                pair[a*n + b] = pair_flags(keys[a], keys[b], a == b);
-                for c in 0..n {
-                    tri[(a*n + b)*n + c] = tri_flags_with_settings(keys[a], keys[b], keys[c], rolls);
-                }
-            }
-        }
-        let anchors = HomeAnchors::new(&keys);
-        let home = keys.iter().copied().map(|key| {
-            if !key.main {
-                return [0.0; 3];
-            }
-            let anchor = anchors.anchor(key, &keys);
-            let x = key.horizontal_delta(anchor).abs();
-            let y = key.vertical_delta(anchor).abs();
-            [x.hypot(y), y, x]
-        }).collect();
-        let is_home = keys.iter().copied().map(|key| anchors.contains(key)).collect();
-        let mut sf_distance = vec![0.0; n*n];
-        for a in 0..n {
-            for b in 0..n {
-                let (x, y) = (keys[a], keys[b]);
+                let [x, y] = alts.keys(&keys, [a, b]);
+                pair[a * n + b] = pair_flags(x, y, a == b);
                 if x.main && y.main && x.finger == y.finger {
-                    sf_distance[a*n + b] = x.vertical_delta(y).hypot(x.horizontal_delta(y));
+                    sf_distance[a * n + b] = x.vertical_delta(y).hypot(x.horizontal_delta(y));
+                }
+                for c in 0..n {
+                    let [x, y, z] = alts.keys(&keys, [a, b, c]);
+                    tri[(a * n + b) * n + c] =
+                        tri_raw_bits(tri_flags_with_settings(x, y, z, rolls));
                 }
             }
         }
+        let tri = TriTable::new(&tri);
+        let anchors = HomeAnchors::new(&keys);
+        let home = keys
+            .iter()
+            .copied()
+            .map(|key| {
+                if !key.main {
+                    return [0.0; 3];
+                }
+                let anchor = anchors.anchor(key, &keys);
+                let x = key.horizontal_delta(anchor).abs();
+                let y = key.vertical_delta(anchor).abs();
+                [x.hypot(y), y, x]
+            })
+            .collect();
+        let is_home = keys
+            .iter()
+            .copied()
+            .map(|key| anchors.contains(key))
+            .collect();
         Self {
             rolls,
             keys,
@@ -863,8 +1004,15 @@ impl Geometry {
             n,
             home,
             is_home,
-            sf_distance
+            sf_distance,
+            alts,
+            mana2: Arc::new(std::sync::OnceLock::new()),
         }
+    }
+
+    fn mana2(&self) -> &mana2_metrics::GeometryContributions {
+        self.mana2
+            .get_or_init(|| mana2_metrics::GeometryContributions::new(&self.keys, &self.alts))
     }
 }
 
@@ -884,45 +1032,57 @@ fn parse_token(token: &str, empty: &mut u8) -> AppResult<u8> {
         }
         return Err("char: requires one printable ASCII character".into());
     }
-    if token.eq_ignore_ascii_case("blank") || matches!(token, "~"|"·") {
+    if token.eq_ignore_ascii_case("blank") || matches!(token, "~" | "·") {
         *empty += 1;
         if *empty >= 32 {
             return Err("too many blank slots".into());
         }
         return Ok(*empty);
     }
-    if token.eq_ignore_ascii_case("space") || token == "␠" {
+    if token.eq_ignore_ascii_case("space") || (token == "␠" || token == "␣") {
         return Ok(b' ');
     }
     let bytes = token.as_bytes();
     if bytes.len() != 1 || !bytes[0].is_ascii_graphic() {
-        return Err(format!("key {token:?}: expected one printable ASCII character, ~, or space").into());
+        return Err(
+            format!("key {token:?}: expected one printable ASCII character, ~, or space").into(),
+        );
     }
     Ok(bytes[0].to_ascii_lowercase())
 }
 
-fn parse_row(line: &str, row: usize, empty: &mut u8) -> AppResult<(Vec<(u8, i8)>,(usize, usize))> {
+fn parse_row(line: &str, row: usize, empty: &mut u8) -> AppResult<(Vec<(u8, i8)>, (usize, usize))> {
     let tokens: Vec<_> = line.split_whitespace().collect();
     // Legacy 20-character rows with two spaces between hands. Do not trim
     // leading whitespace: it encodes an empty leftmost physical slot.
     const SLOTS: [usize; 10] = [0, 2, 4, 6, 8, 11, 13, 15, 17, 19];
     let bytes = line.as_bytes();
-    if tokens.len()<10 && !line.contains('|') && bytes.len() <= 20 && bytes.iter().all(|b| b.is_ascii()) &&
-    bytes.iter().enumerate().all(|(i, b)| SLOTS.contains(&i) || *b == b' ') {
+    if tokens.len() < 10
+        && !line.contains('|')
+        && bytes.len() <= 20
+        && bytes.iter().all(|b| b.is_ascii())
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(i, b)| SLOTS.contains(&i) || *b == b' ')
+    {
         let mut result = Vec::new();
         for (col, &p) in SLOTS.iter().enumerate() {
             let b = bytes.get(p).copied().unwrap_or(b' ');
-            result.push((if b == b' ' {
-                parse_token("~", empty)?
-            } else {
-                parse_token(&(b as char).to_string(), empty)?
-            }, col as i8));
+            result.push((
+                if b == b' ' {
+                    parse_token("~", empty)?
+                } else {
+                    parse_token(&(b as char).to_string(), empty)?
+                },
+                col as i8,
+            ));
         }
-        return Ok((result,(5, 5)));
+        return Ok((result, (5, 5)));
     }
-    let separator = tokens.iter().position(|t|*t == "|");
+    let separator = tokens.iter().position(|t| *t == "|");
     let (left, right) = if let Some(i) = separator {
-        if tokens.iter().filter(|t|**t == "|").count() != 1 {
+        if tokens.iter().filter(|t| **t == "|").count() != 1 {
             return Err(format!("row {} has more than one hand separator", row + 1).into());
         }
         (&tokens[..i], &tokens[i + 1..])
@@ -930,26 +1090,32 @@ fn parse_row(line: &str, row: usize, empty: &mut u8) -> AppResult<(Vec<(u8, i8)>
         let n = match tokens.len() {
             10 => 5,
             12 => 6,
-            _ => return Err(format!("row {}: use 10 or 12 slots, or separate an 11-slot row as 6|5 or 5|6", row + 1).into())
+            _ => {
+                return Err(format!(
+                    "row {}: use 10 or 12 slots, or separate an 11-slot row as 6|5 or 5|6",
+                    row + 1
+                )
+                .into())
+            }
         };
         (&tokens[..n], &tokens[n..])
     };
-    if !(5..=6).contains(&left.len())||!(5..=6).contains(&right.len()) {
-        return Err(format!("row {}: each hand needs five or six single-character slots", row + 1).into());
+    if !(5..=6).contains(&left.len()) || !(5..=6).contains(&right.len()) {
+        return Err(format!(
+            "row {}: each hand needs five or six single-character slots",
+            row + 1
+        )
+        .into());
     }
     let mut result = Vec::new();
-    let start = if left.len() == 6 {
-        -1
-    } else {
-        0
-    };
+    let start = if left.len() == 6 { -1 } else { 0 };
     for (i, t) in left.iter().enumerate() {
         result.push((parse_token(t, empty)?, start + i as i8));
     }
     for (i, t) in right.iter().enumerate() {
         result.push((parse_token(t, empty)?, 5 + i as i8));
     }
-    Ok((result,(left.len(), right.len())))
+    Ok((result, (left.len(), right.len())))
 }
 
 fn board_from_text(text: &str, path: &Path) -> AppResult<Board> {
@@ -999,7 +1165,10 @@ fn board_from_json(text: &str, path: &Path) -> AppResult<Board> {
 
 fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines: Vec<_> = text.lines().map(|s| s.strip_suffix('\r').unwrap_or(s)).collect();
+    let mut lines: Vec<_> = text
+        .lines()
+        .map(|s| s.strip_suffix('\r').unwrap_or(s))
+        .collect();
     // Ignore genuinely empty edge lines only. A line of spaces is a valid row.
     while lines.first() == Some(&"") {
         lines.remove(0);
@@ -1026,9 +1195,25 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
     let mut thumbs: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
     let mut absent = [false; 2];
     let mut stagger_mode = None;
+    let mut thumb_columns = None;
     for line in &lines[3..] {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("thumb-columns:") {
+            if thumb_columns.is_some() {
+                return Err("thumb-columns is defined twice".into());
+            }
+            let columns = value
+                .split_whitespace()
+                .map(|value| {
+                    value
+                        .parse::<i8>()
+                        .map_err(|_| "thumb-columns needs integer columns in -128..127")
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            thumb_columns = Some(columns);
             continue;
         }
         if trimmed.starts_with("col-layout:") || geometry.parse_line(trimmed)? {
@@ -1040,12 +1225,10 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             }
             continue;
         }
-        let named = trimmed.get(..7).is_some_and(|s|s.eq_ignore_ascii_case("thumbs:"));
-        let content = if named {
-            &trimmed[7..]
-        } else {
-            trimmed
-        };
+        let named = trimmed
+            .get(..7)
+            .is_some_and(|s| s.eq_ignore_ascii_case("thumbs:"));
+        let content = if named { &trimmed[7..] } else { trimmed };
         let tokens: Vec<_> = content.split_whitespace().collect();
         if named && tokens.contains(&"|") {
             if tokens.iter().filter(|&&token| token == "|").count() != 1
@@ -1068,7 +1251,7 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             }
             continue;
         }
-        if tokens.is_empty() || tokens.len()>2 {
+        if tokens.is_empty() || tokens.len() > 2 {
             return Err("thumb line needs one key, or explicit left and right keys".into());
         }
         for (i, &token) in tokens.iter().enumerate() {
@@ -1077,16 +1260,16 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             let hand = if named || tokens.len() == 2 {
                 i
             } else {
-                usize::from(line.as_bytes().iter().take_while(|&&b|b == b' ').count()>10)
+                usize::from(line.as_bytes().iter().take_while(|&&b| b == b' ').count() > 10)
             };
             if !thumbs[hand].is_empty() || absent[hand] {
-                return Err(format!("{} thumb is defined twice", if hand == 0 {
-                    "left"
-                } else {
-                    "right"
-                }).into());
+                return Err(format!(
+                    "{} thumb is defined twice",
+                    if hand == 0 { "left" } else { "right" }
+                )
+                .into());
             }
-            let token = if token.len()>1 {
+            let token = if token.len() > 1 {
                 token.strip_suffix(',').unwrap_or(token)
             } else {
                 token
@@ -1098,24 +1281,40 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             }
         }
     }
-    if !symbols.contains(&b' ') && !thumbs.iter().flatten().any(|&ch| ch == b' ') && !absent.contains(&true) {
+    if !symbols.contains(&b' ')
+        && !thumbs.iter().flatten().any(|&ch| ch == b' ')
+        && !absent.contains(&true)
+    {
         match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
             (true, true) => thumbs[0].push(b' '),
             (false, true) => thumbs[1].push(b' '),
             (true, false) => thumbs[0].push(b' '),
-            _ => {
-            }
+            _ => {}
         }
     }
     let mut thumb_col = 0usize;
     for (hand, group) in thumbs.into_iter().enumerate() {
-        if hand == 1 && thumb_col == 0 { thumb_col = 1; }
+        if hand == 1 && thumb_col == 0 {
+            thumb_col = 1;
+        }
         for ch in group {
             symbols.push(ch);
             let mut key = thumb_key(hand);
             key.col = i8::try_from(thumb_col).map_err(|_| "too many thumb keys")?;
             keys.push(key);
             thumb_col += 1;
+        }
+    }
+    if let Some(columns) = thumb_columns {
+        let thumbs: Vec<_> = keys.iter_mut().filter(|key| !key.main).collect();
+        if columns.len() != thumbs.len() {
+            return Err(
+                "thumb-columns needs one column for every thumb slot, left hand then right hand"
+                    .into(),
+            );
+        }
+        for (key, col) in thumbs.into_iter().zip(columns) {
+            key.col = col;
         }
     }
     if let Some(mode) = stagger_mode {
@@ -1127,9 +1326,23 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
             }
         }
     }
-    let shape = std::array::from_fn(|row| keys.iter().filter(|key| key.main && key.row == row as i8).count());
-    let minimum = keys.iter().filter(|key| key.main).map(|key| key.col).min().unwrap_or(0);
-    let maximum = keys.iter().filter(|key| key.main).map(|key| key.col).max().unwrap_or(0);
+    let shape = std::array::from_fn(|row| {
+        keys.iter()
+            .filter(|key| key.main && key.row == row as i8)
+            .count()
+    });
+    let minimum = keys
+        .iter()
+        .filter(|key| key.main)
+        .map(|key| key.col)
+        .min()
+        .unwrap_or(0);
+    let maximum = keys
+        .iter()
+        .filter(|key| key.main)
+        .map(|key| key.col)
+        .max()
+        .unwrap_or(0);
     geometry.validate(shape, minimum, maximum)?;
     let mut columns = [0; 3];
     for key in keys.iter_mut().filter(|key| key.main) {
@@ -1166,25 +1379,33 @@ fn load_board(path: &Path) -> AppResult<Board> {
     let mut timing = crate::load_profile::LoadProfile::new("ordinary layout read/parse");
     let text = fs::read_to_string(path)?;
     timing.mark("Layout read");
-    let result = board_from_text(&text, path).map_err(|e| format!("{}: {e}", path.display()).into());
+    let result =
+        board_from_text(&text, path).map_err(|e| format!("{}: {e}", path.display()).into());
     timing.mark("Layout parse");
     result
 }
 
 fn board_text(board: &Board, symbols: &[u8]) -> String {
-    let token = |b| if blank(b) {
-        "~".to_string()
-    } else if b == b' ' {
-        "space".to_string()
-    } else if matches!(b, b'~' | b'|' | b'@') || b.is_ascii_uppercase() {
-        format!("char:{}", b as char)
-    } else {
-        (b as char).to_string()
+    let token = |b| {
+        if blank(b) {
+            "~".to_string()
+        } else if b == b' ' {
+            "space".to_string()
+        } else if matches!(b, b'~' | b'|' | b'@') || b.is_ascii_uppercase() {
+            format!("char:{}", b as char)
+        } else {
+            (b as char).to_string()
+        }
     };
     let mut out = String::new();
     for r in 0..3 {
-        let mut row: Vec<_> = board.keys.iter().enumerate().filter(|(_, k)|k.main && k.row == r).collect();
-        row.sort_by_key(|(_, k)|k.col);
+        let mut row: Vec<_> = board
+            .keys
+            .iter()
+            .enumerate()
+            .filter(|(_, k)| k.main && k.row == r)
+            .collect();
+        row.sort_by_key(|(_, k)| k.col);
         let mut line = String::new();
         let mut first = true;
         let width = row.len();
@@ -1205,30 +1426,76 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
         out.push('\n');
     }
     out.push_str(&board.row_stagger.text());
-    out.push_str(&crate::action_keys::geometry_text(board.keys.iter().filter(|key| key.main).map(|key| {
-        (key.row, key.col, key.row_offset, key.column_offset, key.finger)
-    }), board.row_stagger));
-    let mut thumbs: Vec<_> = board.keys.iter().enumerate().filter(|(_, k)|!k.main).collect();
-    thumbs.sort_by_key(|(_, k)|k.hand);
-    let is_space=|(i, _): &(usize, &Key)|symbols[*i] == b' ';
+    out.push_str(&crate::action_keys::geometry_text(
+        board.keys.iter().filter(|key| key.main).map(|key| {
+            (
+                key.row,
+                key.col,
+                key.row_offset,
+                key.column_offset,
+                key.finger,
+            )
+        }),
+        board.row_stagger,
+    ));
+    let thumb_columns: Vec<_> = board
+        .keys
+        .iter()
+        .filter(|key| !key.main)
+        .map(|key| key.col)
+        .collect();
+    let default_columns: Vec<_> = board
+        .keys
+        .iter()
+        .filter(|key| !key.main)
+        .enumerate()
+        .map(|(index, key)| {
+            if index == 0 && key.hand == 1 {
+                1
+            } else {
+                index as i8
+            }
+        })
+        .collect();
+    if thumb_columns != default_columns {
+        out.push_str(&format!(
+            "thumb-columns: {}\n",
+            thumb_columns
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
+    let mut thumbs: Vec<_> = board
+        .keys
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| !k.main)
+        .collect();
+    thumbs.sort_by_key(|(_, k)| k.hand);
+    let is_space = |(i, _): &(usize, &Key)| symbols[*i] == b' ';
     if thumbs.iter().filter(|(_, key)| key.hand == 0).count() > 1
         || thumbs.iter().filter(|(_, key)| key.hand == 1).count() > 1
     {
         let group = |hand| {
-            let keys: Vec<_> = thumbs.iter().filter(|(_, key)| key.hand == hand)
-                .map(|(i, _)| token(symbols[*i])).collect();
-            if keys.is_empty() { "none".into() } else { keys.join(" ") }
+            let keys: Vec<_> = thumbs
+                .iter()
+                .filter(|(_, key)| key.hand == hand)
+                .map(|(i, _)| token(symbols[*i]))
+                .collect();
+            if keys.is_empty() {
+                "none".into()
+            } else {
+                keys.join(" ")
+            }
         };
         out.push_str(&format!("thumbs: {} | {}\n", group(0), group(1)));
         return out;
     }
     let bare = match thumbs.as_slice() {
-        [s] if s.1.hand == 1||!is_space(s) => Some(*s),
-        [a, b] if is_space(a)^is_space(b) => Some(if is_space(a) {
-            *b
-        } else {
-            *a
-        }),
+        [s] if s.1.hand == 1 || !is_space(s) => Some(*s),
+        [a, b] if is_space(a) ^ is_space(b) => Some(if is_space(a) { *b } else { *a }),
         _ => None,
     };
     if thumbs.is_empty() || thumbs.len() == 1 && !is_space(&thumbs[0]) {
@@ -1248,8 +1515,7 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
         }
         out.push_str(&token(symbols[i]));
         out.push('\n');
-    }
-    else if !thumbs.is_empty() {
+    } else if !thumbs.is_empty() {
         out.push_str("thumbs:");
         for (i, _) in thumbs {
             out.push(' ');
@@ -1260,18 +1526,37 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
     out
 }
 
+/// Default locks, the same for every design: keys off the main block
+/// (thumbs, Space) stay where they are.
 fn default_locks(board: &Board) -> Vec<bool> {
+    board.keys.iter().map(|key| !key.main).collect()
+}
+
+/// The `H` preset: the default locks plus the home row.
+fn home_locks(board: &Board) -> Vec<bool> {
     let homes = home_slot_mask(&board.keys);
-    board.keys.iter().zip(homes).map(|(key, home)| home || !key.main).collect()
+    board
+        .keys
+        .iter()
+        .zip(homes)
+        .map(|(key, home)| home || !key.main)
+        .collect()
 }
 
 fn timestamp() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
     if backup && path.exists() {
-        let old = path.with_file_name(format!("{}.{}.bak", path.file_name().unwrap_or_default().to_string_lossy(), timestamp()));
+        let old = path.with_file_name(format!(
+            "{}.{}.bak",
+            path.file_name().unwrap_or_default().to_string_lossy(),
+            timestamp()
+        ));
         fs::copy(path, old)?;
     }
     let tmp = path.with_file_name(format!(".akler-{}-{}.tmp", std::process::id(), timestamp()));
@@ -1291,20 +1576,27 @@ fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
     result
 }
 
-fn board_as_action_layout(board: &Board, symbols: &[u8]) -> crate::action_keys::Result<crate::action_keys::Layout> {
+fn board_as_action_layout(
+    board: &Board,
+    symbols: &[u8],
+) -> crate::action_keys::Result<crate::action_keys::Layout> {
     crate::action_keys::Layout::parse_dat(&board_text(board, symbols), &board.path)
 }
 
 fn save_new_layout(board: &Board, symbols: &[u8]) -> AppResult<PathBuf> {
     let dir = board.path.parent().unwrap_or(Path::new(LAYOUT_DIR));
-    let stem = board.path.file_stem().and_then(|s| s.to_str()).unwrap_or("layout");
+    let stem = board
+        .path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("layout");
     let dat = board_text(board, symbols);
     let jsonc = crate::layout_export::jsonc_text(&board_as_action_layout(board, symbols)?)?;
     for n in 1..10000 {
         let path = dir.join(format!("{stem}-optimized-{n:03}.dat"));
         match crate::layout_export::save_pair(&path, &dat, &jsonc) {
             Ok(()) => return Ok(path),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {},
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -1317,7 +1609,11 @@ fn discover(dir: &str, extension: &str, prefix: &str) -> AppResult<Vec<PathBuf>>
         let path = entry?.path();
         if path.is_file()
             && path.extension().and_then(|value| value.to_str()) == Some(extension)
-            && path.file_name().and_then(|value| value.to_str()).unwrap_or("").starts_with(prefix)
+            && path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .starts_with(prefix)
         {
             paths.push(path);
         }
@@ -1334,24 +1630,26 @@ fn discover(dir: &str, extension: &str, prefix: &str) -> AppResult<Vec<PathBuf>>
 // A complete JSON grammar rather than searching for a field-name substring.
 // Escapes (including surrogate pairs), duplicate fields and finite numbers
 // are validated. Nothing in this parser constructs n-grams across dropped text.
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 enum Json {
     Object(BTreeMap<String, Json>),
     Array(Vec<Json>),
     String(String),
     Number(f64),
     Bool(bool),
-    Null
+    Null,
 }
 
 struct JsonParser<'a> {
     text: &'a str,
-    p: usize
+    p: usize,
 }
 
 impl<'a> JsonParser<'a> {
     fn ws(&mut self) {
-        while self.p<self.text.len() && matches!(self.text.as_bytes()[self.p], b' '|b'\n'|b'\r'|b'\t') {
+        while self.p < self.text.len()
+            && matches!(self.text.as_bytes()[self.p], b' ' | b'\n' | b'\r' | b'\t')
+        {
             self.p += 1;
         }
     }
@@ -1371,7 +1669,11 @@ impl<'a> JsonParser<'a> {
 
     fn hex4(&mut self) -> AppResult<u32> {
         let end = self.p + 4;
-        let h = self.text.as_bytes().get(self.p..end).ok_or("truncated Unicode escape")?;
+        let h = self
+            .text
+            .as_bytes()
+            .get(self.p..end)
+            .ok_or("truncated Unicode escape")?;
         if !h.iter().all(|b| b.is_ascii_hexdigit()) {
             return Err("invalid Unicode escape".into());
         }
@@ -1381,6 +1683,31 @@ impl<'a> JsonParser<'a> {
     }
 
     fn string(&mut self) -> AppResult<String> {
+        Ok(self.string_cow()?.into_owned())
+    }
+
+    // Corpus keys usually have no escapes. Borrow that exact UTF-8 slice
+    // instead of allocating and appending one character at a time. Callers
+    // retaining a key can still request an owned String via string().
+    fn string_cow(&mut self) -> AppResult<std::borrow::Cow<'a, str>> {
+        let start = self.p;
+        if self.byte() == Some(b'"') {
+            for (offset, byte) in self.text.as_bytes()[start + 1..].iter().enumerate() {
+                match byte {
+                    b'"' => {
+                        let end = start + 1 + offset;
+                        self.p = end + 1;
+                        return Ok(std::borrow::Cow::Borrowed(&self.text[start + 1..end]));
+                    }
+                    b'\\' | 0..=31 => break,
+                    _ => {}
+                }
+            }
+        }
+        self.string_decoded().map(std::borrow::Cow::Owned)
+    }
+
+    fn string_decoded(&mut self) -> AppResult<String> {
         self.expect(b'"')?;
         let mut out = String::new();
         loop {
@@ -1388,7 +1715,7 @@ impl<'a> JsonParser<'a> {
                 b'"' => {
                     self.p += 1;
                     return Ok(out);
-                },
+                }
                 b'\\' => {
                     self.p += 1;
                     let b = self.byte().ok_or("unterminated escape")?;
@@ -1411,13 +1738,13 @@ impl<'a> JsonParser<'a> {
                                 if !(0xdc00..=0xdfff).contains(&low) {
                                     return Err("invalid Unicode surrogate pair".into());
                                 }
-                                cp = 0x10000 +((cp - 0xd800)<<10) +(low - 0xdc00);
+                                cp = 0x10000 + ((cp - 0xd800) << 10) + (low - 0xdc00);
                             }
                             out.push(char::from_u32(cp).ok_or("invalid Unicode scalar")?);
-                        },
+                        }
                         _ => return Err("invalid JSON escape".into()),
                     }
-                },
+                }
                 0..=31 => return Err("unescaped control character in JSON".into()),
                 _ => {
                     let ch = self.text[self.p..].chars().next().ok_or("invalid string")?;
@@ -1429,7 +1756,7 @@ impl<'a> JsonParser<'a> {
     }
 
     fn value(&mut self, depth: usize) -> AppResult<Json> {
-        if depth>64 {
+        if depth > 64 {
             return Err("JSON nesting exceeds 64".into());
         }
         self.ws();
@@ -1459,7 +1786,7 @@ impl<'a> JsonParser<'a> {
                     self.expect(b',')?;
                 }
                 Ok(Json::Object(out))
-            },
+            }
             b'[' => {
                 self.p += 1;
                 self.ws();
@@ -1478,28 +1805,31 @@ impl<'a> JsonParser<'a> {
                     self.expect(b',')?;
                 }
                 Ok(Json::Array(out))
-            },
+            }
             b'"' => Ok(Json::String(self.string()?)),
-            b't'|b'f'|b'n' => {
-                for (word, value) in [("true", Json::Bool(true)),("false", Json::Bool(false)),("null", Json::Null)] {
+            b't' | b'f' | b'n' => {
+                for (word, value) in [
+                    ("true", Json::Bool(true)),
+                    ("false", Json::Bool(false)),
+                    ("null", Json::Null),
+                ] {
                     if self.text[self.p..].starts_with(word) {
                         self.p += word.len();
                         return Ok(value);
                     }
                 }
                 Err("invalid JSON literal".into())
-            },
-            b'-'|b'0'..=b'9' => {
+            }
+            b'-' | b'0'..=b'9' => {
                 let start = self.p;
                 if self.byte() == Some(b'-') {
                     self.p += 1;
                 }
                 if self.byte() == Some(b'0') {
                     self.p += 1;
-                }
-                else {
+                } else {
                     let p = self.p;
-                    while self.byte().map(|b|b.is_ascii_digit()).unwrap_or(false) {
+                    while self.byte().map(|b| b.is_ascii_digit()).unwrap_or(false) {
                         self.p += 1;
                     }
                     if self.p == p {
@@ -1509,20 +1839,20 @@ impl<'a> JsonParser<'a> {
                 if self.byte() == Some(b'.') {
                     self.p += 1;
                     let p = self.p;
-                    while self.byte().map(|b|b.is_ascii_digit()).unwrap_or(false) {
+                    while self.byte().map(|b| b.is_ascii_digit()).unwrap_or(false) {
                         self.p += 1;
                     }
                     if self.p == p {
                         return Err("invalid fraction".into());
                     }
                 }
-                if matches!(self.byte(), Some(b'e')|Some(b'E')) {
+                if matches!(self.byte(), Some(b'e') | Some(b'E')) {
                     self.p += 1;
-                    if matches!(self.byte(), Some(b'+')|Some(b'-')) {
+                    if matches!(self.byte(), Some(b'+') | Some(b'-')) {
                         self.p += 1;
                     }
                     let p = self.p;
-                    while self.byte().map(|b|b.is_ascii_digit()).unwrap_or(false) {
+                    while self.byte().map(|b| b.is_ascii_digit()).unwrap_or(false) {
                         self.p += 1;
                     }
                     if self.p == p {
@@ -1534,7 +1864,7 @@ impl<'a> JsonParser<'a> {
                     return Err("non-finite JSON number".into());
                 }
                 Ok(Json::Number(n))
-            },
+            }
             _ => Err(format!("unexpected JSON byte at {}", self.p).into()),
         }
     }
@@ -1542,10 +1872,7 @@ impl<'a> JsonParser<'a> {
 
 fn parse_json(text: &str) -> AppResult<Json> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut p = JsonParser {
-        text,
-        p: 0
-    };
+    let mut p = JsonParser { text, p: 0 };
     let j = p.value(0)?;
     p.ws();
     if p.p != text.len() {
@@ -1558,10 +1885,8 @@ fn parse_json(text: &str) -> AppResult<Json> {
 struct Source {
     name: String,
     path: PathBuf,
+    pub(crate) include_spacegrams: bool,
     tables: [Vec<(String, f64)>; 4],
-    // Which populations were present (or derived from stored trigrams).
-    // This is metadata only; existing frequency arithmetic is unchanged.
-    available: [bool; 4],
     masses: [f64; 4],
     warnings: Vec<String>,
     fingerprint: u64,
@@ -1587,26 +1912,64 @@ impl Source {
         let text = fs::read_to_string(&resolved)?;
         timing.mark("Corpus read");
         let limits = load_app_config()?.ngrams;
-        let result = Self::from_text_with_limits(&text, &resolved, limits).map_err(|e|format!("{}: {e}", resolved.display()).into());
+        let result = Self::from_text_with_limits(&text, &resolved, limits)
+            .map_err(|e| format!("{}: {e}", resolved.display()).into());
         timing.mark("JSON parse and frequency tables");
         result
     }
 }
 
-#[derive(Clone,Copy,Debug)]
+/// One corpus n-gram over layout symbol ids. Kept at 16 bytes: the trial
+/// loop reads affected grams scattered across the whole corpus.
+#[derive(Clone, Copy, Debug)]
 struct Gram {
-    ids: [usize; 3],
-    len: usize,
-    kind: usize,
-    f: f64
+    symbols: [u16; 3],
+    length: u8,
+    order_kind: u8,
+    f: f64,
+}
+
+impl Gram {
+    fn new(ids: [usize; 3], len: usize, kind: usize, f: f64) -> Self {
+        debug_assert!(ids.iter().all(|&id| id <= u16::MAX as usize) && len <= 3 && kind <= 3);
+        Self {
+            symbols: ids.map(|id| id as u16),
+            length: len as u8,
+            order_kind: kind as u8,
+            f,
+        }
+    }
+
+    #[inline(always)]
+    fn id(&self, j: usize) -> usize {
+        self.symbols[j] as usize
+    }
+
+    #[inline(always)]
+    fn ids(&self) -> [usize; 3] {
+        self.symbols.map(usize::from)
+    }
+
+    #[inline(always)]
+    fn len(&self) -> usize {
+        self.length as usize
+    }
+
+    /// 0 monogram, 1 bigram, 2 skipgram, 3 trigram.
+    #[inline(always)]
+    fn kind(&self) -> usize {
+        self.order_kind as usize
+    }
 }
 
 #[derive(Clone)]
 struct Corpus {
     name: String,
+    source_path: PathBuf,
+    include_spacegrams: bool,
     grams: Vec<Gram>,
-    by_symbol: Vec<Vec<usize>>,
-    uni: Vec<f64>,
+    /// Indices into `grams` of the grams containing each symbol, ascending.
+    by_symbol: Vec<Vec<u32>>,
     totals: [f64; 4],
     coverage: [f64; 4],
     warnings: Vec<String>,
@@ -1622,6 +1985,7 @@ struct Model {
 }
 
 impl Model {
+    #[cfg(test)]
     fn new(board: Board) -> Self {
         Self::with_rolls(board, RollSettings::default())
     }
@@ -1629,18 +1993,22 @@ impl Model {
     fn with_rolls(board: Board, rolls: RollSettings) -> Self {
         let mut canonical = board.symbols.clone();
         canonical.sort_unstable();
-        let original = board.symbols.iter().map(|s|canonical.iter().position(|c|c == s).unwrap()).collect();
-        let geometry = Geometry::with_rolls(board.keys.clone(), rolls);
+        let original = board
+            .symbols
+            .iter()
+            .map(|s| canonical.iter().position(|c| c == s).unwrap())
+            .collect();
+        let geometry = Geometry::with_alts(board.keys.clone(), rolls);
         Self {
             board,
             canonical,
             original,
-            geometry
+            geometry,
         }
     }
 
     fn symbols(&self, arr: &[usize]) -> Vec<u8> {
-        arr.iter().map(|&id|self.canonical[id]).collect()
+        arr.iter().map(|&id| self.canonical[id]).collect()
     }
 
     fn corpus(&self, source: &Source) -> AppResult<Corpus> {
@@ -1655,17 +2023,19 @@ impl Model {
                 }
             }
         }
+        if n > u16::MAX as usize {
+            return Err("layout has too many symbols".into());
+        }
         let mut totals = [0.0; 4];
         let mut grams = Vec::new();
-        let mut uni = vec![0.0; n];
         for kind in 0..4 {
             let mut merged: BTreeMap<Vec<usize>, f64> = BTreeMap::new();
             for (s, f) in &source.tables[kind] {
                 if !s.is_ascii() {
                     continue;
                 }
-                let mapped: Vec<usize> = s.bytes().map(|b|ids[b as usize]).collect();
-                if mapped.iter().any(|&i|i == usize::MAX) {
+                let mapped: Vec<usize> = s.bytes().map(|b| ids[b as usize]).collect();
+                if mapped.iter().any(|&i| i == usize::MAX) {
                     continue;
                 }
                 *merged.entry(mapped).or_default() += f;
@@ -1675,19 +2045,11 @@ impl Model {
                     continue;
                 }
                 totals[kind] += f;
-                if kind == 0 {
-                    uni[v[0]] += f;
-                }
                 let mut out = [0; 3];
                 for (i, &id) in v.iter().enumerate() {
                     out[i] = id;
                 }
-                grams.push(Gram {
-                    ids: out,
-                    len: v.len(),
-                    kind,
-                    f
-                });
+                grams.push(Gram::new(out, v.len(), kind, f));
             }
         }
         if totals[0] <= 0.0 || totals[1] <= 0.0 {
@@ -1695,26 +2057,28 @@ impl Model {
         }
         let mut by_symbol = vec![Vec::new(); n];
         for (i, g) in grams.iter().enumerate() {
-            for j in 0..g.len {
-                if !g.ids[..j].contains(&g.ids[j]) {
-                    by_symbol[g.ids[j]].push(i);
+            let ids = g.ids();
+            for j in 0..g.len() {
+                if !ids[..j].contains(&ids[j]) {
+                    by_symbol[ids[j]].push(u32::try_from(i).map_err(|_| "too many n-grams")?);
                 }
             }
         }
         Ok(Corpus {
             name: source.name.clone(),
+            source_path: source.path.clone(),
+            include_spacegrams: source.include_spacegrams,
             grams,
             by_symbol,
-            uni,
             totals,
-            coverage: std::array::from_fn(|i|pct(totals[i], source.masses[i])),
+            coverage: std::array::from_fn(|i| pct(totals[i], source.masses[i])),
             warnings: source.warnings.clone(),
-            fingerprint: source.fingerprint
+            fingerprint: source.fingerprint,
         })
     }
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Raw([f64; N_RAW], Option<mana2_metrics::RawStats>);
 
 impl Default for Raw {
@@ -1737,56 +2101,124 @@ fn positions(arr: &[usize]) -> Vec<usize> {
     p
 }
 
-fn add_bits(raw: &mut Raw, mut bits: u128, f: f64) {
-    while bits != 0 {
-        let bit = bits.trailing_zeros() as usize;
+/// Move `f` from the counters flagged in `from` to those flagged in `to`;
+/// counters flagged in both are untouched.
+#[inline(always)]
+fn move_bits(raw: &mut Raw, from: u128, to: u128, f: f64) {
+    let signed = [-f, f];
+    for (half, offset) in [(0, 0), (64, 64)] {
+        let to = (to >> half) as u64;
+        let mut changed = (from >> half) as u64 ^ to;
+        while changed != 0 {
+            let bit = changed.trailing_zeros() as usize;
+            raw.0[bit + offset] += signed[(to >> bit) as usize & 1];
+            changed &= changed - 1;
+        }
+    }
+}
+
+fn add_bits(raw: &mut Raw, bits: u128, f: f64) {
+    let mut low = bits as u64;
+    while low != 0 {
+        let bit = low.trailing_zeros() as usize;
         raw.0[bit] += f;
-        bits &= bits - 1;
+        low &= low - 1;
+    }
+    let mut high = (bits >> 64) as u64;
+    while high != 0 {
+        let bit = high.trailing_zeros() as usize + 64;
+        raw.0[bit] += f;
+        high &= high - 1;
     }
 }
 
 fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f64) {
-    let f = g.f*sign;
-    let a = pos[g.ids[0]];
+    let f = g.f * sign;
+    let a = pos[g.id(0)];
     if let Some(mana) = &mut raw.1 {
-        let ids = g.ids.map(|id| pos[id]);
-        mana2_metrics::add_gram(mana, &geometry.keys, g.kind, &ids[..g.len], f);
+        let ids = g.ids().map(|id| pos[id]);
+        geometry.mana2().add_gram(mana, g.kind(), &ids[..g.len()], f);
     }
-    match g.kind {
+    match g.kind() {
         0 => {
             let key = geometry.keys[a];
             raw.0[USAGE + key.finger] += f;
             if key.main && !geometry.is_home[a] {
                 raw.0[OFF + key.finger] += f;
             }
-            raw.0[TRAVEL] += geometry.home[a][0]*f;
-            raw.0[VTRAVEL] += geometry.home[a][1]*f;
-            raw.0[LTRAVEL] += geometry.home[a][2]*f;
-        },
-        1|2 => {
-            let b = pos[g.ids[1]];
-            let flags = geometry.pair[a*geometry.n + b];
-            add_bits(raw, if g.kind == 1 {
-                flags.bi
-            } else {
-                flags.sk
-            }, f);
-            if g.kind == 1 {
+            raw.0[TRAVEL] += geometry.home[a][0] * f;
+            raw.0[VTRAVEL] += geometry.home[a][1] * f;
+            raw.0[LTRAVEL] += geometry.home[a][2] * f;
+        }
+        1 | 2 => {
+            let b = pos[g.id(1)];
+            let flags = geometry.pair[a * geometry.n + b];
+            add_bits(raw, if g.kind() == 1 { flags.bi } else { flags.sk }, f);
+            if g.kind() == 1 {
                 if flags.main {
                     raw.0[SRAF_DEN] += f;
                 }
-                raw.0[SFTRAVEL] += geometry.sf_distance[a*geometry.n + b]*f;
+                raw.0[SFTRAVEL] += geometry.sf_distance[a * geometry.n + b] * f;
             }
-        },
+        }
         _ => {
-            let b = pos[g.ids[1]];
-            let c = pos[g.ids[2]];
-            let flags = geometry.tri[(a*geometry.n + b)*geometry.n + c];
-            add_bits(raw, flags.bits, f);
-            if flags.main {
-                raw.0[RHYTHM_DEN] += f;
+            let b = pos[g.id(1)];
+            let c = pos[g.id(2)];
+            add_bits(raw, geometry.tri.raw((a * geometry.n + b) * geometry.n + c), f);
+        }
+    }
+}
+
+#[inline(always)]
+/// Move only the Mana2 counters; see `Problem::normal_counters_unused`.
+fn move_gram_physical(raw: &mut Raw, g: &Gram, old: &[usize], new: &[usize], geometry: &Geometry) {
+    if let Some(mana) = &mut raw.1 {
+        let from = g.ids().map(|id| old[id]);
+        let to = g.ids().map(|id| new[id]);
+        geometry.mana2().replace_gram(mana, g.kind(), &from[..g.len()], &to[..g.len()], g.f);
+    }
+}
+
+/// Move one gram from positions `old` to `new`. Equivalent to subtracting
+/// `add_gram` at `old` and adding it at `new`, except that counting flags set
+/// at both positions are left alone instead of cancelling.
+#[inline(always)]
+fn move_gram(raw: &mut Raw, g: &Gram, old: &[usize], new: &[usize], geometry: &Geometry) {
+    move_gram_physical(raw, g, old, new, geometry);
+    let f = g.f;
+    let n = geometry.n;
+    let (a0, a1) = (old[g.id(0)], new[g.id(0)]);
+    match g.kind() {
+        0 => {
+            for (a, f) in [(a0, -f), (a1, f)] {
+                let key = geometry.keys[a];
+                raw.0[USAGE + key.finger] += f;
+                if key.main && !geometry.is_home[a] {
+                    raw.0[OFF + key.finger] += f;
+                }
+                raw.0[TRAVEL] += geometry.home[a][0] * f;
+                raw.0[VTRAVEL] += geometry.home[a][1] * f;
+                raw.0[LTRAVEL] += geometry.home[a][2] * f;
             }
-        },
+        }
+        1 | 2 => {
+            let (b0, b1) = (old[g.id(1)], new[g.id(1)]);
+            let (from, to) = (geometry.pair[a0 * n + b0], geometry.pair[a1 * n + b1]);
+            let (x, y) = if g.kind() == 1 { (from.bi, to.bi) } else { (from.sk, to.sk) };
+            move_bits(raw, x, y, f);
+            if g.kind() == 1 {
+                if from.main != to.main {
+                    raw.0[SRAF_DEN] += if to.main { f } else { -f };
+                }
+                raw.0[SFTRAVEL] -= geometry.sf_distance[a0 * n + b0] * f;
+                raw.0[SFTRAVEL] += geometry.sf_distance[a1 * n + b1] * f;
+            }
+        }
+        _ => {
+            let from = (a0 * n + old[g.id(1)]) * n + old[g.id(2)];
+            let to = (a1 * n + new[g.id(1)]) * n + new[g.id(2)];
+            geometry.tri.move_counters(raw, from, to, f);
+        }
     }
 }
 
@@ -1796,19 +2228,22 @@ fn full_raw(arr: &[usize], c: &Corpus, g: &Geometry) -> Raw {
 
 fn full_raw_with_mana2(arr: &[usize], c: &Corpus, g: &Geometry, mana2: bool) -> Raw {
     let pos = positions(arr);
-    let mut raw = if mana2 { Raw::with_mana2() } else { Raw::default() };
+    let mut raw = if mana2 {
+        Raw::with_mana2()
+    } else {
+        Raw::default()
+    };
     for gram in &c.grams {
         add_gram(&mut raw, gram, &pos, g, 1.0);
     }
     raw
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Metrics {
     v: [f64; N_METRICS],
     usage: [f64; 10],
     off: [f64; 8],
-    simple: [f64; 9]
 }
 
 fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
@@ -1816,7 +2251,7 @@ fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
 }
 
 fn denominator_totals(m: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
-    if matches!(m, TRAVEL|VTRAVEL|LTRAVEL) {
+    if matches!(m, TRAVEL | VTRAVEL | LTRAVEL) {
         totals[0]
     } else if matches!(m, SRAF | INSRAF | OUTSRAF) {
         raw.0[SRAF_DEN].max(0.0)
@@ -1824,8 +2259,7 @@ fn denominator_totals(m: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
         raw.0[ROLL_DEN].max(0.0)
     } else if is_rhythm(m) {
         raw.0[RHYTHM_DEN].max(0.0)
-    }
-    else if is_skip(m) {
+    } else if is_skip(m) {
         totals[2]
     } else {
         totals[1]
@@ -1838,46 +2272,82 @@ fn metrics(raw: &Raw, c: &Corpus) -> Metrics {
 
 fn metrics_totals(raw: &Raw, totals: &[f64; 4]) -> Metrics {
     Metrics {
-        v: std::array::from_fn(|m| {
-            pct(raw.0[m].max(0.0), denominator_totals(m, raw, totals))
-        }),
+        v: std::array::from_fn(|m| pct(raw.0[m].max(0.0), denominator_totals(m, raw, totals))),
         usage: std::array::from_fn(|i| pct(raw.0[USAGE + i].max(0.0), totals[0])),
         off: std::array::from_fn(|i| pct(raw.0[OFF + i].max(0.0), totals[0])),
-        simple: [
-            pct(raw.0[SFB].max(0.0), totals[1]),
-            pct(raw.0[SFS].max(0.0), totals[2]),
-            pct((raw.0[LSB] + raw.0[LSS]).max(0.0), totals[1] + totals[2]),
-            pct((raw.0[ROW1_BI] + raw.0[ROW1_SK]).max(0.0), totals[1] + totals[2]),
-            pct((raw.0[ROW2_BI] + raw.0[ROW2_SK]).max(0.0), totals[1] + totals[2]),
-            pct(raw.0[INSRAF].max(0.0), raw.0[SRAF_DEN]),
-            pct(raw.0[OUTSRAF].max(0.0), raw.0[SRAF_DEN]),
-            pct(raw.0[INROLL].max(0.0), raw.0[ROLL_DEN]),
-            pct(raw.0[OUTROLL].max(0.0), raw.0[ROLL_DEN]),
-        ],
     }
 }
 
-// Keep detailed weights, roll policy and Mana2 schedules in one immutable
+// Keep detailed weights, roll policy and AKL.GG schedules in one immutable
 // objective snapshot for evaluations and worker threads.
 #[derive(Clone, Debug)]
-struct Weights([f64; N_WEIGHTS], RollSettings, mana2_metrics::Weights, simple_metrics::Weights);
+struct Weights(
+    [f64; N_WEIGHTS],
+    RollSettings,
+    mana2_metrics::Weights,
+    bool,
+    bool,
+    /// `[combos] fatfingering`: score fat-finger combos; see `combos::Policy`.
+    bool,
+);
 
 impl Weights {
     fn new(values: [f64; N_WEIGHTS]) -> Self {
-        Self(values, RollSettings::default(), mana2_metrics::Weights::default(), simple_metrics::Weights::default())
+        Self(
+            values,
+            RollSettings::default(),
+            mana2_metrics::Weights::default(),
+            true,
+            true,
+            false,
+        )
     }
 
+    /// Geometry policy; `[alts]` maps apply only while `[typing] alt_fingers`
+    /// is on.
     fn rolls(&self) -> RollSettings {
-        self.1
+        RollSettings {
+            alts: self.1.alts.filter(|_| self.3),
+            ..self.1
+        }
     }
 
-    // Both modes share physical counters; only their score functions differ.
-    fn physical_score(&self, stats: &mana2_metrics::Stats, mode: &str) -> f64 {
-        match mode {
-            "mana2" => -mana2_metrics::score(stats, &self.2),
-            "simple" => simple_metrics::score(stats, &self.3),
-            _ => unreachable!("physical score requires mana2 or simple mode"),
+    /// Alternate fingers for action evaluation: `[typing] alt_fingers`, with
+    /// `[alts]` position rules replacing layouts' own rules while set.
+    fn alts(&self) -> crate::alt_fingers::AltPolicy {
+        crate::alt_fingers::AltPolicy {
+            enabled: self.3,
+            positions: self.1.alts,
         }
+    }
+
+    /// Alternate-finger state for headers and policy rows.
+    fn alt_fingers_label(&self) -> &'static str {
+        if !self.3 {
+            "disabled"
+        } else if self.1.alts.is_some() {
+            "[alts] locations"
+        } else {
+            "enabled"
+        }
+    }
+
+    /// How combos are scored: `[typing] combos` and `[combos] fatfingering`.
+    fn combo_policy(&self) -> crate::combos::Policy {
+        crate::combos::Policy {
+            enabled: self.4,
+            fatfinger: self.5,
+        }
+    }
+
+    /// Lower-is-better AKL.GG score of `stats`.
+    fn physical_score(&self, stats: &mana2_metrics::Stats) -> f64 {
+        -mana2_metrics::score(stats, &self.2)
+    }
+
+    /// Local slopes of the lower-is-better physical score for each stat.
+    fn physical_slopes(&self, stats: &mana2_metrics::Stats) -> [f64; mana2_metrics::N_STATS] {
+        mana2_metrics::score_slopes(stats, &self.2).map(|slope| -slope)
     }
 
     fn with_rolls(mut self, rolls: RollSettings) -> Self {
@@ -1889,24 +2359,20 @@ impl Weights {
 impl Default for Weights {
     fn default() -> Self {
         Self::new([
-                12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25,
-                0.75, 2.5, 1.25, 0.0, 0.0,
-                4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15,
-                0.02, 0.0, 0.0, 0.10,
-                0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.25, 0.25,
-                1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2,
-                0.60, 0.20, 0.05, 0.0,
-                0.06, 0.02, 0.005, 0.0,
-            ])
+            12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25, 0.75, 2.5, 1.25, 0.0,
+            0.0, 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15, 0.02, 0.0, 0.0, 0.10, 0.0, 0.0, 0.0, 0.0,
+            0.25, 0.25, 0.25, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2, 0.60, 0.20, 0.05, 0.0,
+            0.06, 0.02, 0.005, 0.0,
+        ])
     }
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Breakdown {
     penalty: f64,
     bonus: f64,
     net: f64,
-    contributions: [f64; N_WEIGHTS]
+    contributions: [f64; N_WEIGHTS],
 }
 
 impl Default for Breakdown {
@@ -1924,19 +2390,14 @@ fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
     let mut b = Breakdown::default();
     for i in 0..N_METRICS {
         if !aggregate(i) {
-            b.contributions[i] = m.v[i]*w.0[i]*if higher_better(i) {
-                -1.0
-            } else {
-                1.0
-            };
+            b.contributions[i] = m.v[i] * w.0[i] * if higher_better(i) { -1.0 } else { 1.0 };
         }
     }
     for i in 0..4 {
-        b.contributions[N_METRICS + i] = (m.off[i] + m.off[7 - i])*w.0[N_METRICS + i];
+        b.contributions[N_METRICS + i] = (m.off[i] + m.off[7 - i]) * w.0[N_METRICS + i];
     }
     for i in 0..4 {
-        b.contributions[USAGE_WEIGHT + i] =
-            (m.usage[i] + m.usage[7 - i]) * w.0[USAGE_WEIGHT + i];
+        b.contributions[USAGE_WEIGHT + i] = (m.usage[i] + m.usage[7 - i]) * w.0[USAGE_WEIGHT + i];
     }
     for &v in &b.contributions {
         if v >= 0.0 {
@@ -1949,9 +2410,40 @@ fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
     b
 }
 
+// AKL.GG weights use negative penalties and positive rewards. Present its
+// objective in the same lower-is-better convention as the optimizer and ranker.
+fn mana_breakdown(stats: &mana2_metrics::Stats, weights: &Weights) -> Breakdown {
+    let mut result = Breakdown::default();
+    let contributions = mana2_metrics::score_contributions(stats, &weights.2);
+    for contribution in contributions {
+        if contribution < 0.0 {
+            result.penalty -= contribution;
+        } else {
+            result.bonus += contribution;
+        }
+    }
+    result.net = weights.physical_score(stats);
+    result
+}
+
+fn mana_stats_for_corpus(raw: &Raw, corpus: &Corpus) -> mana2_metrics::Stats {
+    let source_totals = std::array::from_fn(|index| {
+        if corpus.coverage[index] > 0.0 {
+            corpus.totals[index] * 100.0 / corpus.coverage[index]
+        } else {
+            corpus.totals[index]
+        }
+    });
+    mana2_metrics::stats_with_speed_totals(
+        raw.1.as_ref().expect("mana counters must be enabled"),
+        corpus.totals,
+        source_totals,
+    )
+}
+
 fn finite_nonnegative(s: &str) -> AppResult<f64> {
     let n: f64 = s.trim().parse()?;
-    if !n.is_finite() || n<0.0 || n>1.0e6 {
+    if !n.is_finite() || n < 0.0 || n > 1.0e6 {
         return Err("expected a finite number from 0 to 1000000".into());
     }
     Ok(n)
@@ -1965,7 +2457,9 @@ fn config_lines(text: &str) -> AppResult<Vec<(String, String)>> {
         if l.is_empty() {
             continue;
         }
-        let (k, v) = l.split_once('=').ok_or_else(|| format!("line {}: expected name = value", i + 1))?;
+        let (k, v) = l
+            .split_once('=')
+            .ok_or_else(|| format!("line {}: expected name = value", i + 1))?;
         let k = k.trim().to_ascii_lowercase();
         if !seen.insert(k.clone()) {
             return Err(format!("duplicate setting {k}").into());
@@ -2010,7 +2504,10 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
             continue;
         }
         let name = canonical_weight_key(k);
-        let i = WEIGHT_NAMES.iter().position(|s|*s == name).ok_or_else(|| format!("unknown weight {k}"))?;
+        let i = WEIGHT_NAMES
+            .iter()
+            .position(|s| *s == name)
+            .ok_or_else(|| format!("unknown weight {k}"))?;
         let value = finite_nonnegative(v)?;
         if !aggregate(i) && (k == name || !entries.contains_key(name)) {
             w.0[i] = value;
@@ -2018,14 +2515,20 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
     }
     // Legacy aggregate keys seed directional jump weights. Explicit direction
     // keys win regardless of line order; display subsets are never weighted.
-    for (legacy, d, c) in [("fsb", DAFJB, CAFJB),("fss", DAFJS, CAFJS)] {
+    for (legacy, d, c) in [("fsb", DAFJB, CAFJB), ("fss", DAFJS, CAFJS)] {
         if let Some(v) = entries.get(legacy) {
             let value = finite_nonnegative(v)?;
-            if !entries.keys().any(|key| canonical_weight_key(key) == WEIGHT_NAMES[d]) {
+            if !entries
+                .keys()
+                .any(|key| canonical_weight_key(key) == WEIGHT_NAMES[d])
+            {
                 w.0[d] = value;
             }
-            if !entries.keys().any(|key| canonical_weight_key(key) == WEIGHT_NAMES[c]) {
-                w.0[c] = value*0.5;
+            if !entries
+                .keys()
+                .any(|key| canonical_weight_key(key) == WEIGHT_NAMES[c])
+            {
+                w.0[c] = value * 0.5;
             }
         }
     }
@@ -2103,11 +2606,11 @@ fn weights_text(w: &Weights) -> String {
     s
 }
 
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CreditView {
     Clean,
     Raw,
-    Rejected
+    Rejected,
 }
 
 impl CreditView {
@@ -2115,7 +2618,7 @@ impl CreditView {
         match self {
             Self::Clean => Self::Raw,
             Self::Raw => Self::Rejected,
-            Self::Rejected => Self::Clean
+            Self::Rejected => Self::Clean,
         }
     }
 
@@ -2123,7 +2626,7 @@ impl CreditView {
         match self {
             Self::Clean => "clean",
             Self::Raw => "raw",
-            Self::Rejected => "rejected"
+            Self::Rejected => "rejected",
         }
     }
 }
@@ -2132,8 +2635,8 @@ fn contribution_mass(m: usize, raw: &Raw, view: CreditView) -> f64 {
     match raw_positive(m) {
         Some(r) => match view {
             CreditView::Raw => raw.0[r].max(0.0),
-            CreditView::Rejected => (raw.0[r]-raw.0[m]).max(0.0),
-            _ => raw.0[m].max(0.0)
+            CreditView::Rejected => (raw.0[r] - raw.0[m]).max(0.0),
+            _ => raw.0[m].max(0.0),
         },
         None => raw.0[m].max(0.0),
     }
@@ -2142,8 +2645,11 @@ fn contribution_mass(m: usize, raw: &Raw, view: CreditView) -> f64 {
 fn blocker_names(bits: u128) -> String {
     let mut names = Vec::new();
     // Show directional jumps instead of repeating their adjacent display subsets.
-    for m in [SFB, SFS, SKB, SKS, DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, LSB, LSS, DNFJB, DNFJS, CNFJB, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, REDIR, WRED, WISH] {
-        if bits&bit(m) != 0 {
+    for m in [
+        SFB, SFS, SKB, SKS, DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, LSB, LSS,
+        DNFJB, DNFJS, CNFJB, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, REDIR, WRED, WISH,
+    ] {
+        if bits & bit(m) != 0 {
             names.push(METRIC_NAMES[m]);
         }
     }
@@ -2151,32 +2657,38 @@ fn blocker_names(bits: u128) -> String {
 }
 
 fn reward_blockers(g: &Gram, pos: &[usize], geometry: &Geometry) -> u128 {
-    let a = pos[g.ids[0]];
-    let b = pos[g.ids[1]];
+    let a = pos[g.id(0)];
+    let b = pos[g.id(1)];
     // Only SRAF retains a raw/rejected contribution view.
-    geometry.pair[a*geometry.n + b].bi&BAD_BI
+    geometry.pair[a * geometry.n + b].bi & BAD_BI
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 struct Contributor {
     gram: String,
-    ids: Vec<usize>,
     before: f64,
     after: f64,
     why_before: u128,
-    why_after: u128
+    why_after: u128,
 }
 
 fn gram_name(g: &Gram, canonical: &[u8]) -> String {
-    let chars: Vec<String> = g.ids[..g.len].iter().map(|&id|display_symbol(canonical[id]).to_string()).collect();
-    chars.join(if g.kind == 2 {
-        "_"
-    } else {
-        ""
-    })
+    let chars: Vec<String> = g.ids()[..g.len()]
+        .iter()
+        .map(|&id| display_symbol(canonical[id]).to_string())
+        .collect();
+    chars.join(if g.kind() == 2 { "_" } else { "" })
 }
 
-fn contributor_data_mode(m: usize, before: &[usize], after: &[usize], c: &Corpus, model: &Model, merge_reverse: bool, view: CreditView) -> Vec<Contributor> {
+fn contributor_data_mode(
+    m: usize,
+    before: &[usize],
+    after: &[usize],
+    c: &Corpus,
+    model: &Model,
+    merge_reverse: bool,
+    view: CreditView,
+) -> Vec<Contributor> {
     let p0 = positions(before);
     let p1 = positions(after);
     let r0 = full_raw(before, c, &model.geometry);
@@ -2185,15 +2697,16 @@ fn contributor_data_mode(m: usize, before: &[usize], after: &[usize], c: &Corpus
     let d1 = denominator(m, &r1, c);
     let mut map: BTreeMap<String, Contributor> = BTreeMap::new();
     for g in &c.grams {
-        if g.kind != if matches!(m, TRAVEL|VTRAVEL|LTRAVEL) {
-            0
-        } else if is_rhythm(m) {
-            3
-        } else if is_skip(m) {
-            2
-        } else {
-            1
-        }
+        if g.kind()
+            != if matches!(m, TRAVEL | VTRAVEL | LTRAVEL) {
+                0
+            } else if is_rhythm(m) {
+                3
+            } else if is_skip(m) {
+                2
+            } else {
+                1
+            }
         {
             continue;
         }
@@ -2207,40 +2720,39 @@ fn contributor_data_mode(m: usize, before: &[usize], after: &[usize], c: &Corpus
             continue;
         }
         let mut key = gram_name(g, &model.canonical);
-        if merge_reverse && g.len == 2 {
-            let mut reverse=*g;
-            reverse.ids.swap(0, 1);
+        if merge_reverse && g.len() == 2 {
+            let mut reverse = *g;
+            reverse.symbols.swap(0, 1);
             let rev = gram_name(&reverse, &model.canonical);
-            if rev<key {
+            if rev < key {
                 key = rev;
             }
         }
         let item = map.entry(key.clone()).or_insert_with(|| Contributor {
             gram: key,
-            ids: g.ids[..g.len].to_vec(),
             before: 0.0,
             after: 0.0,
             why_before: 0,
-            why_after: 0
+            why_after: 0,
         });
         item.before += v0;
         item.after += v1;
         if view == CreditView::Rejected && raw_positive(m).is_some() {
-            if v0>0.0 {
-                item.why_before|=reward_blockers(g, &p0, &model.geometry);
+            if v0 > 0.0 {
+                item.why_before |= reward_blockers(g, &p0, &model.geometry);
             }
-            if v1>0.0 {
-                item.why_after|=reward_blockers(g, &p1, &model.geometry);
+            if v1 > 0.0 {
+                item.why_after |= reward_blockers(g, &p1, &model.geometry);
             }
         }
     }
     let mut result: Vec<_> = map.into_values().collect();
-    result.sort_by(|a, b|b.after.total_cmp(&a.after).then_with(|| a.gram.cmp(&b.gram)));
+    result.sort_by(|a, b| {
+        b.after
+            .total_cmp(&a.after)
+            .then_with(|| a.gram.cmp(&b.gram))
+    });
     result
-}
-
-fn contributor_data(m: usize, before: &[usize], after: &[usize], c: &Corpus, model: &Model, merge_reverse: bool) -> Vec<Contributor> {
-    contributor_data_mode(m, before, after, c, model, merge_reverse, CreditView::Clean)
 }
 
 fn metric_value_text(m: usize, v: f64, decimals: usize) -> String {
@@ -2255,7 +2767,8 @@ fn metric_value_text(m: usize, v: f64, decimals: usize) -> String {
 mod numeric_geometry_tests {
     use super::*;
 
-    const ROWS: &str = "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+    const ROWS: &str =
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
 
     fn parse(extra: &str) -> Board {
         board_from_text(&format!("{ROWS}{extra}"), Path::new("inline")).unwrap()
@@ -2263,20 +2776,33 @@ mod numeric_geometry_tests {
 
     #[test]
     fn old_coordinates_keep_their_exact_distances() {
-        for extra in ["", "row-stagger: standard\n", "row-stagger: anglemod\n", "row-stagger: nokwts\n", "row-stagger: meteorite\n"] {
+        for extra in [
+            "",
+            "row-stagger: standard\n",
+            "row-stagger: anglemod\n",
+            "row-stagger: nokwts\n",
+            "row-stagger: meteorite\n",
+        ] {
             let board = parse(extra);
             let geometry = Geometry::new(board.keys.clone());
             for (index, key) in board.keys.iter().copied().enumerate() {
                 let expected = home_travel(key);
                 for axis in 0..3 {
-                    assert_eq!(geometry.home[index][axis].to_bits(), expected[axis].to_bits());
+                    assert_eq!(
+                        geometry.home[index][axis].to_bits(),
+                        expected[axis].to_bits()
+                    );
                 }
             }
             for (a, first) in board.keys.iter().enumerate() {
                 for (b, second) in board.keys.iter().enumerate() {
                     if first.main && second.main && first.finger == second.finger {
-                        let expected = ((first.row - second.row) as f64).hypot(first.horizontal_delta(*second));
-                        assert_eq!(geometry.sf_distance[a * geometry.n + b].to_bits(), expected.to_bits());
+                        let expected = ((first.row - second.row) as f64)
+                            .hypot(first.horizontal_delta(*second));
+                        assert_eq!(
+                            geometry.sf_distance[a * geometry.n + b].to_bits(),
+                            expected.to_bits()
+                        );
                     }
                 }
             }
@@ -2287,7 +2813,12 @@ mod numeric_geometry_tests {
     fn uniform_row_translation_cancels_from_travel_and_pair_distances() {
         let first = Geometry::new(parse("row-offsets: 0 0.25 0.75\n").keys);
         let shifted = Geometry::new(parse("row-offsets: -0.25 0 0.5\n").keys);
-        for (a, b) in first.home.iter().flatten().zip(shifted.home.iter().flatten()) {
+        for (a, b) in first
+            .home
+            .iter()
+            .flatten()
+            .zip(shifted.home.iter().flatten())
+        {
             assert_eq!(a.to_bits(), b.to_bits());
         }
         for (a, b) in first.sf_distance.iter().zip(&shifted.sf_distance) {
@@ -2315,9 +2846,7 @@ mod numeric_geometry_tests {
             ),
         ];
         for (rows, fingers) in cases {
-            let source = format!(
-                "{rows}fingermap: {fingers} / {fingers} / {fingers}\n"
-            );
+            let source = format!("{rows}fingermap: {fingers} / {fingers} / {fingers}\n");
             let standard = board_from_text(&source, Path::new("standard.dat")).unwrap();
             let absolute = board_from_text(
                 &format!("{source}col-layout: absolute\n"),
@@ -2327,7 +2856,12 @@ mod numeric_geometry_tests {
             let first = Geometry::new(standard.keys);
             let shifted = Geometry::new(absolute.keys);
             assert_eq!(first.home.len(), shifted.home.len());
-            for (a, b) in first.home.iter().flatten().zip(shifted.home.iter().flatten()) {
+            for (a, b) in first
+                .home
+                .iter()
+                .flatten()
+                .zip(shifted.home.iter().flatten())
+            {
                 assert_eq!(a.to_bits(), b.to_bits());
             }
             assert_eq!(first.is_home, shifted.is_home);
@@ -2335,9 +2869,7 @@ mod numeric_geometry_tests {
 
         let (rows, fingers) = cases[2];
         let absolute = board_from_text(
-            &format!(
-                "{rows}fingermap: {fingers} / {fingers} / {fingers}\ncol-layout: absolute\n"
-            ),
+            &format!("{rows}fingermap: {fingers} / {fingers} / {fingers}\ncol-layout: absolute\n"),
             Path::new("absolute.dat"),
         )
         .unwrap();
@@ -2363,13 +2895,22 @@ mod numeric_geometry_tests {
         assert_eq!(geometry.home[1][0].to_bits(), 1.0f64.to_bits());
         assert_eq!(geometry.home[11][0].to_bits(), 0.0f64.to_bits());
         // R/T use the same index finger but have different column heights.
-        assert_eq!(geometry.sf_distance[3 * geometry.n + 4].to_bits(), 0.1f64.hypot(1.0).to_bits());
+        assert_eq!(
+            geometry.sf_distance[3 * geometry.n + 4].to_bits(),
+            0.1f64.hypot(1.0).to_bits()
+        );
         assert_eq!(geometry.home[4][0].to_bits(), 1.0f64.hypot(0.9).to_bits());
 
         let plain = parse("");
         for (a, b) in [(0, 21), (1, 22), (3, 20), (20, 3)] {
-            assert_eq!(scissor_kind(board.keys[a], board.keys[b]), scissor_kind(plain.keys[a], plain.keys[b]));
-            assert_eq!(row_motion(board.keys[a], board.keys[b]), row_motion(plain.keys[a], plain.keys[b]));
+            assert_eq!(
+                scissor_kind(board.keys[a], board.keys[b]),
+                scissor_kind(plain.keys[a], plain.keys[b])
+            );
+            assert_eq!(
+                row_motion(board.keys[a], board.keys[b]),
+                row_motion(plain.keys[a], plain.keys[b])
+            );
         }
     }
 
@@ -2381,7 +2922,8 @@ mod numeric_geometry_tests {
         assert_eq!(board.keys.len(), 31);
         let action = crate::action_keys::Layout::parse(&source, Path::new("inline")).unwrap();
         assert_eq!(board.keys, crate::action_ui::physical_keys(&action));
-        let round = board_from_text(&board_text(&board, &board.symbols), Path::new("round")).unwrap();
+        let round =
+            board_from_text(&board_text(&board, &board.symbols), Path::new("round")).unwrap();
         assert_eq!(round.keys, board.keys);
         assert_eq!(round.symbols, board.symbols);
         let round = crate::action_keys::Layout::parse(&action.text(), Path::new("round")).unwrap();
@@ -2390,7 +2932,14 @@ mod numeric_geometry_tests {
 
     #[test]
     fn geometry_validation_is_shared_and_subtraction_cannot_overflow() {
-        for extra in ["row-offsets: NaN 0 0\n", "row-offsets: 0 0.0001 0\n", "row-offsets: 33 0 0\n", "row-offsets: 0 0\n", "column-offsets: 0 0\n", "fingermap: LP / LP / LP\n"] {
+        for extra in [
+            "row-offsets: NaN 0 0\n",
+            "row-offsets: 0 0.0001 0\n",
+            "row-offsets: 33 0 0\n",
+            "row-offsets: 0 0\n",
+            "column-offsets: 0 0\n",
+            "fingermap: LP / LP / LP\n",
+        ] {
             let source = format!("{ROWS}{extra}");
             assert!(board_from_text(&source, Path::new("inline")).is_err());
             assert!(crate::action_keys::Layout::parse(&source, Path::new("inline")).is_err());

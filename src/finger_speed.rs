@@ -1,16 +1,14 @@
-//! An available-pair finger-motion estimate for Simple mode.
+//! The Genkey finger-speed model used by akl.gg's Mana2 view.
 //!
-//! This is an explicit AKLER model, not a Mana2 statistic or measured WPM.
-//! Each same-finger pair contributes its Euclidean physical distance times
-//! frequency. Bigram and skip-1 sums are independently normalized per 100
-//! available pairs. Fspeed = bigram motion + skip_ratio * skip-1 motion.
-//! Weighted speed divides each finger's Fspeed by its configured strength.
-//! Same-position repeats have zero distance. Thumbs follow the same rule.
+//! Each same-finger bigram contributes its frequency times
+//! `1.4 * dx^2 + dy^2 + 0.02`. Skipgrams use the same distance and a default
+//! factor of `0.5`. Bigram and skipgram contributions are each divided by
+//! their complete population frequency and multiplied by 800 before being
+//! combined. The constant travel term means same-key repeats still contribute.
+//! Weighted speed divides each finger's result by its tapping-speed weight.
 //!
-//! The general distance/frequency/strength idea follows Oxeylyzer's Fspeed,
-//! but its full model includes further skip populations and other machinery:
-//! https://github.com/o-x-e-y/oxeylyzer#fspeed
-//! No missing skip-2/skip-3 populations are synthesized here.
+//! This is a Genkey-derived companion metric in the akl.gg presentation. It is
+//! not one of Mana2's native Go statistics.
 
 use crate::Key;
 use std::ops::{AddAssign, SubAssign};
@@ -55,9 +53,8 @@ pub(crate) struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            skip_ratio: 0.11,
-            // Starting preferences, not measured personal finger capacities.
-            strengths: [1.5, 3.6, 4.8, 5.5, 5.5, 4.8, 3.6, 1.5, 3.3, 3.3],
+            skip_ratio: 0.5,
+            strengths: [1.5, 3.6, 4.8, 5.5, 5.5, 4.8, 3.6, 1.5, 1.5, 1.5],
         }
     }
 }
@@ -74,7 +71,9 @@ pub(crate) fn accumulate(raw: &mut Raw, a: &Key, b: &Key, frequency: f64, skip: 
     }
     let x = |key: &Key| f64::from(key.col) + f64::from(key.row_offset) / 1000.0;
     let y = |key: &Key| f64::from(key.row) + f64::from(key.column_offset) / 1000.0;
-    let distance = (x(a) - x(b)).hypot(y(a) - y(b));
+    let dx = x(a) - x(b);
+    let dy = y(a) - y(b);
+    let distance = 1.4 * dx * dx + dy * dy + 0.02;
     let sums = if skip {
         &mut raw.skipgrams
     } else {
@@ -84,16 +83,16 @@ pub(crate) fn accumulate(raw: &mut Raw, a: &Key, b: &Key, frequency: f64, skip: 
 }
 
 pub(crate) fn normalize(raw: &Raw, totals: [f64; 4]) -> Normalized {
-    let average = |sum: f64, total: f64| {
+    let scaled = |sum: f64, total: f64| {
         if total > 0.0 {
-            100.0 * sum / total
+            800.0 * sum / total
         } else {
             0.0
         }
     };
     Normalized {
-        bigrams: std::array::from_fn(|i| average(raw.bigrams[i], totals[1])),
-        skipgrams: std::array::from_fn(|i| average(raw.skipgrams[i], totals[2])),
+        bigrams: std::array::from_fn(|i| scaled(raw.bigrams[i], totals[1])),
+        skipgrams: std::array::from_fn(|i| scaled(raw.skipgrams[i], totals[2])),
     }
 }
 
@@ -140,8 +139,8 @@ mod tests {
             strengths: [2.0; 10],
         };
         let stats = calculate(&data, &settings);
-        assert_eq!(stats.per_finger[0], 37.5);
-        assert_eq!(stats.weighted[0], 18.75);
+        assert!((stats.per_finger[0] - 466.0).abs() < 1e-12);
+        assert!((stats.weighted[0] - 233.0).abs() < 1e-12);
         assert_eq!(stats.per_finger[1..], [0.0; 9]);
         let saved = raw;
         accumulate(&mut raw, &a, &b, -0.5, false);
@@ -161,13 +160,13 @@ mod tests {
             let a = key(finger, 0, 0, 0);
             let b = key(finger, 3, 4, 0);
             accumulate(&mut raw, &a, &b, 0.25, false);
-            assert_eq!(raw.bigrams[finger], 1.25);
+            assert!((raw.bigrams[finger] - 7.155).abs() < 1e-12);
         }
         accumulate(&mut raw, &key(2, 0, 0, 0), &key(2, 0, 0, 500), 1.0, false);
-        assert_eq!(raw.bigrams[2], 0.5);
+        assert!((raw.bigrams[2] - 0.37).abs() < 1e-12);
         let mut upper = key(3, 0, 0, 0);
         upper.column_offset = 500;
         accumulate(&mut raw, &key(3, 0, 0, 0), &upper, 1.0, true);
-        assert_eq!(raw.skipgrams[3], 0.5);
+        assert!((raw.skipgrams[3] - 0.27).abs() < 1e-12);
     }
 }

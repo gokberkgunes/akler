@@ -42,11 +42,18 @@ fn stagger_cells(offset: i16, minimum: i16, step: usize) -> usize {
 }
 
 fn saved_layout_message(path: &Path) -> String {
-    format!(
-        "saved {} and {}",
-        path.with_extension("dat").display(),
-        path.with_extension("jsonc").display(),
-    )
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "jsonc")
+    {
+        format!("saved {}", path.display())
+    } else {
+        format!(
+            "saved {} and {}",
+            path.display(),
+            path.with_extension("jsonc").display()
+        )
+    }
 }
 
 fn ansi_color(color: u8) -> String {
@@ -69,12 +76,17 @@ fn ansi_color(color: u8) -> String {
         let t = (color - 16).min(48) as f64 / 48.0;
         let (r, g, b) = if t <= 0.5 {
             let u = t * 2.0;
-            (255.0, 64.0 + u * 160.0, 64.0 *(1.0 - u))
+            (255.0, 64.0 + u * 160.0, 64.0 * (1.0 - u))
         } else {
             let u = (t - 0.5) * 2.0;
-            (255.0 *(1.0 - u), 224.0 + u * 6.0, u * 96.0)
+            (255.0 * (1.0 - u), 224.0 + u * 6.0, u * 96.0)
         };
-        return format!("\x1b[38;2;{};{};{}m", r.round() as u8, g.round() as u8, b.round() as u8);
+        return format!(
+            "\x1b[38;2;{};{};{}m",
+            r.round() as u8,
+            g.round() as u8,
+            b.round() as u8
+        );
     }
     match color {
         0 => "\x1b[30m",
@@ -85,8 +97,9 @@ fn ansi_color(color: u8) -> String {
         5 => "\x1b[35m",
         6 => "\x1b[36m",
         8 => "\x1b[90m",
-        _ => "\x1b[39m"
-    }.into()
+        _ => "\x1b[39m",
+    }
+    .into()
 }
 
 fn ansi_background(background: Option<(u8, u8, u8)>) -> String {
@@ -97,15 +110,15 @@ fn ansi_background(background: Option<(u8, u8, u8)>) -> String {
 }
 
 fn gradient(t: f64) -> u8 {
-    16 +(if t.is_finite() {
+    16 + (if t.is_finite() {
         t.clamp(0.0, 1.0)
     } else {
         0.5
-    }
-        * 48.0).round() as u8
+    } * 48.0)
+        .round() as u8
 }
 
-#[derive(Clone,Copy,PartialEq,Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Cell {
     ch: char,
     color: u8,
@@ -113,28 +126,26 @@ struct Cell {
     bold: bool,
 }
 
-#[derive(Clone,Copy,Debug)]
+#[derive(Clone, Copy, Debug)]
 struct Rect {
     x: usize,
     y: usize,
     w: usize,
-    h: usize
+    h: usize,
 }
 
 impl Rect {
     fn contains(self, x: usize, y: usize) -> bool {
-        x >= self.x && x<self.x + self.w && y >= self.y && y<self.y + self.h
+        x >= self.x && x < self.x + self.w && y >= self.y && y < self.y + self.h
     }
 }
 
-#[derive(Clone,Copy,Debug)]
+#[derive(Clone, Copy, Debug)]
 enum Action {
     Key(usize),
     Metric(usize),
     Weight(usize),
-    Mana2Weight(usize),
-    SimpleWeight(usize),
-    SimpleSpeedSetting(usize),
+    ManaWeight(usize),
     Setting(usize),
     Item(usize),
     Command(char),
@@ -144,7 +155,7 @@ struct Canvas {
     w: usize,
     h: usize,
     cells: Vec<Cell>,
-    hits: Vec<(Rect, Action)>
+    hits: Vec<(Rect, Action)>,
 }
 
 impl Canvas {
@@ -153,13 +164,16 @@ impl Canvas {
         Self {
             w,
             h,
-            cells: vec![Cell {
-                ch: ' ',
-                color: FG,
-                background: None,
-                bold: false,
-            }; w * h],
-            hits: Vec::new()
+            cells: vec![
+                Cell {
+                    ch: ' ',
+                    color: FG,
+                    background: None,
+                    bold: false,
+                };
+                w * h
+            ],
+            hits: Vec::new(),
         }
     }
 
@@ -171,13 +185,16 @@ impl Canvas {
         Self {
             w,
             h,
-            cells: vec![Cell {
-                ch: ' ',
-                color: FG,
-                background: None,
-                bold: false,
-            }; w * h],
-            hits: Vec::new()
+            cells: vec![
+                Cell {
+                    ch: ' ',
+                    color: FG,
+                    background: None,
+                    bold: false,
+                };
+                w * h
+            ],
+            hits: Vec::new(),
         }
     }
 
@@ -186,12 +203,15 @@ impl Canvas {
             return;
         }
         if y >= self.h {
-            self.cells.resize((y + 1) * self.w, Cell {
-                ch: ' ',
-                color: FG,
-                background: None,
-                bold: false,
-            });
+            self.cells.resize(
+                (y + 1) * self.w,
+                Cell {
+                    ch: ' ',
+                    color: FG,
+                    background: None,
+                    bold: false,
+                },
+            );
             self.h = y + 1;
         }
         let cell = &mut self.cells[y * self.w + x];
@@ -206,11 +226,7 @@ impl Canvas {
     }
 
     fn right(&mut self, x: usize, y: usize, w: usize, s: &str, color: u8) {
-        let text = if s.chars().count()>w {
-            "…"
-        } else {
-            s
-        };
+        let text = if s.chars().count() > w { "…" } else { s };
         self.text(x + w.saturating_sub(text.chars().count()), y, text, color);
     }
 
@@ -236,7 +252,7 @@ impl Canvas {
     }
 
     fn boxed(&mut self, r: Rect, color: u8) {
-        if r.w<2 || r.h<2 {
+        if r.w < 2 || r.h < 2 {
             return;
         }
         self.line(r.x, r.y, r.w, color);
@@ -245,11 +261,11 @@ impl Canvas {
             self.put(r.x, y, '│', color);
             self.put(r.x + r.w - 1, y, '│', color);
         }
-        for (x, y, c) in[
+        for (x, y, c) in [
             (r.x, r.y, '┌'),
             (r.x + r.w - 1, r.y, '┐'),
             (r.x, r.y + r.h - 1, '└'),
-            (r.x + r.w - 1, r.y + r.h - 1, '┘')
+            (r.x + r.w - 1, r.y + r.h - 1, '┘'),
         ] {
             self.put(x, y, c, color);
         }
@@ -260,22 +276,15 @@ impl Canvas {
     }
 
     fn action(&self, x: usize, y: usize) -> Option<Action> {
-        self.hits.iter().rev().find(|(r, _) | r.contains(x, y)).map(|(_, a)|*a)
-    }
-
-    fn button(&mut self, x: usize, y: usize, text: &str, cmd: char) {
-        let s = format!("[{text}]");
-        self.text(x, y, &s, CYAN);
-        self.hit(Rect {
-            x,
-            y,
-            w: s.chars().count(),
-            h: 1
-        }, Action::Command(cmd));
+        self.hits
+            .iter()
+            .rev()
+            .find(|(r, _)| r.contains(x, y))
+            .map(|(_, a)| *a)
     }
 }
 
-#[derive(Clone,Debug,PartialEq,Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Event {
     Tick,
     Char(char),
@@ -299,22 +308,22 @@ enum Event {
         y: usize,
         button: u8,
         release: bool,
-        motion: bool
+        motion: bool,
     },
     Wheel(i32),
-    Paste(String)
+    Paste(String),
 }
 
 #[derive(Default)]
 struct Decoder {
     pending: Vec<u8>,
-    discard_paste: bool
+    discard_paste: bool,
 }
 
 impl Decoder {
     fn push(&mut self, b: &[u8]) {
         self.pending.extend_from_slice(b);
-        if self.pending.len()>65536 {
+        if self.pending.len() > 65536 {
             if self.pending.starts_with(b"\x1b[200~") || self.discard_paste {
                 // Never turn an oversized paste into command keystrokes.
                 self.discard_paste = true;
@@ -374,7 +383,7 @@ impl Decoder {
             }
             return None;
         }
-        let end = (2..self.pending.len()).find(|&i |(0x40..=0x7e).contains(&self.pending[i]));
+        let end = (2..self.pending.len()).find(|&i| (0x40..=0x7e).contains(&self.pending[i]));
         let Some(end) = end else {
             if timed_out {
                 self.pending.clear();
@@ -391,19 +400,15 @@ impl Decoder {
                 return Some(Event::Tick);
             }
             let cb = v[0] as u8;
-            if cb&64 != 0 {
-                return Some(Event::Wheel(if cb&1 == 0 {
-                    -3
-                } else {
-                    3
-                }));
+            if cb & 64 != 0 {
+                return Some(Event::Wheel(if cb & 1 == 0 { -3 } else { 3 }));
             }
             return Some(Event::Mouse {
                 x: v[1].saturating_sub(1),
                 y: v[2].saturating_sub(1),
-                button: cb&3,
+                button: cb & 3,
                 release: last == b'm',
-                motion: cb&32 != 0
+                motion: cb & 32 != 0,
             });
         }
         Some(match last {
@@ -418,7 +423,7 @@ impl Decoder {
                 b"6" => Event::PageDown,
                 b"1" | b"7" => Event::Home,
                 b"4" | b"8" => Event::End,
-                _ => Event::Tick
+                _ => Event::Tick,
             },
             _ => Event::Tick,
         })
@@ -429,26 +434,37 @@ struct Terminal {
     tty: File,
     saved: String,
     decoder: Decoder,
-    size:(usize, usize),
+    size: (usize, usize),
     size_at: Instant,
     previous: Vec<Cell>,
     offset_x: usize,
     precise: bool,
+    simple_stats: bool,
+    optimizer_weights: bool,
+    /// The optimizer's [4] Score tab.
+    optimizer_score: bool,
     quitting: bool,
     restart_requested: bool,
+    restart_arguments: Option<Vec<std::ffi::OsString>>,
     _reports: crate::profile_output::TerminalReports,
 }
 
 impl Terminal {
     fn open() -> AppResult<Self> {
         let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
-        let out = Command::new("stty").arg("-g").stdin(tty.try_clone()?).output()?;
+        let out = Command::new("stty")
+            .arg("-g")
+            .stdin(tty.try_clone()?)
+            .output()?;
         if !out.status.success() {
             return Err("cannot read terminal state from /dev/tty".into());
         }
         let saved = String::from_utf8(out.stdout)?.trim().to_string();
         let reports = crate::profile_output::TerminalReports::begin();
-        let status = Command::new("stty").args(["raw", "-echo", "min", "0", "time", "1"]).stdin(tty.try_clone()?).status()?;
+        let status = Command::new("stty")
+            .args(["raw", "-echo", "min", "0", "time", "1"])
+            .stdin(tty.try_clone()?)
+            .status()?;
         if !status.success() {
             return Err("cannot enter terminal raw mode".into());
         }
@@ -456,31 +472,54 @@ impl Terminal {
             tty,
             saved,
             decoder: Decoder::default(),
-            size:(80, 24),
+            size: (80, 24),
             size_at: Instant::now() - Duration::from_secs(2),
             previous: Vec::new(),
             offset_x: 0,
             precise: false,
+            simple_stats: false,
+            optimizer_weights: false,
+            optimizer_score: false,
             quitting: false,
             restart_requested: false,
+            restart_arguments: None,
             _reports: reports,
         };
         // Alternate screen, SGR drag events, bracketed paste, cursor off, wrap off.
-        t.tty.write_all(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?25l\x1b[?7l")?;
+        t.tty
+            .write_all(b"\x1b[?1049h\x1b[?1002h\x1b[?1006h\x1b[?2004h\x1b[?25l\x1b[?7l")?;
         t.refresh_size()?;
         Ok(t)
     }
 
+    fn toggle_stats_view(&mut self) {
+        self.simple_stats = !self.simple_stats;
+    }
+
+    fn stats_view_name(&self) -> &'static str {
+        if self.simple_stats {
+            "Simple"
+        } else {
+            "Detailed"
+        }
+    }
+
     fn refresh_size(&mut self) -> AppResult<()> {
-        if self.size_at.elapsed()<Duration::from_millis(500) {
+        if self.size_at.elapsed() < Duration::from_millis(500) {
             return Ok(());
         }
         self.size_at = Instant::now();
-        let out = Command::new("stty").arg("size").stdin(self.tty.try_clone()?).output()?;
+        let out = Command::new("stty")
+            .arg("size")
+            .stdin(self.tty.try_clone()?)
+            .output()?;
         if out.status.success() {
             let s = String::from_utf8_lossy(&out.stdout);
-            let v: Vec<usize> = s.split_whitespace().filter_map(|v| v.parse().ok()).collect();
-            if v.len() == 2 && v[0]>0 && v[1]>0 {
+            let v: Vec<usize> = s
+                .split_whitespace()
+                .filter_map(|v| v.parse().ok())
+                .collect();
+            if v.len() == 2 && v[0] > 0 && v[1] > 0 {
                 let size = (v[1].min(1000), v[0].min(500));
                 if size != self.size {
                     self.previous.clear();
@@ -493,8 +532,30 @@ impl Terminal {
 
     fn request_restart(&mut self) -> AppResult<()> {
         restart_program_path()?;
+        self.restart_arguments = if std::env::args_os().nth(1).as_deref()
+            == Some(std::ffi::OsStr::new("--resume-ranker"))
+        {
+            Some(Vec::new())
+        } else {
+            None
+        };
         self.restart_requested = true;
         self.quitting = true;
+        Ok(())
+    }
+
+    fn request_ranker_restart(&mut self, corpus: &Path) -> AppResult<()> {
+        self.request_restart()?;
+        let from_menu = match std::env::args_os().nth(1) {
+            None => true,
+            Some(argument) => argument == "--resume-ranker",
+        };
+        let mode = if from_menu {
+            "--resume-ranker"
+        } else {
+            "ranker"
+        };
+        self.restart_arguments = Some(vec![mode.into(), corpus.as_os_str().to_owned()]);
         Ok(())
     }
 
@@ -520,10 +581,10 @@ impl Terminal {
         let mut buf = [0; 4096];
         let n = match self.tty.read(&mut buf) {
             Ok(n) => n,
-            Err(e)if e.kind() == io::ErrorKind::Interrupted => 0,
-            Err(e) => return Err(e.into())
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => 0,
+            Err(e) => return Err(e.into()),
         };
-        if n>0 {
+        if n > 0 {
             self.decoder.push(&buf[..n]);
         }
         self.refresh_size()?;
@@ -535,7 +596,9 @@ impl Terminal {
         if e == Event::Quit {
             self.quitting = true;
         }
-        if (self.size.0<64 || self.size.1<12) && !matches!(e, Event::Escape | Event::Quit | Event::Char('q')) {
+        if (self.size.0 < 64 || self.size.1 < 12)
+            && !matches!(e, Event::Escape | Event::Quit | Event::Char('q'))
+        {
             Event::Tick
         } else {
             e
@@ -547,12 +610,15 @@ impl Terminal {
         let (w, h) = self.size;
         let scroll = scroll.min(c.h.saturating_sub(h));
         self.offset_x = 0;
-        let mut view = vec![Cell {
-            ch: ' ',
-            color: FG,
-            background: None,
-            bold: false,
-        }; w * h];
+        let mut view = vec![
+            Cell {
+                ch: ' ',
+                color: FG,
+                background: None,
+                bold: false,
+            };
+            w * h
+        ];
         for y in 0..h {
             if y + scroll >= c.h {
                 break;
@@ -561,14 +627,18 @@ impl Terminal {
                 view[y * w + x + self.offset_x] = c.cells[(y + scroll) * c.w + x];
             }
         }
-        if w<64 || h<12 {
+        if w < 64 || h < 12 {
             view.fill(Cell {
                 ch: ' ',
                 color: FG,
                 background: None,
                 bold: false,
             });
-            for (i, ch) in "Resize terminal to at least 64 columns x 12 rows. Esc to back out.".chars().take(w).enumerate() {
+            for (i, ch) in "Resize terminal to at least 64 columns x 12 rows. Esc to back out."
+                .chars()
+                .take(w)
+                .enumerate()
+            {
                 view[i] = Cell {
                     ch,
                     color: YELLOW,
@@ -583,7 +653,9 @@ impl Terminal {
             self.previous.clear();
         }
         for y in 0..h {
-            if self.previous.len() == view.len() && self.previous[y * w..(y + 1) * w] == view[y * w..(y + 1) * w] {
+            if self.previous.len() == view.len()
+                && self.previous[y * w..(y + 1) * w] == view[y * w..(y + 1) * w]
+            {
                 continue;
             }
             out.push_str(&format!("\x1b[{};1H", y + 1));
@@ -615,17 +687,22 @@ impl Terminal {
     }
 
     fn hit(&self, c: &Canvas, x: usize, y: usize, scroll: usize) -> Option<Action> {
-        if x<self.offset_x {
+        if x < self.offset_x {
             return None;
         }
-        c.action(x - self.offset_x, y + scroll.min(c.h.saturating_sub(self.size.1)))
+        c.action(
+            x - self.offset_x,
+            y + scroll.min(c.h.saturating_sub(self.size.1)),
+        )
     }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
         // The reports guard is dropped after this body restores the terminal.
-        let _ = self.tty.write_all(b"\x1b[0m\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?7h\x1b[?1049l");
+        let _ = self.tty.write_all(
+            b"\x1b[0m\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?7h\x1b[?1049l",
+        );
         let _ = self.tty.flush();
         if let Ok(f) = self.tty.try_clone() {
             let _ = Command::new("stty").arg(&self.saved).stdin(f).status();
@@ -635,13 +712,13 @@ impl Drop for Terminal {
 
 fn scroll_event(e: &Event, scroll: &mut usize, total: usize, height: usize) -> bool {
     let delta = match e {
-        Event::Wheel(n)=>*n,
-        Event::PageUp=>-(height as i32 - 2).max(1),
+        Event::Wheel(n) => *n,
+        Event::PageUp => -(height as i32 - 2).max(1),
         Event::PageDown => (height as i32 - 2).max(1),
-        _ => return false
+        _ => return false,
     };
-    * scroll = ( * scroll as i32 + delta).max(0) as usize;
-    * scroll = ( * scroll).min(total.saturating_sub(height));
+    *scroll = (*scroll as i32 + delta).max(0) as usize;
+    *scroll = (*scroll).min(total.saturating_sub(height));
     true
 }
 
@@ -651,9 +728,10 @@ fn action_press(term: &Terminal, c: &Canvas, e: &Event, scroll: usize) -> Option
         y,
         button: 0,
         release: false,
-        motion: false
-    } = e {
-        term.hit(c, * x, * y, scroll)
+        motion: false,
+    } = e
+    {
+        term.hit(c, *x, *y, scroll)
     } else {
         None
     }
@@ -665,7 +743,7 @@ fn direction(e: &Event) -> Option<(i32, i32)> {
         Event::Right | Event::Char('l') => Some((0, 1)),
         Event::Up | Event::Char('k') => Some((-1, 0)),
         Event::Down | Event::Char('j') => Some((1, 0)),
-        _ => None
+        _ => None,
     }
 }
 
@@ -679,10 +757,10 @@ fn move_cursor(cursor: usize, dr: i32, dc: i32, keys: &[Key]) -> usize {
             if k.main != current.main {
                 continue;
             }
-            if current.main && k.row == current.row &&(k.col - current.col).signum() == dc as i8 {
-                candidates.push((i,(k.col - current.col).abs()));
-            } else if !current.main &&(k.col - current.col).signum() == dc as i8 {
-                candidates.push((i,(k.col - current.col).abs()));
+            if current.main && k.row == current.row && (k.col - current.col).signum() == dc as i8 {
+                candidates.push((i, (k.col - current.col).abs()));
+            } else if !current.main && (k.col - current.col).signum() == dc as i8 {
+                candidates.push((i, (k.col - current.col).abs()));
             }
         }
     } else if current.main {
@@ -690,29 +768,29 @@ fn move_cursor(cursor: usize, dr: i32, dc: i32, keys: &[Key]) -> usize {
         if (0..=2).contains(&target) {
             for (i, k) in keys.iter().enumerate() {
                 if k.main && k.row == target {
-                    candidates.push((i,(k.col - current.col).abs()));
+                    candidates.push((i, (k.col - current.col).abs()));
                 }
             }
-        } else if target>2 {
+        } else if target > 2 {
             for (i, k) in keys.iter().enumerate() {
                 if !k.main && k.hand == current.hand {
                     candidates.push((i, (k.col - current.col).abs()));
                 }
             }
         }
-    } else if dr<0 {
-        let target = if current.hand == 0 {
-            4
-        } else {
-            5
-        };
+    } else if dr < 0 {
+        let target = if current.hand == 0 { 4 } else { 5 };
         for (i, k) in keys.iter().enumerate() {
             if k.main && k.row == 2 && k.hand == current.hand {
-                candidates.push((i,(k.col - target).abs()));
+                candidates.push((i, (k.col - target).abs()));
             }
         }
     }
-    candidates.into_iter().min_by_key(|v| v.1).map(|v| v.0).unwrap_or(cursor)
+    candidates
+        .into_iter()
+        .min_by_key(|v| v.1)
+        .map(|v| v.0)
+        .unwrap_or(cursor)
 }
 
 fn change_color(m: usize, before: f64, after: f64) -> u8 {
@@ -721,9 +799,9 @@ fn change_color(m: usize, before: f64, after: f64) -> u8 {
     } else {
         before - after
     };
-    if d>DISPLAY_EPSILON {
+    if d > DISPLAY_EPSILON {
         GREEN
-    } else if d< -DISPLAY_EPSILON {
+    } else if d < -DISPLAY_EPSILON {
         RED
     } else {
         FG
@@ -738,17 +816,25 @@ fn delta_color(m: usize, before: f64, after: f64) -> u8 {
     }
 }
 
+// Retain actual percentages in Before/After, but compare the contributing
+// masses on one scale so an unrelated population change cannot color a row.
+fn contributor_comparison(before: f64, after: f64, before_den: f64, after_den: f64) -> (f64, f64) {
+    let shared = before_den.max(after_den);
+    if shared <= 0.0 {
+        return (0.0, 0.0);
+    }
+    (before * (before_den / shared), after * (after_den / shared))
+}
+
 fn header(c: &mut Canvas, title: &str, corpus: &str, layout: &str, controls: &str) {
     c.text(0, 0, title, FG);
-    let context = [corpus, layout].into_iter().filter(|text| !text.is_empty())
-        .collect::<Vec<_>>().join(" · ");
+    let context = [corpus, layout]
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
     let x = title.chars().count() + 2;
-    c.text(
-        x,
-        0,
-        &short(&context, c.w.saturating_sub(x)),
-        CYAN
-    );
+    c.text(x, 0, &short(&context, c.w.saturating_sub(x)), CYAN);
     c.text(0, 1, &short(controls, c.w), MUTED);
 }
 
@@ -792,19 +878,67 @@ fn keyboard(
     baseline: &[usize],
     locks: Option<&[bool]>,
     cursor: Option<usize>,
-    highlight: &[usize]
+    highlight: &[usize],
 ) -> usize {
-    let min = model.board.keys.iter().filter(|k| k.main).map(|k| k.col).min().unwrap_or(0);
-    let max = model.board.keys.iter().filter(|k| k.main).map(|k| k.col).max().unwrap_or(9);
+    let min = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.col)
+        .min()
+        .unwrap_or(0);
+    let max = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.col)
+        .max()
+        .unwrap_or(9);
     let cols = (max - min + 1) as usize;
     let right_col = right_main_column(&model.board.keys, |i| !blank(model.board.symbols[i]));
-    let min_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.row_offset).min().unwrap_or(0).min(0);
-    let max_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.row_offset).max().unwrap_or(0).max(0);
-    let min_column_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.column_offset).min().unwrap_or(0).min(0);
-    let max_column_offset = model.board.keys.iter().filter(|k| k.main).map(|k| k.column_offset).max().unwrap_or(0).max(0);
+    let min_offset = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.row_offset)
+        .min()
+        .unwrap_or(0)
+        .min(0);
+    let max_offset = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.row_offset)
+        .max()
+        .unwrap_or(0)
+        .max(0);
+    let min_column_offset = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.column_offset)
+        .min()
+        .unwrap_or(0)
+        .min(0);
+    let max_column_offset = model
+        .board
+        .keys
+        .iter()
+        .filter(|k| k.main)
+        .map(|k| k.column_offset)
+        .max()
+        .unwrap_or(0)
+        .max(0);
     let column_height = stagger_cells(max_column_offset, min_column_offset, 3);
     let gap = 3;
-    let fits=|kw: usize | cols *(kw + 1) - 1 + gap + stagger_cells(max_offset, min_offset, kw + 1) <= c.w;
+    let fits = |kw: usize| {
+        cols * (kw + 1) - 1 + gap + stagger_cells(max_offset, min_offset, kw + 1) <= c.w
+    };
     let kw: usize = if fits(7) {
         7
     } else if fits(5) {
@@ -815,8 +949,14 @@ fn keyboard(
     let step = kw + 1;
     let width = step * cols - 1 + gap + stagger_cells(max_offset, min_offset, step);
     let x = c.w.saturating_sub(width) / 2;
-    let left_thumbs = model.board.keys.iter().filter(|key| !key.main && key.hand == 0).count();
-    let left_start = (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
+    let left_thumbs = model
+        .board
+        .keys
+        .iter()
+        .filter(|key| !key.main && key.hand == 0)
+        .count();
+    let left_start =
+        (x + width / 2).saturating_sub(kw + 2 + left_thumbs.saturating_sub(1) * (kw + 3));
     let right_start = x + width / 2 + 1;
     let mut thumb_index = [0; 2];
     for i in 0..arr.len() {
@@ -852,11 +992,15 @@ fn keyboard(
             x: kx,
             y: ky,
             w: kw,
-            h: 3
+            h: 3,
         };
         c.boxed(r, border);
         let symbol = model.canonical[arr[i]];
-        let label = if symbol == b' ' { "SP".to_owned() } else { display_symbol(symbol).to_string() };
+        let label = if symbol == b' ' {
+            "␣".to_owned()
+        } else {
+            display_symbol(symbol).to_string()
+        };
         c.center(kx + 1, ky + 1, kw - 2, &label, color);
         // Keyboard/click selection is indicated without changing ANSI color.
         if highlight.contains(&i) || cursor == Some(i) {
@@ -864,11 +1008,12 @@ fn keyboard(
         }
         c.hit(r, Action::Key(i));
     }
-    y + column_height + if model.board.keys.iter().any(| k|!k.main) {
-        12
-    } else {
-        9
-    }
+    y + column_height
+        + if model.board.keys.iter().any(|k| !k.main) {
+            12
+        } else {
+            9
+        }
 }
 
 fn fixed(value: f64, decimals: usize) -> String {
@@ -885,7 +1030,7 @@ fn fixed(value: f64, decimals: usize) -> String {
 
 fn number(value: f64, decimals: usize) -> String {
     let text = fixed(value, decimals);
-    if value>DISPLAY_EPSILON && text == fixed(0.0, decimals) {
+    if value > DISPLAY_EPSILON && text == fixed(0.0, decimals) {
         format!("<{}", fixed(10.0f64.powi(-(decimals as i32)), decimals))
     } else {
         text
@@ -906,7 +1051,7 @@ fn fmt2(value: f64) -> String {
 }
 
 fn config_number(value: f64) -> String {
-    if value != 0.0 && value.abs()<0.01 {
+    if value != 0.0 && value.abs() < 0.01 {
         let decimals = (1.0 - value.abs().log10().floor()).max(2.0).min(12.0) as usize;
         fixed(value, decimals)
     } else {
@@ -916,51 +1061,19 @@ fn config_number(value: f64) -> String {
 
 static OPT_GROUP_SAME: [usize; 4] = [SFB, SFS, SKB, SKS];
 
-static OPT_GROUP_FULL: [usize; 4] = [DAFJB, DAFJS, CAFJB, CAFJS];
-
-static OPT_GROUP_HALF: [usize; 4] = [DAHJB, DAHJS, CAHJB, CAHJS];
-
-static OPT_GROUP_HALF_NONADJ: [usize; 4] = [DNHJB, DNHJS, CNHJB, CNHJS];
-
-static OPT_GROUP_ADJACENT: [usize; 4] = [FSB, FSS, HSB, HSS];
-
 static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
-
-static OPT_GROUP_NONADJ: [usize; 4] = [DNFJB, DNFJS, CNFJB, CNFJS];
-
-static OPT_GROUP_RHYTHM: [usize; 3] = [REDIR, WRED, WISH];
-
-static OPT_GROUP_PREF: [usize; 3] = [SRAF, ROLL, ALT];
-
-static OPT_GROUP_SRAF_DIRECTIONS: [usize; 2] = [INSRAF, OUTSRAF];
-
-static OPT_GROUP_ROLL_TOTALS: [usize; 2] = [INROLL, OUTROLL];
-
-static OPT_GROUP_ROLL_TYPES: [usize; 4] = [IN2, OUT2, IN3, OUT3];
 
 static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
-static OPT_METRIC_GROUPS: [(&str, &[usize]); 13] = [
-    ("Same finger", &OPT_GROUP_SAME),
-    ("Adjacent full", &OPT_GROUP_FULL),
-    ("Adjacent half", &OPT_GROUP_HALF),
-    ("Nonadj. half", &OPT_GROUP_HALF_NONADJ),
-    ("Adjacent D", &OPT_GROUP_ADJACENT),
-    ("Stretch", &OPT_GROUP_STRETCH),
-    ("Nonadj. full", &OPT_GROUP_NONADJ),
-    ("Rhythm", &OPT_GROUP_RHYTHM),
-    ("Preferences", &OPT_GROUP_PREF),
-    ("SRAF directions", &OPT_GROUP_SRAF_DIRECTIONS),
-    ("Roll directions", &OPT_GROUP_ROLL_TOTALS),
-    ("Roll types", &OPT_GROUP_ROLL_TYPES),
-    ("Travel u/100", &OPT_GROUP_TRAVEL),
-];
-
 // Display families are independent of the optimizer's weight controls.
 // Keep the adjacent discordant aliases (FSB/FSS and HSB/HSS) in their families.
-static TABLE_FULL_JUMPS: [usize; 10] = [DAFJB, DAFJS, CAFJB, CAFJS, DNFJB, DNFJS, CNFJB, CNFJS, FSB, FSS];
+static TABLE_FULL_JUMPS: [usize; 10] = [
+    DAFJB, DAFJS, CAFJB, CAFJS, DNFJB, DNFJS, CNFJB, CNFJS, FSB, FSS,
+];
 
-static TABLE_HALF_JUMPS: [usize; 10] = [DAHJB, DAHJS, CAHJB, CAHJS, DNHJB, DNHJS, CNHJB, CNHJS, HSB, HSS];
+static TABLE_HALF_JUMPS: [usize; 10] = [
+    DAHJB, DAHJS, CAHJB, CAHJS, DNHJB, DNHJS, CNHJB, CNHJS, HSB, HSS,
+];
 
 static EDITOR_HAND_PATTERNS: [usize; 6] = [REDIR, WRED, WISH, ALT, SRAF, ROLL];
 
@@ -988,6 +1101,19 @@ static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
+// Display only: the existing adjacent discordant aliases retain their values.
+// Concordant and nonadjacent jumps still contribute to the detailed score.
+static SIMPLE_FULL_JUMPS: [usize; 2] = [FSB, FSS];
+static SIMPLE_HALF_JUMPS: [usize; 2] = [HSB, HSS];
+static SIMPLE_TABLE_GROUPS: [(&str, &[usize]); 6] = [
+    ("Same finger", &OPT_GROUP_SAME),
+    ("Full jumps", &SIMPLE_FULL_JUMPS),
+    ("Half jumps", &SIMPLE_HALF_JUMPS),
+    ("Stretch", &OPT_GROUP_STRETCH),
+    ("Hand patterns", &EDITOR_HAND_PATTERNS),
+    ("Travel u/100", &OPT_GROUP_TRAVEL),
+];
+
 struct MetricGrid {
     x: usize,
     width: usize,
@@ -997,7 +1123,7 @@ struct MetricGrid {
     name: usize,
     value: usize,
     delta: usize,
-    rows: usize
+    rows: usize,
 }
 
 impl MetricGrid {
@@ -1007,30 +1133,52 @@ impl MetricGrid {
         deltas: &[String],
         decimals: usize,
         groups: &[(&str, &[usize])],
-        left_aligned: bool
+        left_aligned: bool,
     ) -> Self {
-        let value = values.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 4);
-        let delta = deltas.iter().map(|s| s.chars().count()).max().unwrap_or(0).max(decimals + 3);
+        let value = values
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(decimals + 4);
+        let delta = deltas
+            .iter()
+            .map(|s| s.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(decimals + 3);
         // Size both label columns from the text actually rendered. Long group
         // names must leave the separator intact, including in detailed views.
-        let label = groups.iter().map(|(name, _)|name.chars().count() + 2).max().unwrap_or(0)
+        let label = groups
+            .iter()
+            .map(|(name, _)| name.chars().count() + 2)
+            .max()
+            .unwrap_or(0)
             .max(if left_aligned { 14 } else { 13 });
-        let name = groups.iter().flat_map(|(_, items)|items.iter())
-            .map(|&m|metric_short_name(m).chars().count()).max().unwrap_or(7).max(7);
+        let name = groups
+            .iter()
+            .flat_map(|(_, items)| items.iter())
+            .map(|&m| metric_short_name(m).chars().count())
+            .max()
+            .unwrap_or(7)
+            .max(7);
         let cell = 1 + name + 1 + value + 2 + delta + 1;
-        let fit = w.saturating_sub(label + 2) /(cell + 1);
+        let fit = w.saturating_sub(label + 2) / (cell + 1);
         // Keep bigrams on the left and their skipgrams on the right, even
         // when the terminal could fit additional columns.
-        let cols = if fit >= 2 {
-            2
-        } else {
-            1
-        };
-        let rows = groups.iter().map(|(_, g) |(g.len() + cols - 1) / cols).sum::<usize>()
+        let cols = if fit >= 2 { 2 } else { 1 };
+        let rows = groups
+            .iter()
+            .map(|(_, g)| (g.len() + cols - 1) / cols)
+            .sum::<usize>()
             + groups.len().saturating_sub(1);
-        let width = label + 2 + cols *(cell + 1);
+        let width = label + 2 + cols * (cell + 1);
         Self {
-            x: if left_aligned && width<w { 1 } else { w.saturating_sub(width) / 2 },
+            x: if left_aligned && width < w {
+                1
+            } else {
+                w.saturating_sub(width) / 2
+            },
             width,
             label,
             cell,
@@ -1038,7 +1186,7 @@ impl MetricGrid {
             name,
             value,
             delta,
-            rows
+            rows,
         }
     }
 }
@@ -1050,8 +1198,23 @@ fn grouped_metric_cards(
     after: &Metrics,
     raw: &Raw,
     corpus: &Corpus,
-    decimals: usize
+    decimals: usize,
+    simple: bool,
 ) -> usize {
+    if simple {
+        return grouped_metric_table(
+            c,
+            y,
+            before,
+            after,
+            raw,
+            &corpus.totals,
+            decimals,
+            &SIMPLE_TABLE_GROUPS,
+            false,
+            true,
+        );
+    }
     grouped_metric_totals(c, y, before, after, raw, &corpus.totals, decimals)
 }
 
@@ -1062,9 +1225,25 @@ fn editor_metric_cards(
     after: &Metrics,
     raw: &Raw,
     corpus: &Corpus,
-    decimals: usize
+    decimals: usize,
+    simple: bool,
 ) -> usize {
-    grouped_metric_table(c, y, before, after, raw, &corpus.totals, decimals, &EDITOR_TABLE_GROUPS, true, true)
+    grouped_metric_table(
+        c,
+        y,
+        before,
+        after,
+        raw,
+        &corpus.totals,
+        decimals,
+        if simple {
+            &SIMPLE_TABLE_GROUPS
+        } else {
+            &EDITOR_TABLE_GROUPS
+        },
+        true,
+        true,
+    )
 }
 
 fn grouped_metric_totals(
@@ -1076,7 +1255,18 @@ fn grouped_metric_totals(
     totals: &[f64; 4],
     decimals: usize,
 ) -> usize {
-    grouped_metric_table(c, y, before, after, raw, totals, decimals, &TABLE_GROUPS, false, true)
+    grouped_metric_table(
+        c,
+        y,
+        before,
+        after,
+        raw,
+        totals,
+        decimals,
+        &TABLE_GROUPS,
+        false,
+        true,
+    )
 }
 
 fn grouped_metric_table(
@@ -1089,28 +1279,106 @@ fn grouped_metric_table(
     decimals: usize,
     groups: &[(&str, &[usize])],
     left_aligned: bool,
-    clickable: bool
+    clickable: bool,
 ) -> usize {
-    let values: Vec<String> = (0..N_METRICS).map(|m| if denominator_totals(m, raw, totals)>0.0 {
-        metric_value_text(m, after.v[m], decimals)
-    } else {
-        "n/a".into()
-    }).collect();
-    let deltas: Vec<String> = (0..N_METRICS).map(|m| if denominator_totals(m, raw, totals)>0.0 {
-        delta_text(before.v[m], after.v[m], decimals)
-    } else {
-        "—".into()
-    }).collect();
-    let grid = MetricGrid::new(c.w, &values, &deltas, decimals, groups, left_aligned);
-    let h = grid.rows + 2;
-    c.boxed(Rect {
-        x: grid.x,
+    let values: Vec<String> = (0..N_METRICS)
+        .map(|m| {
+            if denominator_totals(m, raw, totals) > 0.0 {
+                metric_value_text(m, after.v[m], decimals)
+            } else {
+                "n/a".into()
+            }
+        })
+        .collect();
+    let deltas: Vec<String> = (0..N_METRICS)
+        .map(|m| {
+            if denominator_totals(m, raw, totals) > 0.0 {
+                delta_text(before.v[m], after.v[m], decimals)
+            } else {
+                "—".into()
+            }
+        })
+        .collect();
+    let colors: Vec<_> = (0..N_METRICS)
+        .map(|m| {
+            if values[m] == "n/a" {
+                MUTED
+            } else {
+                change_color(m, before.v[m], after.v[m])
+            }
+        })
+        .collect();
+    let delta_colors: Vec<_> = (0..N_METRICS)
+        .map(|m| delta_color(m, before.v[m], after.v[m]))
+        .collect();
+    grouped_value_table(
+        c,
         y,
-        w: grid.width,
-        h
-    }, BORDER);
+        &values,
+        &deltas,
+        &colors,
+        &delta_colors,
+        decimals,
+        groups,
+        left_aligned,
+        clickable,
+        false,
+    )
+}
+
+// Shared borders, spacing, tints, and hitboxes for stats and editable weights.
+fn grouped_value_table(
+    c: &mut Canvas,
+    y: usize,
+    values: &[String],
+    deltas: &[String],
+    colors: &[u8],
+    delta_colors: &[u8],
+    decimals: usize,
+    groups: &[(&str, &[usize])],
+    left_aligned: bool,
+    clickable: bool,
+    weights: bool,
+) -> usize {
+    let grid = MetricGrid::new(c.w, &values, &deltas, decimals, groups, left_aligned);
+    grouped_value_table_grid(
+        c,
+        y,
+        values,
+        deltas,
+        colors,
+        delta_colors,
+        groups,
+        clickable,
+        weights,
+        grid,
+    )
+}
+
+fn grouped_value_table_grid(
+    c: &mut Canvas,
+    y: usize,
+    values: &[String],
+    deltas: &[String],
+    colors: &[u8],
+    delta_colors: &[u8],
+    groups: &[(&str, &[usize])],
+    clickable: bool,
+    weights: bool,
+    grid: MetricGrid,
+) -> usize {
+    let h = grid.rows + 2;
+    c.boxed(
+        Rect {
+            x: grid.x,
+            y,
+            w: grid.width,
+            h,
+        },
+        BORDER,
+    );
     for col in 0..grid.cols {
-        let xx = grid.x + 1 + grid.label + col *(grid.cell + 1);
+        let xx = grid.x + 1 + grid.label + col * (grid.cell + 1);
         c.put(xx, y, '┬', BORDER);
         c.put(xx, y + h - 1, '┴', BORDER);
         for yy in y + 1..y + h - 1 {
@@ -1125,93 +1393,211 @@ fn grouped_metric_table(
             c.put(grid.x, yy, '├', BORDER);
             c.put(grid.x + grid.width - 1, yy, '┤', BORDER);
             for col in 0..grid.cols {
-                let xx = grid.x + 1 + grid.label + col *(grid.cell + 1);
+                let xx = grid.x + 1 + grid.label + col * (grid.cell + 1);
                 c.put(xx, yy, '┼', BORDER);
             }
             row += 1;
         }
         let tint = group_tint(group_index);
-        c.text(grid.x + 2, y + 1 + row, &short(group, grid.label.saturating_sub(2)), tint);
+        c.text(
+            grid.x + 2,
+            y + 1 + row,
+            &short(group, grid.label.saturating_sub(2)),
+            tint,
+        );
         for (i, &m) in items.iter().enumerate() {
-            let xx = grid.x + 2 + grid.label +(i % grid.cols) *(grid.cell + 1);
+            let xx = grid.x + 2 + grid.label + (i % grid.cols) * (grid.cell + 1);
             let yy = y + 1 + row + i / grid.cols;
             let vx = xx + 1 + grid.name + 1;
             c.text(xx + 1, yy, &short(metric_short_name(m), grid.name), tint);
-            c.right(vx, yy, grid.value, &values[m], if values[m] == "n/a" {
-                MUTED
-            } else {
-                change_color(m, before.v[m], after.v[m])
-            });
-            c.right(vx + grid.value + 2, yy, grid.delta, &deltas[m], delta_color(m, before.v[m], after.v[m]));
-            if clickable {
-                c.hit(Rect {
-                    x: xx,
-                    y: yy,
-                    w: grid.cell,
-                    h: 1
-                }, Action::Metric(m));
+            c.right(vx, yy, grid.value, &values[m], colors[m]);
+            c.right(
+                vx + grid.value + 2,
+                yy,
+                grid.delta,
+                &deltas[m],
+                delta_colors[m],
+            );
+            if clickable && (!weights || optimizer_metric_weight(m).is_some()) {
+                c.hit(
+                    Rect {
+                        x: xx,
+                        y: yy,
+                        w: grid.cell,
+                        h: 1,
+                    },
+                    if weights {
+                        Action::Weight(optimizer_metric_weight(m).unwrap())
+                    } else {
+                        Action::Metric(m)
+                    },
+                );
             }
         }
-        row +=(items.len() + grid.cols - 1) / grid.cols;
+        row += (items.len() + grid.cols - 1) / grid.cols;
     }
     y + h
 }
 
+// Use the same metric slots and grid for both optimizer panels. Aggregate
+// metrics keep their place; their component weights are listed underneath.
+fn optimizer_metric_cards(
+    c: &mut Canvas,
+    y: usize,
+    before: &Metrics,
+    after: &Metrics,
+    raw: &Raw,
+    corpus: &Corpus,
+    w: &Weights,
+    decimals: usize,
+    simple: bool,
+    weights: bool,
+) -> usize {
+    let groups = if simple {
+        &SIMPLE_TABLE_GROUPS
+    } else {
+        &EDITOR_TABLE_GROUPS
+    };
+    let stats: Vec<String> = (0..N_METRICS)
+        .map(|m| {
+            if denominator_totals(m, raw, &corpus.totals) > 0.0 {
+                metric_value_text(m, after.v[m], decimals)
+            } else {
+                "n/a".into()
+            }
+        })
+        .collect();
+    let changes: Vec<String> = (0..N_METRICS)
+        .map(|m| {
+            if denominator_totals(m, raw, &corpus.totals) > 0.0 {
+                delta_text(before.v[m], after.v[m], decimals)
+            } else {
+                "—".into()
+            }
+        })
+        .collect();
+    let weight_values: Vec<String> = (0..N_WEIGHTS)
+        .map(|m| {
+            optimizer_metric_weight(m)
+                .map(|id| config_number(w.0[id]))
+                .unwrap_or_else(|| "—".into())
+        })
+        .collect();
+    let mut sizing = stats.clone();
+    sizing.extend(weight_values.iter().cloned());
+    let grid = MetricGrid::new(c.w, &sizing, &changes, decimals, groups, true);
+    let colors: Vec<_> = (0..N_METRICS)
+        .map(|m| {
+            if stats[m] == "n/a" {
+                MUTED
+            } else {
+                change_color(m, before.v[m], after.v[m])
+            }
+        })
+        .collect();
+    let delta_colors: Vec<_> = (0..N_METRICS)
+        .map(|m| delta_color(m, before.v[m], after.v[m]))
+        .collect();
+    if !weights {
+        return grouped_value_table_grid(
+            c,
+            y,
+            &stats,
+            &changes,
+            &colors,
+            &delta_colors,
+            groups,
+            true,
+            false,
+            grid,
+        );
+    }
+    let empty = vec![String::new(); N_WEIGHTS];
+    let cyan = vec![CYAN; N_WEIGHTS];
+    let y = grouped_value_table_grid(
+        c,
+        y,
+        &weight_values,
+        &empty,
+        &cyan,
+        &cyan,
+        groups,
+        true,
+        true,
+        grid,
+    );
+    let visible: Vec<_> = groups
+        .iter()
+        .flat_map(|(_, ids)| ids.iter())
+        .filter_map(|&m| optimizer_metric_weight(m))
+        .collect();
+    let extra: Vec<_> = TABLE_GROUPS
+        .iter()
+        .map(|&(name, ids)| {
+            (
+                name,
+                ids.iter()
+                    .copied()
+                    .filter(|&m| !aggregate(m) && !visible.contains(&m))
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .filter(|(_, ids)| !ids.is_empty())
+        .chain([
+            ("Off-home", (N_METRICS..N_METRICS + 4).collect()),
+            ("Finger usage", (N_METRICS + 4..N_WEIGHTS).collect()),
+        ])
+        .collect();
+    let extra_groups: Vec<_> = extra
+        .iter()
+        .map(|(name, ids)| (*name, ids.as_slice()))
+        .collect();
+    c.text(
+        0,
+        y,
+        "Additional weights · — means component weights below",
+        MUTED,
+    );
+    grouped_value_table(
+        c,
+        y + 1,
+        &weight_values,
+        &empty,
+        &cyan,
+        &cyan,
+        decimals,
+        &extra_groups,
+        true,
+        true,
+        true,
+    )
+}
+
+fn optimizer_metric_weight(m: usize) -> Option<usize> {
+    match m {
+        FSB => Some(DAFJB),
+        FSS => Some(DAFJS),
+        HSB => Some(DAHJB),
+        HSS => Some(DAHJS),
+        _ if aggregate(m) => None,
+        _ => Some(m),
+    }
+}
+
 fn weight_label(i: usize) -> &'static str {
-    if i<N_METRICS {
+    if i < N_METRICS {
         METRIC_NAMES[i]
     } else {
         ["PINKY", "RING", "MIDDLE", "INDEX"][(i - N_METRICS) % 4]
     }
 }
 
-fn grouped_weight_rows(c: &mut Canvas, mut y: usize, w: &Weights) -> usize {
-    c.text(0, y, &format!("Weights · {}", roll_settings_label(w.rolls())), FG);
-    y += 1;
-    let groups: [(&str, &[usize]); 10] = [
-        ("Same finger", &OPT_GROUP_SAME),
-        ("Adjacent full", &OPT_GROUP_FULL),
-        ("Half jumps", &OPT_GROUP_HALF),
-        ("Stretch", &OPT_GROUP_STRETCH),
-        ("Nonadj. full", &OPT_GROUP_NONADJ),
-        ("Rhythm", &OPT_GROUP_RHYTHM),
-        ("Preferences", &OPT_GROUP_PREF),
-        ("Travel", &OPT_GROUP_TRAVEL),
-        ("Off-home", &[N_METRICS, N_METRICS + 1, N_METRICS + 2, N_METRICS + 3]),
-        (
-            "Finger usage",
-            &[N_METRICS + 4, N_METRICS + 5, N_METRICS + 6, N_METRICS + 7],
-        ),
-    ];
-    for (group_index, (group, items)) in groups.into_iter().enumerate() {
-        let tint = group_tint(group_index);
-        c.text(0, y, group, tint);
-        let mut x = 16usize;
-        for &i in items {
-            let name = weight_label(i);
-            let value = config_number(w.0[i]);
-            let width = (name.len() + 1 + value.len() + 2).max(12);
-            if x + width>c.w && x>16 {
-                y += 1;
-                x = 16;
-            }
-            c.text(x, y, name, tint);
-            c.text(x + name.len() + 1, y, &value, CYAN);
-            c.hit(Rect {
-                x,
-                y,
-                w: width.min(c.w.saturating_sub(x)),
-                h: 1
-            }, Action::Weight(i));
-            x += width;
-        }
-        y += 1;
-    }
-    y
-}
-
-fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weights) -> usize {
-    c.text(0, y, "Mana2 weights · click to edit; s saves", FG);
+pub(crate) fn physical_weight_rows(
+    c: &mut Canvas,
+    mut y: usize,
+    weights: &mana2_metrics::Weights,
+) -> usize {
+    c.text(0, y, "AKL.GG weights · click to edit", FG);
     y += 1;
     c.text(
         0,
@@ -1230,7 +1616,7 @@ fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weig
         ("Skipgrams", 17..22),
         ("Alternations", 22..26),
         ("Redirects", 26..34),
-        ("Rolls", 34..mana2_metrics::N_STATS),
+        ("Rolls and speed", 34..mana2_metrics::N_STATS),
     ];
     let left = if c.w >= 64 { 16 } else { 0 };
     for (group_index, (group, indices)) in groups.into_iter().enumerate() {
@@ -1240,10 +1626,10 @@ fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weig
             y += 1;
         }
         let mut x = left;
-        for index in indices {
+        for index in indices.filter(|index| mana2_metrics::is_weightable(*index)) {
             let name = mana2_metrics::STAT_IDS[index];
             let value = weights.schedule_text(index);
-            let width = name.len() + 1 + value.len() + 2;
+            let width = (name.len() + value.len() + 3).max(12);
             if x > left && x + width > c.w {
                 y += 1;
                 x = left;
@@ -1265,7 +1651,7 @@ fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weig
                     w: width.min(available),
                     h: 1,
                 },
-                Action::Mana2Weight(index),
+                Action::ManaWeight(index),
             );
             x += width;
         }
@@ -1274,330 +1660,331 @@ fn mana2_weight_rows(c: &mut Canvas, mut y: usize, weights: &mana2_metrics::Weig
     y
 }
 
-fn simple_weight_rows(c: &mut Canvas, mut y: usize, weights: &simple_metrics::Weights) -> usize {
-    c.text(0, y, "Simple weights · click to edit; s saves", FG);
-    y += 1;
-    c.text(
-        0,
-        y,
-        "Positive penalizes; negative rewards · lower score is better",
-        MUTED,
-    );
-    y += 1;
-    let left = if c.w >= 64 { 16 } else { 0 };
-    c.text(0, y, "Metrics", group_tint(0));
-    if left == 0 {
-        y += 1;
-    }
-    let mut x = left;
-    for index in 0..simple_metrics::N_STATS {
-        let name = simple_metrics::STAT_IDS[index];
-        let value = config_number(weights.get(index));
-        let width = name.len() + 1 + value.len() + 2;
-        if x > left && x + width > c.w {
-            y += 1;
-            x = left;
-        }
-        let available = c.w.saturating_sub(x);
-        c.text(x, y, &short(name, available), group_tint(0));
-        if available > name.len() + 1 {
-            c.text(
-                x + name.len() + 1,
-                y,
-                &short(&value, available - name.len() - 1),
-                CYAN,
-            );
-        }
-        c.hit(
-            Rect {
-                x,
-                y,
-                w: width.min(available),
-                h: 1,
-            },
-            Action::SimpleWeight(index),
-        );
-        x += width;
-    }
-    y += 2;
-    c.text(0, y, "Speed settings", group_tint(1));
-    if left == 0 {
-        y += 1;
-    }
-    let mut x = left;
-    for (index, name) in simple_metrics::SPEED_SETTING_IDS.iter().enumerate() {
-        let value = config_number(weights.get_speed_setting(index));
-        let width = name.len() + 1 + value.len() + 2;
-        if x > left && x + width > c.w {
-            y += 1;
-            x = left;
-        }
-        let available = c.w.saturating_sub(x);
-        c.text(x, y, &short(name, available), group_tint(1));
-        if available > name.len() + 1 {
-            c.text(
-                x + name.len() + 1,
-                y,
-                &short(&value, available - name.len() - 1),
-                CYAN,
-            );
-        }
-        c.hit(
-            Rect {
-                x,
-                y,
-                w: width.min(available),
-                h: 1,
-            },
-            Action::SimpleSpeedSetting(index),
-        );
-        x += width;
-    }
-    y + 1
+fn aklgg_index(id: &str) -> usize {
+    mana2_metrics::STAT_IDS
+        .iter()
+        .position(|candidate| *candidate == id)
+        .expect("AKL.GG table stat must exist")
 }
 
-fn simple_stats_rows(
-    c: &mut Canvas,
-    mut y: usize,
-    before: Option<&mana2_metrics::Stats>,
-    after: &mana2_metrics::Stats,
-    weights: &simple_metrics::Weights,
-    decimals: usize,
-) -> usize {
-    let before_values = before.map(|stats| simple_metrics::values(stats, weights));
-    let after_values = simple_metrics::values(after, weights);
-    let columns = if c.w >= 80 { 2 } else { 1 };
-    let column_width = c.w / columns;
-    for index in 0..simple_metrics::N_STATS {
-        // Mana2's stretch and scissor terms are geometry ratings; the other
-        // Simple terms are normalized frequencies in percentage points.
-        let suffix = if (2..=5).contains(&index) || index >= 16 {
-            ""
-        } else {
-            "%"
-        };
-        let text = if let Some(values) = before_values.as_ref() {
-            format!(
-                "{} {}{} → {}{}",
-                simple_metrics::LABELS[index],
-                number(values[index], decimals),
-                suffix,
-                number(after_values[index], decimals),
-                suffix,
-            )
-        } else {
-            format!(
-                "{} {}{}",
-                simple_metrics::LABELS[index],
-                number(after_values[index], decimals),
-                suffix,
-            )
-        };
-        let x = index % columns * column_width;
-        let row = y + index / columns;
-        c.text(x, row, &short(&text, column_width.saturating_sub(1)), FG);
-    }
-    y += (simple_metrics::N_STATS + columns - 1) / columns;
-    y
-}
-
-fn simple_speed_table(
-    c: &mut Canvas,
-    mut y: usize,
-    before: Option<&mana2_metrics::Stats>,
-    after: &mana2_metrics::Stats,
-    weights: &simple_metrics::Weights,
-    decimals: usize,
-) -> usize {
-    const LEFT: [usize; 5] = [0, 1, 2, 3, 8];
-    const RIGHT: [usize; 5] = [7, 6, 5, 4, 9];
-    const USAGE_IDS: [&str; 10] = [
-        "finger-usage-LP",
-        "finger-usage-LR",
-        "finger-usage-LM",
-        "finger-usage-LI",
-        "finger-usage-RI",
-        "finger-usage-RM",
-        "finger-usage-RR",
-        "finger-usage-RP",
-        "finger-usage-LT",
-        "finger-usage-RT",
-    ];
-
-    let before_speeds = before.map(|stats| simple_metrics::speeds(stats, weights));
-    let after_speeds = simple_metrics::speeds(after, weights);
-    let usage = |stats: &mana2_metrics::Stats, index: usize| {
-        stats
-            .get(USAGE_IDS[index])
-            .expect("Simple finger usage stat is defined")
-    };
-    let value = |before: Option<f64>, after: f64| {
-        if let Some(before) = before {
-            format!("{}→{}", number(before, decimals), number(after, decimals))
-        } else {
-            number(after, decimals)
-        }
-    };
-    let row = |indices: &[usize], label: &str| {
-        let after_usage: f64 = indices.iter().map(|&i| usage(after, i)).sum();
-        let after_fspeed: f64 = indices.iter().map(|&i| after_speeds.per_finger[i]).sum();
-        let after_weighted: f64 = indices.iter().map(|&i| after_speeds.weighted[i]).sum();
-        let before_usage = before.map(|stats| indices.iter().map(|&i| usage(stats, i)).sum());
-        let before_fspeed = before_speeds
-            .as_ref()
-            .map(|speeds| indices.iter().map(|&i| speeds.per_finger[i]).sum::<f64>());
-        let before_weighted = before_speeds
-            .as_ref()
-            .map(|speeds| indices.iter().map(|&i| speeds.weighted[i]).sum::<f64>());
-        (
-            label.to_string(),
-            value(before_usage, after_usage),
-            value(before_fspeed, after_fspeed),
-            value(before_weighted, after_weighted),
-        )
-    };
-    let finger_row = |index: usize| row(&[index], FINGER_NAMES[index]);
-
-    let mut left = LEFT.map(finger_row).to_vec();
-    let mut right = RIGHT.map(finger_row).to_vec();
-    left.push(row(&LEFT, "Left"));
-    right.push(row(&RIGHT, "Right"));
-    let both = row(&(0..10).collect::<Vec<_>>(), "Both");
-
-    let before_width = if before.is_some() { 13 } else { 8 };
-    let side_width = 7 + before_width * 3;
-    let render_header = |c: &mut Canvas, x: usize, y: usize| {
-        c.text(x, y, "Finger", MUTED);
-        c.right(x + 7, y, before_width - 1, "Usage %", MUTED);
-        c.right(x + 7 + before_width, y, before_width - 1, "Fspeed", MUTED);
-        c.right(
-            x + 7 + before_width * 2,
-            y,
-            before_width - 1,
-            "Weighted",
-            MUTED,
-        );
-    };
-    let render_row = |c: &mut Canvas,
-                      x: usize,
-                      y: usize,
-                      entry: &(String, String, String, String),
-                      color: u8| {
-        c.text(x, y, &entry.0, color);
-        c.right(x + 7, y, before_width - 1, &entry.1, FG);
-        c.right(x + 7 + before_width, y, before_width - 1, &entry.2, FG);
-        c.right(x + 7 + before_width * 2, y, before_width - 1, &entry.3, FG);
-    };
-
-    c.text(
-        0,
-        y,
-        "Finger speed · available bigrams + skip1",
-        group_tint(1),
+fn aklgg_change_color(id: &str, before: f64, after: f64) -> u8 {
+    let higher_is_better = matches!(
+        id,
+        "alt"
+            | "altnothumbs"
+            | "roll"
+            | "rollnothumbs"
+            | "inroll2"
+            | "inroll2nothumbs"
+            | "outroll2"
+            | "outroll2nothumbs"
+            | "inroll3"
+            | "inroll3nothumbs"
+            | "outroll3"
+            | "outroll3nothumbs"
     );
-    y += 1;
-    if c.w >= side_width * 2 + 3 {
-        render_header(c, 0, y);
-        render_header(c, side_width + 3, y);
-        y += 1;
-        for row_index in 0..left.len() {
-            let left_color = if row_index < 5 {
-                finger_tint(LEFT[row_index])
-            } else {
-                MUTED
-            };
-            let right_color = if row_index < 5 {
-                finger_tint(RIGHT[row_index])
-            } else {
-                MUTED
-            };
-            render_row(c, 0, y, &left[row_index], left_color);
-            render_row(c, side_width + 3, y, &right[row_index], right_color);
-            y += 1;
-        }
+    if (after - before).abs() <= DISPLAY_EPSILON {
+        FG
+    } else if (higher_is_better && after > before) || (!higher_is_better && after < before) {
+        GREEN
     } else {
-        render_header(c, 0, y);
-        y += 1;
-        for &index in LEFT.iter().chain(RIGHT.iter()) {
-            let entry = finger_row(index);
-            render_row(c, 0, y, &entry, finger_tint(index));
-            y += 1;
-        }
-        render_row(c, 0, y, &row(&LEFT, "Left"), MUTED);
-        y += 1;
-        render_row(c, 0, y, &row(&RIGHT, "Right"), MUTED);
-        y += 1;
+        RED
     }
-    render_row(c, 0, y, &both, CYAN);
-    y + 1
 }
 
-fn simple_score_line(
+fn aklgg_number(stats: &mana2_metrics::Stats, id: &str, decimals: usize) -> String {
+    let index = aklgg_index(id);
+    let value = number(stats.values[index], decimals);
+    if id.starts_with("finger-usage-")
+        || matches!(id, "sfb" | "skb" | "sfs" | "sks")
+        || (22..=45).contains(&index)
+    {
+        format!("{value}%")
+    } else {
+        value
+    }
+}
+
+fn aklgg_stat_cell(
     c: &mut Canvas,
+    x: usize,
     y: usize,
-    before: Option<f64>,
-    after: f64,
-    objective: Option<f64>,
+    width: usize,
+    id: &str,
+    before: &mana2_metrics::Stats,
+    after: &mana2_metrics::Stats,
     decimals: usize,
-) -> usize {
-    let score = if let Some(before) = before {
-        format!(
-            "Simple score {} → {} (lower is better)",
-            number(before, decimals),
-            number(after, decimals),
-        )
-    } else {
-        format!("Simple score {} (lower is better)", number(after, decimals))
-    };
-    c.text(0, y, &short(&score, c.w), CYAN);
-    if let Some(objective) = objective {
-        c.text(
-            0,
-            y + 1,
-            &short(
-                &format!(
-                    "Training objective {} (weighted corpus mixture; lower is better)",
-                    number(objective, decimals),
-                ),
-                c.w,
-            ),
-            MUTED,
-        );
-        y + 2
-    } else {
-        y + 1
-    }
-}
-
-fn finger_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metrics, decimals: usize) -> usize {
-    let label = 8usize;
-    let mut fw = decimals + 4;
-    for i in 0..8 {
-        for text in [
-            number(after.usage[i], decimals),
-            number(after.off[i], decimals),
-            delta_text(before.off[i], after.off[i], decimals)
-        ] {
-            fw = fw.max(text.chars().count() + 2);
-        }
-    }
-    let cols = if label + 2 + 8 *(fw + 1) <= c.w {
-        8
-    } else {
-        4
-    };
-    let blocks = 8 / cols;
-    let width = label + 2 + cols *(fw + 1);
-    let x = c.w.saturating_sub(width) / 2;
-    let h = 2 + blocks * 4;
-    c.boxed(Rect {
+) {
+    let index = aklgg_index(id);
+    c.text(
         x,
         y,
-        w: width,
-        h
-    }, BORDER);
+        &short(&aklgg_number(after, id, decimals), width),
+        aklgg_change_color(id, before.values[index], after.values[index]),
+    );
+}
+
+/// Compact comparison of the physical statistics exposed by AKL.GG's Mana2
+/// view. Values are current-layout values; their color compares them with the
+/// supplied baseline. Usage is deliberately neutral because moving load from
+/// one finger to another is not intrinsically an improvement.
+pub(crate) fn aklgg_stat_table(
+    c: &mut Canvas,
+    mut y: usize,
+    before: &mana2_metrics::Stats,
+    after: &mana2_metrics::Stats,
+    decimals: usize,
+) -> usize {
+    let value_w = decimals + 6;
+    let bigram_x = 18;
+    let skipgram_x = bigram_x + value_w + 2;
+    c.text(0, y, "AKL.GG patterns", CYAN);
+    c.text(bigram_x, y, "BIGRAM", MUTED);
+    c.text(skipgram_x, y, "SKIPGRAM", MUTED);
+    y += 1;
+    for (label, bigram, skipgram) in [
+        ("Same Finger", "sfb", "sfs"),
+        ("Same Key", "skb", "sks"),
+        ("Stretch", "lsb", "lss"),
+        ("Scissor", "vsb", "vss"),
+    ] {
+        c.text(0, y, label, FG);
+        aklgg_stat_cell(c, bigram_x, y, value_w, bigram, before, after, decimals);
+        aklgg_stat_cell(c, skipgram_x, y, value_w, skipgram, before, after, decimals);
+        y += 1;
+    }
+
+    y += 1;
+    let all_x = 18;
+    let no_thumb_x = all_x + value_w + 2;
+    c.text(0, y, "Three-key patterns", CYAN);
+    c.text(all_x, y, "ALL", MUTED);
+    c.text(no_thumb_x, y, "NO THUMBS", MUTED);
+    y += 1;
+    for (label, all, no_thumbs) in [
+        ("Alternation", "alt", "altnothumbs"),
+        ("Alt & SFS", "altsfs", "altsfsnothumbs"),
+        ("Redirect total", "redirect", "redirectnothumbs"),
+        ("Red & SFS", "redirectsfs", "redirectsfsnothumbs"),
+        ("Weak redirect", "redirectweak", "redirectweaknothumbs"),
+        (
+            "Weak & SFS",
+            "redirectsfsweak",
+            "redirectsfsweaknothumbs",
+        ),
+        ("Roll total", "roll", "rollnothumbs"),
+        ("Inroll2", "inroll2", "inroll2nothumbs"),
+        ("Outroll2", "outroll2", "outroll2nothumbs"),
+        ("Inroll3", "inroll3", "inroll3nothumbs"),
+        ("Outroll3", "outroll3", "outroll3nothumbs"),
+    ] {
+        c.text(0, y, label, FG);
+        aklgg_stat_cell(c, all_x, y, value_w, all, before, after, decimals);
+        aklgg_stat_cell(c, no_thumb_x, y, value_w, no_thumbs, before, after, decimals);
+        y += 1;
+    }
+
+    y += 1;
+    let label_w = 8;
+    let col_w = decimals + 6;
+    let left_x = label_w;
+    let right_x = left_x + col_w * 3 + 3;
+    c.text(0, y, "Finger speed", CYAN);
+    c.text(left_x, y, "Left", MUTED);
+    c.text(right_x, y, "Right", MUTED);
+    y += 1;
+    for side_x in [left_x, right_x] {
+        c.text(side_x, y, "Usage", MUTED);
+        c.text(side_x + col_w, y, "Fspeed", MUTED);
+        c.text(side_x + col_w * 2, y, "Weighted", MUTED);
+    }
+    y += 1;
+    let finger_rows = [
+        ("pinky", "LP", "RP"),
+        ("ring", "LR", "RR"),
+        ("middle", "LM", "RM"),
+        ("index", "LI", "RI"),
+        ("thumb", "LT", "RT"),
+    ];
+    for (label, left, right) in finger_rows {
+        c.text(0, y, label, FG);
+        for (side_x, suffix) in [(left_x, left), (right_x, right)] {
+            let usage = format!("finger-usage-{suffix}");
+            let fspeed = format!("fspeed-{suffix}");
+            let weighted = format!("weighted-speed-{suffix}");
+            c.text(
+                side_x,
+                y,
+                &short(&aklgg_number(after, &usage, decimals), col_w),
+                FG,
+            );
+            aklgg_stat_cell(c, side_x + col_w, y, col_w, &fspeed, before, after, decimals);
+            aklgg_stat_cell(
+                c,
+                side_x + col_w * 2,
+                y,
+                col_w,
+                &weighted,
+                before,
+                after,
+                decimals,
+            );
+        }
+        y += 1;
+    }
+
+    let side_total = |suffixes: [&str; 5], prefix: &str, stats: &mana2_metrics::Stats| {
+        suffixes
+            .iter()
+            .map(|suffix| stats.values[aklgg_index(&format!("{prefix}-{suffix}"))])
+            .sum::<f64>()
+    };
+    for (side_x, suffixes) in [
+        (left_x, ["LP", "LR", "LM", "LI", "LT"]),
+        (right_x, ["RP", "RR", "RM", "RI", "RT"]),
+    ] {
+        for (column, prefix) in [
+            (0, "finger-usage"),
+            (1, "fspeed"),
+            (2, "weighted-speed"),
+        ] {
+            let current = side_total(suffixes, prefix, after);
+            let baseline = side_total(suffixes, prefix, before);
+            let color = if column == 0 {
+                FG
+            } else if current < baseline - DISPLAY_EPSILON {
+                GREEN
+            } else if current > baseline + DISPLAY_EPSILON {
+                RED
+            } else {
+                FG
+            };
+            let value = number(current, decimals);
+            let value = if column == 0 {
+                format!("{value}%")
+            } else {
+                value
+            };
+            c.text(
+                side_x + column * col_w,
+                y,
+                &short(&value, col_w),
+                color,
+            );
+        }
+    }
+    c.text(0, y, "total", FG);
+    y += 1;
+    c.text(0, y, "both", FG);
+    let usage_total = side_total(["LP", "LR", "LM", "LI", "LT"], "finger-usage", after)
+        + side_total(["RP", "RR", "RM", "RI", "RT"], "finger-usage", after);
+    c.text(
+        left_x,
+        y,
+        &format!("{}%", number(usage_total, decimals)),
+        FG,
+    );
+    aklgg_stat_cell(c, left_x + col_w, y, col_w, "fspeed", before, after, decimals);
+    aklgg_stat_cell(
+        c,
+        left_x + col_w * 2,
+        y,
+        col_w,
+        "weighted_speed",
+        before,
+        after,
+        decimals,
+    );
+    y + 1
+}
+
+fn typing_policy_row(c: &mut Canvas, y: usize, weights: &Weights) -> usize {
+    let text = format!("Alternate fingers: {}", weights.alt_fingers_label());
+    c.text(0, y, &short(&text, c.w), FG);
+    c.hit(
+        Rect {
+            x: 0,
+            y,
+            w: text.len().min(c.w),
+            h: 1,
+        },
+        Action::Command('f'),
+    );
+    y + 1
+}
+
+fn combo_policy_row(c: &mut Canvas, y: usize, weights: &Weights) -> usize {
+    let value = if weights.4 { "enabled" } else { "disabled" };
+    let text = format!("Combos: {value}");
+    c.text(0, y, &short(&text, c.w), FG);
+    c.hit(
+        Rect {
+            x: 0,
+            y,
+            w: text.chars().count().min(c.w),
+            h: 1,
+        },
+        Action::Command('F'),
+    );
+    y + 1
+}
+
+pub(crate) fn spacegram_policy_row(c: &mut Canvas, y: usize, enabled: bool) -> usize {
+    let (value, color) = if enabled {
+        ("ON", GREEN)
+    } else {
+        ("OFF", MUTED)
+    };
+    let text = format!("Spacegrams: {value}");
+    c.text(0, y, &short(&text, c.w), color);
+    c.hit(
+        Rect {
+            x: 0,
+            y,
+            w: text.chars().count().min(c.w),
+            h: 1,
+        },
+        Action::Command('z'),
+    );
+    y + 1
+}
+
+fn finger_table(
+    c: &mut Canvas,
+    y: usize,
+    before: &Metrics,
+    after: &Metrics,
+    decimals: usize,
+) -> usize {
+    const ORDER: [usize; 10] = [0, 1, 2, 3, 8, 4, 5, 6, 7, 9];
+    let label = 8usize;
+    let mut fw = decimals + 4;
+    for &i in &ORDER {
+        fw = fw.max(number(after.usage[i], decimals).chars().count() + 2);
+        if i < 8 {
+            fw = fw.max(number(after.off[i], decimals).chars().count() + 2);
+            fw = fw.max(
+                delta_text(before.off[i], after.off[i], decimals)
+                    .chars()
+                    .count()
+                    + 2,
+            );
+        }
+    }
+    let cols = if label + 2 + 10 * (fw + 1) <= c.w {
+        10
+    } else {
+        5
+    };
+    let max_fw = c.w.saturating_sub(label + 2) / cols;
+    fw = fw.min(max_fw.saturating_sub(1).max(3));
+    let blocks = 10 / cols;
+    let width = label + 2 + cols * (fw + 1);
+    let x = c.w.saturating_sub(width) / 2;
+    let h = 2 + blocks * 4;
+    c.boxed(Rect { x, y, w: width, h }, BORDER);
     for col in 0..cols {
-        let xx = x + 1 + label + col *(fw + 1);
+        let xx = x + 1 + label + col * (fw + 1);
         c.put(xx, y, '┬', BORDER);
         c.put(xx, y + h - 1, '┴', BORDER);
         for yy in y + 1..y + h - 1 {
@@ -1610,33 +1997,38 @@ fn finger_table(c: &mut Canvas, y: usize, before: &Metrics, after: &Metrics, dec
         c.text(x + 1, yy + 2, "off %", MUTED);
         c.text(x + 1, yy + 3, "change", MUTED);
         for col in 0..cols {
-            let i = block * cols + col;
-            let xx = x + 2 + label + col *(fw + 1);
+            let i = ORDER[block * cols + col];
+            let xx = x + 2 + label + col * (fw + 1);
             c.center(xx, yy, fw, FINGER_NAMES[i], MUTED);
-            c.right(xx + 1, yy + 1, fw - 2, &number(after.usage[i], decimals), CYAN);
             c.right(
                 xx + 1,
-                yy + 2,
+                yy + 1,
                 fw - 2,
-                &number(after.off[i], decimals),
-                change_color(0, before.off[i], after.off[i])
+                &number(after.usage[i], decimals),
+                CYAN,
             );
-            c.right(
-                xx + 1,
-                yy + 3,
-                fw - 2,
-                &delta_text(before.off[i], after.off[i], decimals),
-                delta_color(0, before.off[i], after.off[i])
-            );
+            if i < 8 {
+                c.right(
+                    xx + 1,
+                    yy + 2,
+                    fw - 2,
+                    &number(after.off[i], decimals),
+                    change_color(0, before.off[i], after.off[i]),
+                );
+                c.right(
+                    xx + 1,
+                    yy + 3,
+                    fw - 2,
+                    &delta_text(before.off[i], after.off[i], decimals),
+                    delta_color(0, before.off[i], after.off[i]),
+                );
+            } else {
+                c.right(xx + 1, yy + 2, fw - 2, "-", MUTED);
+                c.right(xx + 1, yy + 3, fw - 2, "-", MUTED);
+            }
         }
     }
-    c.text(
-        x,
-        y + h,
-        &format!("LT {}%   RT {}%", number(after.usage[8], decimals), number(after.usage[9], decimals)),
-        MUTED
-    );
-    y + h + 1
+    y + h
 }
 
 fn score_panel(
@@ -1645,12 +2037,12 @@ fn score_panel(
     before: &Breakdown,
     after: &Breakdown,
     ensemble: Option<(f64, f64)>,
-    decimals: usize
+    decimals: usize,
 ) -> usize {
     let mut items = vec![
-        ("Penalty", before.penalty, after.penalty, false),
-        ("Credit", before.bonus, after.bonus, true),
-        ("Objective", before.net, after.net, false)
+        ("Penalties", before.penalty, after.penalty, false),
+        ("− Rewards", before.bonus, after.bonus, true),
+        ("= Score", before.net, after.net, false),
     ];
     if let Some((b, a)) = ensemble {
         items.push(("Mix", b, a, false));
@@ -1661,17 +2053,17 @@ fn score_panel(
         let left = format!("{name} {} → ", fixed(b, decimals));
         let right = fixed(a, decimals);
         let len = left.chars().count() + right.chars().count();
-        if x>0 && x + 5 + len>c.w {
+        if x > 0 && x + 5 + len > c.w {
             yy += 1;
             x = 0;
         }
-        if x>0 {
+        if x > 0 {
             c.text(x, yy, "  │  ", BORDER);
             x += 5;
         }
         let color = if (a - b).abs() <= DISPLAY_EPSILON {
             FG
-        } else if (a<b)^credit {
+        } else if (a < b) ^ credit {
             GREEN
         } else {
             RED
@@ -1684,6 +2076,144 @@ fn score_panel(
     yy + 1
 }
 
+/// One weight's part of the objective for the Score tab: its stat and points
+/// at the start and now. Points are lower-is-better (rewards are negative)
+/// and sum to the objective exactly.
+pub(crate) struct ScoreRow {
+    name: String,
+    stat: (f64, f64),
+    weight: String,
+    points: (f64, f64),
+}
+
+/// Normal mode: `breakdown` per weight, with the stat each weight multiplies.
+pub(crate) fn metric_score_rows(before: &Metrics, after: &Metrics, w: &Weights) -> Vec<ScoreRow> {
+    let (start, now) = (breakdown(before, w), breakdown(after, w));
+    let stat = |m: &Metrics, i: usize| {
+        if i < N_METRICS {
+            m.v[i]
+        } else if i < USAGE_WEIGHT {
+            m.off[i - N_METRICS] + m.off[7 - (i - N_METRICS)]
+        } else {
+            m.usage[i - USAGE_WEIGHT] + m.usage[7 - (i - USAGE_WEIGHT)]
+        }
+    };
+    (0..N_WEIGHTS)
+        .filter(|&i| start.contributions[i] != 0.0 || now.contributions[i] != 0.0)
+        .map(|i| ScoreRow {
+            name: weight_display_name(i).into(),
+            stat: (stat(before, i), stat(after, i)),
+            weight: config_number(w.0[i]),
+            points: (start.contributions[i], now.contributions[i]),
+        })
+        .collect()
+}
+
+/// aklgg mode: each `[aklgg]` stat's weighted contribution, sign flipped to
+/// the optimizer's lower-is-better convention.
+pub(crate) fn aklgg_score_rows(
+    before: &mana2_metrics::Stats,
+    after: &mana2_metrics::Stats,
+    w: &Weights,
+) -> Vec<ScoreRow> {
+    let start = mana2_metrics::score_contributions(before, &w.2);
+    let now = mana2_metrics::score_contributions(after, &w.2);
+    mana2_metrics::WEIGHTABLE_STATS
+        .iter()
+        .filter(|&&i| start[i] != 0.0 || now[i] != 0.0)
+        .map(|&i| ScoreRow {
+            name: mana2_metrics::STAT_IDS[i].into(),
+            stat: (before.values[i], after.values[i]),
+            weight: w.2.schedule_text(i),
+            points: (-start[i], -now[i]),
+        })
+        .collect()
+}
+
+/// The optimizer's [4] Score tab: where the objective comes from, largest
+/// parts first. Bars compare penalties with penalties and rewards with rewards.
+pub(crate) fn score_frame(
+    width: usize,
+    mut rows: Vec<ScoreRow>,
+    decimals: usize,
+) -> Canvas {
+    rows.sort_by(|a, b| {
+        b.points.1.abs().total_cmp(&a.points.1.abs()).then_with(|| a.name.cmp(&b.name))
+    });
+    // Callers write their status and key lines on the last three rows.
+    let mut c = Canvas::optimizer(width, rows.len() + 12);
+    let total = |pick: fn(&ScoreRow) -> f64, penalty: bool| -> f64 {
+        rows.iter().map(pick).filter(|&v| (v > 0.0) == penalty).sum()
+    };
+    let (penalty, credit) = (total(|r| r.points.1, true), -total(|r| r.points.1, false));
+    let (start_penalty, start_credit) = (total(|r| r.points.0, true), -total(|r| r.points.0, false));
+    let largest = rows.iter().map(|r| r.points.1.abs()).fold(0.0, f64::max);
+    let mut y = 3;
+    c.text(
+        0,
+        y,
+        &short(
+            "Points = stat × weight; lower is better, rewards are negative. Share: of all penalties (red) or all rewards (green).",
+            c.w,
+        ),
+        MUTED,
+    );
+    y += 2;
+    let columns = [(0, "Weight"), (18, "Stat start → now"), (42, "Weight"), (56, "Points start → now"), (80, "Δ"), (91, "Share")];
+    for (x, label) in columns {
+        if x < c.w {
+            c.text(x, y, label, CYAN);
+        }
+    }
+    y += 1;
+    let bar_width = c.w.saturating_sub(91 + 8).min(30);
+    for row in &rows {
+        let (before, after) = row.points;
+        let delta = after - before;
+        let color = if delta.abs() <= DISPLAY_EPSILON {
+            FG
+        } else if delta < 0.0 {
+            GREEN
+        } else {
+            RED
+        };
+        c.text(0, y, &short(&row.name, 17), FG);
+        c.text(
+            18,
+            y,
+            &format!("{} → {}", fixed(row.stat.0, decimals), fixed(row.stat.1, decimals)),
+            MUTED,
+        );
+        c.text(42, y, &short(&row.weight, 13), MUTED);
+        c.text(56, y, &format!("{} → ", fixed(before, decimals)), MUTED);
+        c.text(56 + fixed(before, decimals).chars().count() + 3, y, &fixed(after, decimals), color);
+        c.text(80, y, &format!("{:+.*}", decimals, delta), color);
+        let side = if after > 0.0 { penalty } else { credit };
+        let share = if side > 0.0 { after.abs() / side * 100.0 } else { 0.0 };
+        let filled = if largest > 0.0 {
+            (after.abs() / largest * bar_width as f64).round() as usize
+        } else {
+            0
+        };
+        let bar_color = if after > 0.0 { RED } else { GREEN };
+        c.text(91, y, &"█".repeat(filled), bar_color);
+        c.text(91 + bar_width + 1, y, &format!("{share:4.1}%"), MUTED);
+        y += 1;
+    }
+    y += 1;
+    let line = format!(
+        "Penalties {} → {}   − Rewards {} → {}   = Score {} → {}",
+        fixed(start_penalty, decimals),
+        fixed(penalty, decimals),
+        fixed(start_credit, decimals),
+        fixed(credit, decimals),
+        fixed(start_penalty - start_credit, decimals),
+        fixed(penalty - credit, decimals),
+    );
+    c.text(0, y, &short(&line, c.w), FG);
+    c
+}
+
 fn wrap_lines(lines: &[String], width: usize) -> Vec<String> {
     let mut result = Vec::new();
     for line in lines {
@@ -1693,7 +2223,7 @@ fn wrap_lines(lines: &[String], width: usize) -> Vec<String> {
         }
         let mut text = String::new();
         for word in line.split_whitespace() {
-            if !text.is_empty() && text.chars().count() + 1 + word.chars().count()>width {
+            if !text.is_empty() && text.chars().count() + 1 + word.chars().count() > width {
                 result.push(text);
                 text = String::new();
             }
@@ -1716,18 +2246,22 @@ fn info_page(term: &mut Terminal, title: &str, lines: &[String]) -> AppResult<()
         let mut c = Canvas::new(term.width(), lines.len() + 3);
         c.text(0, 0, title, FG);
         for (i, line) in lines.iter().enumerate() {
-            c.text(0, i + 2, &short(line, c.w), if line.starts_with("ERROR") {
-                RED
-            } else {
-                FG
-            });
+            c.text(
+                0,
+                i + 2,
+                &short(line, c.w),
+                if line.starts_with("ERROR") { RED } else { FG },
+            );
         }
         term.present(&c, scroll)?;
         let e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
             continue;
         }
-        if matches!(e, Event::Escape | Event::Quit | Event::Char('q') | Event::Enter) {
+        if matches!(
+            e,
+            Event::Escape | Event::Quit | Event::Char('q') | Event::Enter
+        ) {
             return Ok(());
         }
     }
@@ -1751,39 +2285,126 @@ fn help_popup_frame(
         }
     }
     let width = w.saturating_sub(4).max(4).min(80).min(w);
-    let lines = wrap_lines(lines, width.saturating_sub(4).max(1));
+    let content_width = width.saturating_sub(4).max(1);
+    let key_width = lines
+        .iter()
+        .filter_map(|line| line.split_once('\t'))
+        .map(|(key, _)| key.chars().count() + 2)
+        .max()
+        .unwrap_or(0)
+        .min(content_width / 2);
+    let mut formatted = Vec::new();
+    for line in lines {
+        if let Some((key, description)) = line.split_once('\t') {
+            if key.chars().count() + 2 > key_width {
+                // Keep long key labels readable in narrow terminals.
+                for text in wrap_lines(&[key.into()], content_width) {
+                    let bold = text.chars().count();
+                    formatted.push((text, bold));
+                }
+                for text in wrap_lines(&[description.into()], content_width) {
+                    formatted.push((text, 0));
+                }
+            } else {
+                for (index, text) in wrap_lines(
+                    &[description.into()],
+                    content_width.saturating_sub(key_width).max(1),
+                )
+                .into_iter()
+                .enumerate()
+                {
+                    let label = if index == 0 { key } else { "" };
+                    formatted.push((
+                        format!("{label:width$}{text}", width = key_width),
+                        label.chars().count(),
+                    ));
+                }
+            }
+        } else {
+            formatted.extend(
+                wrap_lines(&[line.clone()], content_width)
+                    .into_iter()
+                    .map(|text| (text, 0)),
+            );
+        }
+    }
+    let lines = formatted;
     let height = (lines.len() + 4).min(h.saturating_sub(2)).max(4).min(h);
     let capacity = height.saturating_sub(4);
     *scroll = (*scroll).min(lines.len().saturating_sub(capacity));
-    let r = Rect { x: (w - width) / 2, y: (h - height) / 2, w: width, h: height };
+    let r = Rect {
+        x: (w - width) / 2,
+        y: (h - height) / 2,
+        w: width,
+        h: height,
+    };
     for y in r.y..r.y + r.h {
         for x in r.x..r.x + r.w {
             c.cells[y * w + x] = Cell {
-                ch: ' ', color: FG, background: None, bold: false,
+                ch: ' ',
+                color: FG,
+                background: None,
+                bold: false,
             };
         }
     }
     c.boxed(r, BORDER);
     c.text(r.x + 2, r.y, &short(title, width.saturating_sub(4)), CYAN);
-    for (index, line) in lines.iter().skip(*scroll).take(capacity).enumerate() {
-        c.text(r.x + 2, r.y + 2 + index, &short(line, width.saturating_sub(4)), FG);
+    for (index, (line, bold)) in lines.iter().skip(*scroll).take(capacity).enumerate() {
+        let y = r.y + 2 + index;
+        c.text(r.x + 2, y, &short(line, content_width), FG);
+        for x in (r.x + 2)..(r.x + 2 + (*bold).min(content_width)) {
+            c.cells[y * w + x].bold = true;
+        }
     }
     if height >= 4 {
-        c.text(r.x + 2, r.y + height - 2,
-            &short("↑↓ scroll · Esc / ? close", width.saturating_sub(4)), MUTED);
+        c.text(
+            r.x + 2,
+            r.y + height - 2,
+            &short("↑↓ scroll · Esc / ? close", width.saturating_sub(4)),
+            MUTED,
+        );
     }
     (c, capacity, lines.len())
 }
 
-pub(crate) fn help_popup(term: &mut Terminal, base: &Canvas, title: &str, lines: &[String]) -> AppResult<()> {
+/// Main help menus that end with the fat-finger combo state.
+const COMBO_STATE_MENUS: [&str; 5] = [
+    "Editor controls",
+    "Optimizer",
+    "Optimizer search",
+    "Optimizer result",
+    "Ranker help",
+];
+
+pub(crate) fn help_popup(
+    term: &mut Terminal,
+    base: &Canvas,
+    title: &str,
+    lines: &[String],
+) -> AppResult<()> {
+    let with_state;
+    let lines = if COMBO_STATE_MENUS.contains(&title) {
+        let on = load_app_config().is_ok_and(|config| config.combos.fatfingering);
+        let mut all = lines.to_vec();
+        all.push(format!("Combos\tfatfinger {}", if on { "on" } else { "off" }));
+        with_state = all;
+        &with_state[..]
+    } else {
+        lines
+    };
     let mut scroll = 0usize;
     // Use the visible frame, including the caller's scrolling, as the backdrop.
     let snapshot = if term.previous.len() == term.size.0 * term.size.1 {
         Some(Canvas {
-            w: term.size.0, h: term.size.1,
-            cells: term.previous.clone(), hits: Vec::new(),
+            w: term.size.0,
+            h: term.size.1,
+            cells: term.previous.clone(),
+            hits: Vec::new(),
         })
-    } else { None };
+    } else {
+        None
+    };
     let base = snapshot.as_ref().unwrap_or(base);
     loop {
         term.refresh_size()?;
@@ -1803,19 +2424,27 @@ pub(crate) fn help_popup(term: &mut Terminal, base: &Canvas, title: &str, lines:
     }
 }
 
-fn input_box(term: &mut Terminal, title: &str, hint: &str, initial: &str) -> AppResult<Option<String>> {
+fn input_box(
+    term: &mut Terminal,
+    title: &str,
+    hint: &str,
+    initial: &str,
+) -> AppResult<Option<String>> {
     let mut text = initial.to_string();
     let mut replace = true;
     loop {
         let mut c = Canvas::new(term.width(), 8);
         c.text(0, 0, title, FG);
         let _ = hint;
-        c.boxed(Rect {
-            x: 0,
-            y: 2,
-            w: c.w,
-            h: 3
-        }, BORDER);
+        c.boxed(
+            Rect {
+                x: 0,
+                y: 2,
+                w: c.w,
+                h: 3,
+            },
+            BORDER,
+        );
         c.text(2, 3, &short(&format!("{text}▏"), c.w.saturating_sub(4)), FG);
         term.present(&c, 0)?;
         match term.event()? {
@@ -1824,7 +2453,7 @@ fn input_box(term: &mut Terminal, title: &str, hint: &str, initial: &str) -> App
             Event::Clear => {
                 text.clear();
                 replace = false;
-            },
+            }
             Event::Backspace => {
                 if replace {
                     text.clear();
@@ -1832,25 +2461,28 @@ fn input_box(term: &mut Terminal, title: &str, hint: &str, initial: &str) -> App
                 } else {
                     text.pop();
                 }
-            },
+            }
             Event::Char(ch) => {
                 if replace {
                     text.clear();
                     replace = false;
                 }
-                if text.len()<256 {
+                if text.len() < 256 {
                     text.push(ch);
                 }
-            },
+            }
             Event::Paste(s) => {
                 if replace {
                     text.clear();
                     replace = false;
                 }
-                text.extend(s.chars().filter(| c|!c.is_control()).take(256 - text.len().min(256)));
-            },
-            _ => {
-            },
+                text.extend(
+                    s.chars()
+                        .filter(|c| !c.is_control())
+                        .take(256 - text.len().min(256)),
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -1862,29 +2494,20 @@ fn confirm_box(term: &mut Terminal, title: &str, subject: &str, verb: &str) -> A
         c.text(0, 0, title, FG);
         c.text(0, 2, &short(subject, c.w), MUTED);
         for (i, name) in [verb, "Cancel"].iter().enumerate() {
-            let x = i *(verb.len().max(6) + 8);
-            let selected = if i == 0 {
-                accept
-            } else {
-                !accept
-            };
-            c.text(x, 4, if selected {
-                "›"
-            } else {
-                " "
-            }, FG);
+            let x = i * (verb.len().max(6) + 8);
+            let selected = if i == 0 { accept } else { !accept };
+            c.text(x, 4, if selected { "›" } else { " " }, FG);
             let text = format!("[{name}]");
             c.text(x + 2, 4, &text, FG);
-            c.hit(Rect {
-                x,
-                y: 4,
-                w: text.len() + 2,
-                h: 1
-            }, Action::Command(if i == 0 {
-                'y'
-            } else {
-                'n'
-            }));
+            c.hit(
+                Rect {
+                    x,
+                    y: 4,
+                    w: text.len() + 2,
+                    h: 1,
+                },
+                Action::Command(if i == 0 { 'y' } else { 'n' }),
+            );
         }
         term.present(&c, 0)?;
         let e = term.event()?;
@@ -1897,9 +2520,8 @@ fn confirm_box(term: &mut Terminal, title: &str, subject: &str, verb: &str) -> A
             Event::Escape | Event::Quit | Event::Char('q') | Event::Char('n') => return Ok(false),
             Event::Left => accept = true,
             Event::Right => accept = false,
-            Event::Tab => accept=!accept,
-            _ => {
-            }
+            Event::Tab => accept = !accept,
+            _ => {}
         }
     }
 }
@@ -1912,15 +2534,16 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
     let mut query = String::new();
     let mut scroll = 0usize;
     loop {
-        let filtered: Vec<usize> = items.iter().enumerate().filter(|(_, s) | s.to_ascii_lowercase().contains(&query.to_ascii_lowercase())).map(|(i, _) | i).collect();
+        let filtered: Vec<usize> = items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.to_ascii_lowercase().contains(&query.to_ascii_lowercase()))
+            .map(|(i, _)| i)
+            .collect();
         if selected >= filtered.len() {
             selected = filtered.len().saturating_sub(1);
         }
-        let top = if query.is_empty() {
-            2
-        } else {
-            3
-        };
+        let top = if query.is_empty() { 2 } else { 3 };
         let mut c = Canvas::new(term.width(), filtered.len() + top + 1);
         c.text(0, 0, title, FG);
         if !query.is_empty() {
@@ -1929,26 +2552,27 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
         for (row, &i) in filtered.iter().enumerate() {
             let yy = row + top;
             let active = row == selected;
-            c.text(1, yy, if active {
-                "›"
-            } else {
-                " "
-            }, if active {
-                BLUE
-            } else {
-                MUTED
-            });
-            c.text(3, yy, &short(&items[i], c.w.saturating_sub(4)), if active {
-                BLUE
-            } else {
-                FG
-            });
-            c.hit(Rect {
-                x: 0,
-                y: yy,
-                w: c.w,
-                h: 1
-            }, Action::Item(i));
+            c.text(
+                1,
+                yy,
+                if active { "›" } else { " " },
+                if active { BLUE } else { MUTED },
+            );
+            c.text(
+                3,
+                yy,
+                &short(&items[i], c.w.saturating_sub(4)),
+                if active { BLUE } else { FG },
+            );
+            c.hit(
+                Rect {
+                    x: 0,
+                    y: yy,
+                    w: c.w,
+                    h: 1,
+                },
+                Action::Item(i),
+            );
         }
         c.text(0, filtered.len() + top, "? help", MUTED);
         term.present(&c, scroll)?;
@@ -1960,15 +2584,15 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
             return Ok(Some(i));
         }
         match e {
-            Event::Enter => if let Some(&i) = filtered.get(selected) {
-                return Ok(Some(i));
-            },
-            Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
-            Event::Char('R') if title == "akler" => {
-                match term.request_restart() {
-                    Ok(()) => return Ok(None),
-                    Err(error) => help_popup(term, &c, "Reload program", &[error.to_string()])?,
+            Event::Enter => {
+                if let Some(&i) = filtered.get(selected) {
+                    return Ok(Some(i));
                 }
+            }
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
+            Event::Char('R') if title == "akler" => match term.request_restart() {
+                Ok(()) => return Ok(None),
+                Err(error) => help_popup(term, &c, "Reload program", &[error.to_string()])?,
             },
             Event::Char('?') => {
                 let mut lines = vec![
@@ -1980,20 +2604,21 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
                     lines.push("R or Reload program: restart into the rebuilt executable.".into());
                 }
                 help_popup(term, &c, title, &lines)?;
-            },
+            }
             Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
-            Event::Down | Event::Char('j') => selected = (selected + 1).min(filtered.len().saturating_sub(1)),
+            Event::Down | Event::Char('j') => {
+                selected = (selected + 1).min(filtered.len().saturating_sub(1))
+            }
             Event::Char('/') => {
                 if let Some(s) = input_box(term, "Filter", "", &query)? {
                     query = s;
                     selected = 0;
                     scroll = 0;
                 }
-            },
-            _ => {
             }
+            _ => {}
         }
-        if selected + top<scroll {
+        if selected + top < scroll {
             scroll = selected + top;
         } else if selected + top >= scroll + term.size.1 {
             scroll = selected + top + 1 - term.size.1;
@@ -2006,7 +2631,7 @@ fn choose_path(
     dir: &str,
     ext: &str,
     prefix: &str,
-    title: &str
+    title: &str,
 ) -> AppResult<Option<PathBuf>> {
     let paths = if dir == CORPUS_DIR {
         corpus_paths()?
@@ -2015,21 +2640,37 @@ fn choose_path(
     } else {
         discover(dir, ext, prefix)?
     };
-    let names: Vec<_> = paths.iter().map(|path| {
-        if dir == LAYOUT_DIR { layout_file_label(path) } else { label(path, prefix) }
-    }).collect();
+    let names: Vec<_> = paths
+        .iter()
+        .map(|path| {
+            if dir == LAYOUT_DIR {
+                layout_file_label(path)
+            } else {
+                label(path, prefix)
+            }
+        })
+        .collect();
     Ok(menu(term, title, &names)?.map(|i| paths[i].clone()))
 }
 
 fn show_corpus_info(term: &mut Terminal, c: &Corpus) -> AppResult<()> {
     let mut lines = vec![
         format!("Model: {MODEL_VERSION}"),
-        format!("Corpus: {}   content fingerprint {:016x}", c.name, c.fingerprint),
+        format!(
+            "Corpus: {}   content fingerprint {:016x}",
+            c.name, c.fingerprint
+        ),
         String::new(),
-        "Coverage of STORED corpus tables (not the original raw text):".into()
+        "Coverage of STORED corpus tables (not the original raw text):".into(),
     ];
-    for (i, name) in["Letters", "Bigrams", "Skipgrams", "Trigrams"].iter().enumerate() {
-        lines.push(format!("{name:<12} {:8.4}%  denominator mass {:.6}", c.coverage[i], c.totals[i]));
+    for (i, name) in ["Letters", "Bigrams", "Skipgrams", "Trigrams"]
+        .iter()
+        .enumerate()
+    {
+        lines.push(format!(
+            "{name:<12} {:8.4}%  denominator mass {:.6}",
+            c.coverage[i], c.totals[i]
+        ));
     }
     lines.extend([
             String::new(),
@@ -2052,13 +2693,13 @@ fn contribution_bar(
     before: f64,
     after: f64,
     maximum: f64,
-    color: u8
+    color: u8,
 ) {
     if width == 0 {
         return;
     }
-    let old = (before / maximum *(width - 1) as f64).round() as usize;
-    let new = (after / maximum *(width - 1) as f64).round() as usize;
+    let old = (before / maximum * (width - 1) as f64).round() as usize;
+    let new = (after / maximum * (width - 1) as f64).round() as usize;
     c.line(x, y, width, BORDER);
     if after > 0.0 {
         c.line(x, y, new + 1, color);
@@ -2071,6 +2712,59 @@ fn contribution_bar(
     }
 }
 
+pub(crate) fn metric_detail_intro(c: &mut Canvas, mut y: usize, m: usize) -> usize {
+    let summary = match m {
+        SFB => "Two consecutive presses on different keys using the same finger.",
+        SFS => "Different keys using the same finger, with one press between them.",
+        SKB => "The same physical key pressed twice consecutively.",
+        SKS => "The same physical key repeated with one press between repeats.",
+        ROLL => {
+            "Trigrams containing an inward or outward roll; includes two- and three-finger rolls."
+        }
+        _ => METRIC_HELP[m].split(". ").next().unwrap_or(METRIC_HELP[m]),
+    };
+    let description = format!("{}: {}", METRIC_NAMES[m], summary);
+    for line in wrap_lines(&[description], c.w.max(1)) {
+        c.text(0, y, &line, FG);
+        y += 1;
+    }
+    y + 1
+}
+
+pub(crate) fn metric_detail_footer(
+    c: &mut Canvas,
+    mut y: usize,
+    m: usize,
+    sort_change: bool,
+    merge: bool,
+    all: Option<bool>,
+    view: Option<&str>,
+) -> usize {
+    let mut controls = vec![format!(
+        "d sort: {}",
+        if sort_change { "change" } else { "value" }
+    )];
+    if !is_rhythm(m) {
+        controls.push(format!(
+            "b pairs: {}",
+            if merge { "merged" } else { "separate" }
+        ));
+    }
+    if let Some(all) = all {
+        controls.push(format!("a rows: {}", if all { "all" } else { "top" }));
+    }
+    if let Some(view) = view {
+        controls.push(format!("x view: {view}"));
+    }
+    controls.push("? help".into());
+    controls.push("q back".into());
+    for line in wrap_lines(&[controls.join(" · ")], c.w.max(1)) {
+        c.text(0, y, &line, MUTED);
+        y += 1;
+    }
+    y + 1
+}
+
 fn contributor_view(
     term: &mut Terminal,
     m: usize,
@@ -2078,7 +2772,7 @@ fn contributor_view(
     before: &[usize],
     after: &[usize],
     corpus: &Corpus,
-    _optimizer_ui: bool
+    _optimizer_ui: bool,
 ) -> AppResult<()> {
     let mut sort_change = false;
     let mut merge = false;
@@ -2086,124 +2780,175 @@ fn contributor_view(
     let mut view = CreditView::Clean;
     loop {
         let mut rows = contributor_data_mode(m, before, after, corpus, model, merge, view);
-        if sort_change {
-            rows.sort_by(
-                |a,
-                b|(b.after - b.before).abs().total_cmp(&(a.after - a.before).abs()).then_with(|| a.gram.cmp(&b.gram))
-            );
-        }
         let raw0 = full_raw(before, corpus, &model.geometry);
         let raw1 = full_raw(after, corpus, &model.geometry);
-        let v0 = pct(contribution_mass(m, &raw0, view), denominator(m, &raw0, corpus));
-        let v1 = pct(contribution_mass(m, &raw1, view), denominator(m, &raw1, corpus));
+        let d0 = denominator(m, &raw0, corpus);
+        let d1 = denominator(m, &raw1, corpus);
+        if sort_change {
+            rows.sort_by(|a, b| {
+                let (a0, a1) = contributor_comparison(a.before, a.after, d0, d1);
+                let (b0, b1) = contributor_comparison(b.before, b.after, d0, d1);
+                (b1 - b0)
+                    .abs()
+                    .total_cmp(&(a1 - a0).abs())
+                    .then_with(|| a.gram.cmp(&b.gram))
+            });
+        }
+        let v0 = pct(
+            contribution_mass(m, &raw0, view),
+            denominator(m, &raw0, corpus),
+        );
+        let v1 = pct(
+            contribution_mass(m, &raw1, view),
+            denominator(m, &raw1, corpus),
+        );
         let dp = DETAIL_DECIMALS;
         let mut c = Canvas::new(term.width(), 64);
         let title = if roll_metric(m) {
-            format!("{} · {}", METRIC_NAMES[m], roll_settings_label(model.geometry.rolls))
+            format!(
+                "{} · {}",
+                METRIC_NAMES[m],
+                roll_settings_label(model.geometry.rolls)
+            )
         } else if raw_positive(m).is_some() {
             format!("{} · {}", METRIC_NAMES[m], view.name())
         } else {
             METRIC_NAMES[m].to_string()
         };
-        let _controls = if raw_positive(m).is_some() {
-            "x view | d sort | b pair | ? help | q back"
-        } else {
-            "d sort | b pair | ? help | q back"
-        };
-        header(&mut c, &title, &corpus.name, &model.board.name, "? help");
+        header(&mut c, &title, &corpus.name, &model.board.name, "");
         let mut y = keyboard(&mut c, 2, model, after, before, None, None, &[]) + 1;
-        c.text(0, y, &format!("{} → {} {}", number(v0, dp), number(v1, dp), metric_unit(m)), FG);
-        c.text(32, y, &format!("○ before  ● after   {}", if sort_change {
-            "change"
-        } else {
-            "contribution"
-        }), MUTED);
+        y = metric_detail_intro(&mut c, y, m);
+        if (d0 - d1).abs() > DISPLAY_EPSILON {
+            for line in wrap_lines(
+                &[
+                    "Change ignores denominator shifts; Before/After keep actual percentages."
+                        .into(),
+                ],
+                c.w.max(1),
+            ) {
+                c.text(0, y, &line, MUTED);
+                y += 1;
+            }
+            y += 1;
+        }
+        c.text(
+            0,
+            y,
+            &format!("{} → {} {}", number(v0, dp), number(v1, dp), metric_unit(m)),
+            FG,
+        );
+        c.text(
+            32,
+            y,
+            &format!(
+                "○ before  ● after   {}",
+                if sort_change {
+                    "change"
+                } else {
+                    "contribution"
+                }
+            ),
+            MUTED,
+        );
         y += 2;
         let show_reasons = raw_positive(m).is_some() && view == CreditView::Rejected;
-        let plot_x = if show_reasons && c.w >= 90 {
-            62
-        } else {
-            43
-        };
+        let plot_x = if show_reasons && c.w >= 90 { 62 } else { 43 };
         let plot_w = c.w.saturating_sub(plot_x + 1).max(1);
-        c.text(0, y, if merge {
-            "Pair"
-        } else {
-            "Keys"
-        }, MUTED);
+        c.text(0, y, if merge { "Pair" } else { "Keys" }, MUTED);
         c.right(9, y, 9, "Before", MUTED);
         c.right(20, y, 9, "After", MUTED);
         c.right(31, y, 9, "Change", MUTED);
-        if plot_x>43 {
+        if plot_x > 43 {
             c.text(43, y, "Blocked by", MUTED);
         }
-        let maximum = rows.iter().map(|r| r.before.max(r.after)).fold(0.0, f64::max).max(1e-12);
+        let maximum = rows
+            .iter()
+            .map(|r| r.before.max(r.after))
+            .fold(0.0, f64::max)
+            .max(1e-12);
         c.text(plot_x, y, "0", MUTED);
         c.right(
             plot_x + 2,
             y,
             plot_w.saturating_sub(2),
             &format!("{} {}", number(maximum, dp), metric_unit(m)),
-            MUTED
+            MUTED,
         );
         y += 1;
         let n = rows.len().min(16);
         for (i, row) in rows.iter().take(n).enumerate() {
             let yy = y + i;
-            let cm = if view == CreditView::Rejected {
-                SFB
-            } else {
-                m
-            };
+            let (compare_before, compare_after) =
+                contributor_comparison(row.before, row.after, d0, d1);
+            let cm = if view == CreditView::Rejected { SFB } else { m };
             let color = if view == CreditView::Raw {
                 FG
             } else {
-                change_color(cm, row.before, row.after)
+                change_color(cm, compare_before, compare_after)
             };
             c.text(0, yy, &short(&row.gram, 8), FG);
             c.right(9, yy, 9, &number(row.before, dp), MUTED);
             c.right(20, yy, 9, &number(row.after, dp), color);
-            c.right(31, yy, 9, &delta_text(row.before, row.after, dp), if view == CreditView::Raw {
-                MUTED
-            } else {
-                delta_color(cm, row.before, row.after)
-            });
+            c.right(
+                31,
+                yy,
+                9,
+                &delta_text(compare_before, compare_after, dp),
+                if view == CreditView::Raw {
+                    MUTED
+                } else {
+                    delta_color(cm, compare_before, compare_after)
+                },
+            );
             if show_reasons {
-                let bits = if row.after>0.0 {
+                let bits = if row.after > 0.0 {
                     row.why_after
                 } else {
                     row.why_before
                 };
-                if plot_x>43 {
+                if plot_x > 43 {
                     c.text(43, yy, &short(&blocker_names(bits), plot_x - 44), MUTED);
                 }
-                c.hit(Rect {
-                    x: 0,
-                    y: yy,
-                    w: c.w,
-                    h: 1
-                }, Action::Item(i));
+                c.hit(
+                    Rect {
+                        x: 0,
+                        y: yy,
+                        w: c.w,
+                        h: 1,
+                    },
+                    Action::Item(i),
+                );
             }
-            contribution_bar(&mut c, plot_x, yy, plot_w, row.before, row.after, maximum, color);
+            contribution_bar(
+                &mut c, plot_x, yy, plot_w, row.before, row.after, maximum, color,
+            );
         }
         let sum0: f64 = rows.iter().take(n).map(|r| r.before).sum();
         let sum1: f64 = rows.iter().take(n).map(|r| r.after).sum();
         let other0 = (v0 - sum0).max(0.0);
         let other1 = (v1 - sum1).max(0.0);
+        let (compare_other0, compare_other1) = contributor_comparison(other0, other1, d0, d1);
         y += n + 1;
         c.text(0, y, "Other", MUTED);
         c.right(9, y, 9, &number(other0, dp), MUTED);
         c.right(20, y, 9, &number(other1, dp), MUTED);
-        c.right(31, y, 9, &delta_text(other0, other1, dp), if view == CreditView::Raw {
-            MUTED
-        } else {
-            delta_color(if view == CreditView::Rejected {
-                SFB
+        c.right(
+            31,
+            y,
+            9,
+            &delta_text(compare_other0, compare_other1, dp),
+            if view == CreditView::Raw {
+                MUTED
             } else {
-                m
-            }, other0, other1)
-        });
-        c.h = y + 2;
+                delta_color(
+                    if view == CreditView::Rejected { SFB } else { m },
+                    compare_other0,
+                    compare_other1,
+                )
+            },
+        );
+        let detail_view = raw_positive(m).map(|_| view.name());
+        c.h = metric_detail_footer(&mut c, y + 2, m, sort_change, merge, None, detail_view);
         term.present(&c, scroll)?;
         let e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
@@ -2215,29 +2960,52 @@ fn contributor_view(
                     info_page(
                         term,
                         &row.gram,
-                        &[ format!("Before: {}", blocker_names(row.why_before)), format!("After:  {}", blocker_names(row.why_after)),]
+                        &[
+                            format!("Before: {}", blocker_names(row.why_before)),
+                            format!("After:  {}", blocker_names(row.why_after)),
+                        ],
                     )?;
                 }
             }
         }
         match e {
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-            Event::Char('d') => sort_change=!sort_change,
-            Event::Char('b') => if !is_rhythm(m) {
-                merge=!merge;
-            },
-            Event::Char('x') => if raw_positive(m).is_some() {
-                view = view.next();
-                scroll = 0;
-            },
-            Event::Char('?') => help_popup(
-                term,
-                &c,
-                METRIC_NAMES[m],
-                &[_controls.into(), METRIC_HELP[m].into(), "D/C describe finger placement, not keystroke order. Finger-length order is a model assumption.".into(), "For SRAF: x cycles clean, raw and rejected. Raw = clean + rejected, with the SAME denominator.".into(), "SRAF checks its pair; the veto is structural, even for a zero-weight penalty. ALT counts all non-thumb LRL/RLR triples. Roll filters follow [rolls] in akler.conf.".into(), "Roll thumb inclusion follows [rolls]; other preference metrics exclude thumbs. Excluded presses are never spliced out.".into(), "Only stored pairs/trigrams are known: no claim about four-key or longer sequences.".into(),]
-            )?,
-            _ => {
+            Event::Char('d') => sort_change = !sort_change,
+            Event::Char('b') => {
+                if !is_rhythm(m) {
+                    merge = !merge;
+                }
             }
+            Event::Char('x') => {
+                if raw_positive(m).is_some() {
+                    view = view.next();
+                    scroll = 0;
+                }
+            }
+            Event::Char('?') => {
+                let mut lines = vec![
+                    METRIC_HELP[m].into(),
+                    "Before/After show actual percentages. Change and its colors compare pattern contributions using one shared denominator, so denominator-only shifts stay neutral.".into(),
+                    "d\tSort by current contribution or size of the change.".into(),
+                ];
+                if !is_rhythm(m) {
+                    lines.push(
+                        "b\tCombine a pair with its reverse, or show them separately.".into(),
+                    );
+                }
+                if raw_positive(m).is_some() {
+                    lines.push("x\tShow counted, total, or excluded contributions (clean / raw / rejected).".into());
+                }
+                lines.push("q\tReturn to the editor.".into());
+                lines.push(
+                    "The top 16 contributions are shown; Other contains the remainder.".into(),
+                );
+                if roll_metric(m) {
+                    lines.push(roll_settings_label(model.geometry.rolls));
+                }
+                help_popup(term, &c, METRIC_NAMES[m], &lines)?;
+            }
+            _ => {}
         }
     }
 }
@@ -2248,7 +3016,7 @@ fn objective_view(
     before: &[usize],
     after: &[usize],
     c: &Corpus,
-    w: &Weights
+    w: &Weights,
 ) -> AppResult<()> {
     let b = breakdown(&metrics(&full_raw(before, c, &model.geometry), c), w);
     let a = breakdown(&metrics(&full_raw(after, c, &model.geometry), c), w);
@@ -2258,25 +3026,25 @@ fn objective_view(
             continue;
         }
         lines.push(format!(
-                "{:<16} {:8.3}  {:11.4}  {:11.4}  {:11.4}",
-                weight_display_name(i),
-                w.0[i],
-                b.contributions[i],
-                a.contributions[i],
-                a.contributions[i]-b.contributions[i]
-            ));
+            "{:<16} {:8.3}  {:11.4}  {:11.4}  {:11.4}",
+            weight_display_name(i),
+            w.0[i],
+            b.contributions[i],
+            a.contributions[i],
+            a.contributions[i] - b.contributions[i]
+        ));
     }
     lines.extend([
             String::new(),
-            format!("Penalty          {:.4} → {:.4}", b.penalty, a.penalty),
-            format!("Preference credit {:.4} → {:.4}", b.bonus, a.bonus),
-            format!("Net objective     {:.4} → {:.4}", b.net, a.net),
+            format!("Penalties         {:.4} → {:.4}", b.penalty, a.penalty),
+            format!("− Rewards         {:.4} → {:.4}", b.bonus, a.bonus),
+            format!("= Score           {:.4} → {:.4}", b.net, a.net),
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
             "FSB/FSS duplicate daFJB/daFJS; HSB/HSS duplicate daHJB/daHJS. Adjacent and nonadjacent jump weights score disjoint finger distances. Lateral stretch stays independent.".into(),
             "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
-    info_page(term, "Objective audit — selected corpus", &lines)
+    info_page(term, "Score audit — selected corpus", &lines)
 }
 
 fn problem_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
@@ -2284,15 +3052,21 @@ fn problem_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
     let mut new = [0.0; N_WEIGHTS];
     let mut lines = vec!["Training corpus       Share     Net before       Net after".into()];
     for (i, c) in p.corpora.iter().enumerate() {
-        let b = breakdown(&metrics(&full_raw(&p.model.original, c, &p.model.geometry), c), &p.weights);
-        let a = breakdown(&metrics(&full_raw(arr, c, &p.model.geometry), c), &p.weights);
+        let b = breakdown(
+            &metrics(&full_raw(&p.model.original, c, &p.model.geometry), c),
+            &p.weights,
+        );
+        let a = breakdown(
+            &metrics(&full_raw(arr, c, &p.model.geometry), c),
+            &p.weights,
+        );
         lines.push(format!(
-                "{:<20} {:5.3}     {:10.4}      {:10.4}",
-                short(&c.name, 20),
-                p.shares[i],
-                b.net,
-                a.net
-            ));
+            "{:<20} {:5.3}     {:10.4}      {:10.4}",
+            short(&c.name, 20),
+            p.shares[i],
+            b.net,
+            a.net
+        ));
         for j in 0..N_WEIGHTS {
             old[j] += p.shares[i] * b.contributions[j];
             new[j] += p.shares[i] * a.contributions[j];
@@ -2305,117 +3079,93 @@ fn problem_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> Ap
             continue;
         }
         lines.push(format!(
-                "{:<16} {:11.4}   {:11.4}   {:11.4}",
-                weight_display_name(i),
-                old[i],
-                new[i],
-                new[i]-old[i]
-            ));
+            "{:<16} {:11.4}   {:11.4}   {:11.4}",
+            weight_display_name(i),
+            old[i],
+            new[i],
+            new[i] - old[i]
+        ));
     }
     lines.push(String::new());
     lines.push(format!(
-            "Mixture net        {:.6} -> {:.6}",
-            old.iter().sum:: <f64>(),
-            new.iter().sum:: <f64>()
-        ));
-    lines.push("This breakdown is the actual search objective, including all training shares.".into());
+        "Mixture net        {:.6} -> {:.6}",
+        old.iter().sum::<f64>(),
+        new.iter().sum::<f64>()
+    ));
+    lines.push(
+        "This breakdown is the actual search objective, including all training shares.".into(),
+    );
     lines.push("Negative terms are preference credits, not measured ergonomic benefits.".into());
     info_page(term, "Search objective audit", &lines)
 }
 
-fn mana2_stats_for(arr: &[usize], corpus: &Corpus, model: &Model) -> mana2_metrics::Stats {
+fn mana_stats_for(arr: &[usize], corpus: &Corpus, model: &Model) -> mana2_metrics::Stats {
     let raw = full_raw_with_mana2(arr, corpus, &model.geometry, true);
-    mana2_metrics::stats(raw.1.as_ref().unwrap(), corpus.totals)
+    mana_stats_for_corpus(&raw, corpus)
 }
 
-fn mana2_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
-    let mut old = [0.0; mana2_metrics::N_STATS];
-    let mut new = [0.0; mana2_metrics::N_STATS];
-    let mut lines = vec!["Mana2 score is maximized; AKLER minimizes its negative.".into()];
-    for (i, corpus) in p.corpora.iter().enumerate() {
-        let before = mana2_stats_for(&p.model.original, corpus, &p.model);
-        let after = mana2_stats_for(arr, corpus, &p.model);
+fn mana_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
+    let mut before_terms = [0.0; mana2_metrics::N_STATS];
+    let mut after_terms = [0.0; mana2_metrics::N_STATS];
+    let mode = p.settings.mode.as_str();
+    let physical_weights = &p.weights.2;
+    let title = if mode == "aklgg" { "AKL.GG" } else { "Mana" };
+    let score = |stats: &mana2_metrics::Stats| mana2_metrics::score(stats, physical_weights);
+    let contributions = |stats: &mana2_metrics::Stats| {
+        mana2_metrics::score_contributions(stats, physical_weights)
+    };
+    let mut lines = vec![format!("{title} objective · lower is better.")];
+    for (corpus_index, corpus) in p.corpora.iter().enumerate() {
+        let before = mana_stats_for(&p.model.original, corpus, &p.model);
+        let after = mana_stats_for(arr, corpus, &p.model);
         lines.push(format!(
-            "{} (share {:.3}): score {:.4} → {:.4}",
+            "{} (share {:.3}): {:.4} → {:.4}",
             corpus.name,
-            p.shares[i],
-            mana2_metrics::score(&before, &p.weights.2),
-            mana2_metrics::score(&after, &p.weights.2)
+            p.shares[corpus_index],
+            -score(&before),
+            -score(&after)
         ));
-        for (index, value) in mana2_metrics::score_contributions(&before, &p.weights.2).into_iter().enumerate() {
-            old[index] += p.shares[i] * value;
+        for (index, value) in contributions(&before)
+            .into_iter()
+            .enumerate()
+        {
+            before_terms[index] -= p.shares[corpus_index] * value;
         }
-        for (index, value) in mana2_metrics::score_contributions(&after, &p.weights.2).into_iter().enumerate() {
-            new[index] += p.shares[i] * value;
+        for (index, value) in contributions(&after)
+            .into_iter()
+            .enumerate()
+        {
+            after_terms[index] -= p.shares[corpus_index] * value;
         }
     }
     lines.push(String::new());
-    lines.push(format!("Training objective {:.4} → {:.4}", -old.iter().sum::<f64>(), -new.iter().sum::<f64>()));
-    lines.push(String::new());
-    lines.push("Mana2 stat              Before term      After term".into());
-    for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
-        lines.push(format!("{id:<24} {:+11.4}     {:+11.4}", old[index], new[index]));
+    lines.push("Stat                         Before       After      Change".into());
+    for &index in mana2_metrics::WEIGHTABLE_STATS {
+        let before = before_terms[index];
+        let after = after_terms[index];
+        if before.abs() <= DISPLAY_EPSILON && after.abs() <= DISPLAY_EPSILON {
+            continue;
+        }
+        lines.push(format!(
+            "{:<26} {:10.4}  {:10.4}  {:+10.4}",
+            mana2_metrics::STAT_IDS[index],
+            before,
+            after,
+            after - before
+        ));
     }
-    info_page(term, "Mana2 objective audit", &lines)
+    info_page(term, &format!("{title} objective audit"), &lines)
 }
 
-fn simple_objective_view(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
-    let mut old_values = [0.0; simple_metrics::N_STATS];
-    let mut new_values = [0.0; simple_metrics::N_STATS];
-    let mut old_terms = [0.0; simple_metrics::N_STATS];
-    let mut new_terms = [0.0; simple_metrics::N_STATS];
-    let mut lines = vec![
-        "Simple score is minimized; positive weights penalize and negative weights reward.".into(),
-    ];
-    for (i, corpus) in p.corpora.iter().enumerate() {
-        let before = mana2_stats_for(&p.model.original, corpus, &p.model);
-        let after = mana2_stats_for(arr, corpus, &p.model);
-        lines.push(format!(
-            "{} (share {:.3}): score {:.4} → {:.4}",
-            corpus.name,
-            p.shares[i],
-            simple_metrics::score(&before, &p.weights.3),
-            simple_metrics::score(&after, &p.weights.3),
-        ));
-        let before_values = simple_metrics::values(&before, &p.weights.3);
-        let after_values = simple_metrics::values(&after, &p.weights.3);
-        let before_terms = simple_metrics::score_contributions(&before, &p.weights.3);
-        let after_terms = simple_metrics::score_contributions(&after, &p.weights.3);
-        for index in 0..simple_metrics::N_STATS {
-            old_values[index] += p.shares[i] * before_values[index];
-            new_values[index] += p.shares[i] * after_values[index];
-            old_terms[index] += p.shares[i] * before_terms[index];
-            new_terms[index] += p.shares[i] * after_terms[index];
-        }
-    }
-    lines.push(String::new());
-    lines.push(format!(
-        "Training objective {:.4} → {:.4}",
-        old_terms.iter().sum::<f64>(),
-        new_terms.iter().sum::<f64>(),
-    ));
-    lines.push(String::new());
-    lines.push(
-        "Simple stat              Weight   Before value  After value   Before term   After term"
-            .into(),
-    );
-    for index in 0..simple_metrics::N_STATS {
-        lines.push(format!(
-            "{:<24} {:>7.3}  {:>12.4}  {:>11.4}  {:+12.4}  {:+11.4}",
-            simple_metrics::LABELS[index],
-            p.weights.3.get(index),
-            old_values[index],
-            new_values[index],
-            old_terms[index],
-            new_terms[index],
-        ));
-    }
-    info_page(term, "Simple objective audit", &lines)
-}
-
-fn validation_view(term: &mut Terminal, model: &Model, before: &[usize], after: &[usize]) -> AppResult<()> {
+fn validation_view(
+    term: &mut Terminal,
+    model: &Model,
+    before: &[usize],
+    after: &[usize],
+) -> AppResult<()> {
     let paths = corpus_paths()?;
-    let mut lines = vec!["Corpus              SFB before → after    SFS before → after    Bi coverage".into()];
+    let mut lines =
+        vec!["Corpus              SFB before → after    SFS before → after    Bi coverage".into()];
     for path in paths {
         if term.quitting {
             return Ok(());
@@ -2425,27 +3175,41 @@ fn validation_view(term: &mut Terminal, model: &Model, before: &[usize], after: 
                 let a = metrics(&full_raw(before, &c, &model.geometry), &c);
                 let b = metrics(&full_raw(after, &c, &model.geometry), &c);
                 lines.push(format!(
-                        "{:<19} {:6.3} → {:6.3}     {:6.3} → {:6.3}        {:6.2}%",
-                        short(&c.name, 19),
-                        a.v[0],
-                        b.v[0],
-                        a.v[1],
-                        b.v[1],
-                        c.coverage[1]
-                    ));
-            },
+                    "{:<19} {:6.3} → {:6.3}     {:6.3} → {:6.3}        {:6.2}%",
+                    short(&c.name, 19),
+                    a.v[0],
+                    b.v[0],
+                    a.v[1],
+                    b.v[1],
+                    c.coverage[1]
+                ));
+            }
             Err(e) => lines.push(format!("ERROR {}: {e}", label(&path, "corpus-"))),
         }
     }
     lines.extend([
-            String::new(),
-            "Same n-gram definitions, but each corpus has its own frequencies.".into(),
-            "Validation never changes the result or silently changes training weights.".into()
-        ]);
+        String::new(),
+        "Same n-gram definitions, but each corpus has its own frequencies.".into(),
+        "Validation never changes the result or silently changes training weights.".into(),
+    ]);
     info_page(term, "Cross-corpus validation", &lines)
 }
 
-fn dashboard(
+fn selected_breakdown(
+    raw: &Raw,
+    normal: &Metrics,
+    corpus: &Corpus,
+    weights: &Weights,
+    mode: Option<&str>,
+) -> Breakdown {
+    if mode.is_some_and(|mode| mode == "aklgg") {
+        mana_breakdown(&mana_stats_for_corpus(raw, corpus), weights)
+    } else {
+        breakdown(normal, weights)
+    }
+}
+
+fn dashboard_from_raw(
     term: &Terminal,
     title: &str,
     controls: &str,
@@ -2454,35 +3218,188 @@ fn dashboard(
     baseline: &[usize],
     corpus: &Corpus,
     w: &Weights,
+    baseline_raw: &Raw,
+    current_raw: &Raw,
+    baseline_metrics: &Metrics,
+    current_metrics: &Metrics,
     locks: Option<&[bool]>,
     cursor: Option<usize>,
     status: &str,
     ensemble: Option<(f64, f64)>,
-    optimizer_ui: bool
+    optimizer_ui: bool,
+    optimizer_mode: Option<&str>,
 ) -> Canvas {
-    let r0 = full_raw(baseline, corpus, &model.geometry);
-    let r1 = full_raw(arr, corpus, &model.geometry);
-    let b = metrics(&r0, corpus);
-    let a = metrics(&r1, corpus);
     let mut c = Canvas::new(term.width(), 96);
-    header(&mut c, title, &corpus.name, &model.board.name, if optimizer_ui { controls } else { "" });
+    header(
+        &mut c,
+        title,
+        &corpus.name,
+        &model.board.name,
+        if optimizer_ui { controls } else { "" },
+    );
     let mut y = keyboard(&mut c, 2, model, arr, baseline, locks, cursor, &[]);
+    // The optimizer's [alts] rules, named by the letters now at those spots;
+    // green while on, a click turns them off.
+    let alts = w.1.alts.filter(|_| title == "Optimizer");
+    let rules = alts.map(|all| all.for_keys(&model.board.keys));
+    if let Some(rules) = rules.filter(|rules| !rules.is_empty()) {
+        let main = model.board.keys.iter().zip(arr).filter(|(key, _)| key.main);
+        let names = crate::alt_fingers::position_names(main.map(|(key, &symbol)| {
+            let symbol = model.canonical[symbol];
+            let name = if symbol == b' ' {
+                "␣".to_owned()
+            } else {
+                display_symbol(symbol).to_string()
+            };
+            (key.row, key.col, name)
+        }));
+        let source = crate::alt_fingers::AltRules::text_with(rules, names);
+        let text = crate::action_ui::alts_label(w.3, &source);
+        c.text(0, y + 1, &short(&text, c.w), if w.3 { GREEN } else { RED });
+        let width = text.chars().count().min(c.w);
+        c.hit(Rect { x: 0, y: y + 1, w: width, h: 1 }, Action::Command('f'));
+        y += 3;
+    }
+    let aklgg = optimizer_mode == Some("aklgg");
     if optimizer_ui {
-        y = grouped_metric_cards(&mut c, y, &b, &a, &r1, corpus, term.decimals());
-        y = finger_table(&mut c, y + 1, &b, &a, term.decimals());
-        y = score_panel(&mut c, y + 1, &breakdown(&b, w), &breakdown(&a, w), ensemble, term.decimals());
+        if aklgg {
+            y = aklgg_stat_table(
+                &mut c,
+                y,
+                &mana_stats_for_corpus(baseline_raw, corpus),
+                &mana_stats_for_corpus(current_raw, corpus),
+                term.decimals(),
+            );
+        } else {
+            y = grouped_metric_cards(
+                &mut c,
+                y,
+                baseline_metrics,
+                current_metrics,
+                current_raw,
+                corpus,
+                term.decimals(),
+                term.simple_stats,
+            );
+            y = finger_table(
+                &mut c,
+                y + 1,
+                baseline_metrics,
+                current_metrics,
+                term.decimals(),
+            );
+        }
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &selected_breakdown(baseline_raw, baseline_metrics, corpus, w, optimizer_mode),
+            &selected_breakdown(current_raw, current_metrics, corpus, w, optimizer_mode),
+            ensemble,
+            term.decimals(),
+        );
+    } else if title == "Optimizer" && term.optimizer_weights {
+        y = optimizer_metric_cards(
+            &mut c,
+            y,
+            baseline_metrics,
+            current_metrics,
+            current_raw,
+            corpus,
+            w,
+            term.decimals(),
+            term.simple_stats,
+            true,
+        );
+        y = finger_table(
+            &mut c,
+            y + 1,
+            baseline_metrics,
+            current_metrics,
+            term.decimals(),
+        );
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &breakdown(baseline_metrics, w),
+            &breakdown(current_metrics, w),
+            ensemble,
+            term.decimals(),
+        );
+    } else if title == "Optimizer" {
+        if aklgg {
+            y = aklgg_stat_table(
+                &mut c,
+                y,
+                &mana_stats_for_corpus(baseline_raw, corpus),
+                &mana_stats_for_corpus(current_raw, corpus),
+                term.decimals(),
+            );
+        } else {
+            y = optimizer_metric_cards(
+                &mut c,
+                y,
+                baseline_metrics,
+                current_metrics,
+                current_raw,
+                corpus,
+                w,
+                term.decimals(),
+                term.simple_stats,
+                false,
+            );
+            y = finger_table(
+                &mut c,
+                y + 1,
+                baseline_metrics,
+                current_metrics,
+                term.decimals(),
+            );
+        }
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &selected_breakdown(baseline_raw, baseline_metrics, corpus, w, optimizer_mode),
+            &selected_breakdown(current_raw, current_metrics, corpus, w, optimizer_mode),
+            ensemble,
+            term.decimals(),
+        );
+        y = spacegram_policy_row(&mut c, y + 1, corpus.include_spacegrams);
     } else {
-        y = editor_metric_cards(&mut c, y, &b, &a, &r1, corpus, term.decimals());
-        y = finger_table(&mut c, y + 1, &b, &a, term.decimals());
-        y = score_panel(&mut c, y + 1, &breakdown(&b, w), &breakdown(&a, w), ensemble, term.decimals());
+        y = editor_metric_cards(
+            &mut c,
+            y,
+            baseline_metrics,
+            current_metrics,
+            current_raw,
+            corpus,
+            term.decimals(),
+            term.simple_stats,
+        );
+        y = finger_table(
+            &mut c,
+            y + 1,
+            baseline_metrics,
+            current_metrics,
+            term.decimals(),
+        );
+        y = score_panel(
+            &mut c,
+            y + 1,
+            &breakdown(baseline_metrics, w),
+            &breakdown(current_metrics, w),
+            ensemble,
+            term.decimals(),
+        );
+        y = spacegram_policy_row(&mut c, y + 1, corpus.include_spacegrams);
     }
     c.text(0, y, &short(status, c.w), CYAN);
-    if optimizer_ui {
-        c.h = y + 2;
-    } else {
-        c.text(0, y + 1, "? help", MUTED);
-        c.h = y + 3;
-    }
+    c.text(
+        0,
+        y + 1,
+        &format!("m stats: {} · ? help", term.stats_view_name()),
+        MUTED,
+    );
+    c.h = y + 3;
     c
 }
 
@@ -2490,24 +3407,33 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     if aggregate(i) {
         return Err("Display-only totals have no separate weight; edit their directional or D/C components.".into());
     }
-    let hint = if i<N_METRICS {
+    let hint = if i < N_METRICS {
         METRIC_HELP[i]
-    } else if i<N_METRICS + 4 {
+    } else if i < N_METRICS + 4 {
         "Extra penalty per percentage point of off-home use by this finger pair."
     } else {
         "Extra penalty per percentage point of total use by this finger pair."
     };
-    if let Some(v) = input_box(term, &format!("Weight: {}", weight_display_name(i)), hint, &format!("{}", w.0[i]))? {
+    if let Some(v) = input_box(
+        term,
+        &format!("Weight: {}", weight_display_name(i)),
+        hint,
+        &format!("{}", w.0[i]),
+    )? {
         w.0[i] = finite_nonnegative(&v)?;
     }
     Ok(())
 }
 
-fn edit_mana2_weight(term: &mut Terminal, weights: &mut Weights, index: usize) -> AppResult<bool> {
-    let title = format!(
-        "Mana2 {}: [weight, boundary, ..., weight]",
-        mana2_metrics::STAT_IDS[index]
-    );
+pub(crate) fn edit_physical_weight(
+    term: &mut Terminal,
+    weights: &mut Weights,
+    index: usize,
+) -> AppResult<bool> {
+    let id = mana2_metrics::STAT_IDS
+        .get(index)
+        .ok_or("unknown physical-stat weight")?;
+    let title = format!("AKL.GG {id}: [weight, boundary, ..., weight]");
     let initial = weights.2.schedule_text(index);
     match input_box(term, &title, "", &initial)? {
         Some(value) => weights.2.set_schedule_text(index, &value),
@@ -2515,54 +3441,37 @@ fn edit_mana2_weight(term: &mut Terminal, weights: &mut Weights, index: usize) -
     }
 }
 
-fn edit_simple_weight(term: &mut Terminal, weights: &mut Weights, index: usize) -> AppResult<bool> {
-    let id = simple_metrics::STAT_IDS
-        .get(index)
-        .ok_or("unknown Simple weight")?;
-    let title = format!("Simple weight: {id}");
-    let initial = weights.3.get(index).to_string();
-    match input_box(
-        term,
-        &title,
-        "Positive penalizes; negative rewards.",
-        &initial,
-    )? {
-        Some(value) => {
-            let value = value
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("{id} weight must be a number"))?;
-            weights.3.set(index, value)
-        }
+pub(crate) fn choose_physical_weight(term: &mut Terminal, weights: &mut Weights) -> AppResult<bool> {
+    let ids = mana2_metrics::WEIGHTABLE_STATS
+        .iter()
+        .copied()
+        .collect::<Vec<_>>();
+    let names = ids
+        .iter()
+        .map(|&index| {
+            format!(
+                "{}  {}",
+                mana2_metrics::STAT_IDS[index],
+                &weights.2.schedule_text(index)
+            )
+        })
+        .collect::<Vec<_>>();
+    match menu(term, "Choose an AKL.GG weight", &names)? {
+        Some(choice) => edit_physical_weight(term, weights, ids[choice]),
         None => Ok(false),
     }
 }
 
-fn edit_simple_speed_setting(
-    term: &mut Terminal,
-    weights: &mut Weights,
-    index: usize,
-) -> AppResult<bool> {
-    let id = simple_metrics::SPEED_SETTING_IDS
-        .get(index)
-        .ok_or("unknown Simple speed setting")?;
-    let title = format!("Simple speed setting: {id}");
-    let initial = weights.3.get_speed_setting(index).to_string();
-    match input_box(
-        term,
-        &title,
-        "Skip ratio is nonnegative; finger strengths are positive.",
-        &initial,
-    )? {
-        Some(value) => {
-            let value = value
-                .trim()
-                .parse::<f64>()
-                .map_err(|_| format!("{id} must be a number"))?;
-            weights.3.set_speed_setting(index, value)
-        }
-        None => Ok(false),
+fn choose_optimizer_weight(term: &mut Terminal, weights: &mut Weights) -> AppResult<()> {
+    let ids: Vec<_> = (0..N_WEIGHTS).filter(|&i| !aggregate(i)).collect();
+    let names = ids
+        .iter()
+        .map(|&i| weight_display_name(i).to_string())
+        .collect::<Vec<_>>();
+    if let Some(i) = menu(term, "Choose a weight", &names)? {
+        edit_single_weight(term, weights, ids[i])?;
     }
+    Ok(())
 }
 
 fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
@@ -2570,46 +3479,139 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
     let w = load_weights(Path::new(WEIGHTS_FILE))?;
     let model = Model::with_rolls(board, w.rolls());
     timing.mark("Weights and geometry");
-    let mut c = model.corpus(source)?;
+    let c = model.corpus(source)?;
     timing.mark("Metric corpus and postings");
+    let raw = full_raw(&model.original, &c, &model.geometry);
+    timing.mark("Initial metrics");
+    editor_with_analysis(term, model, c, w, raw, Some(timing))
+}
+
+fn plain_corpus_with_spacegrams(
+    model: &Model,
+    corpus: &Corpus,
+    enabled: bool,
+) -> AppResult<Corpus> {
+    let mut limits = load_app_config()?.ngrams;
+    limits.include_spacegrams = enabled;
+    let text = fs::read_to_string(&corpus.source_path)?;
+    let source = Source::from_text_with_limits(&text, &corpus.source_path, limits)?;
+    model.corpus(&source)
+}
+
+// Opens an ordinary editor from a ranker's already prepared evaluator state.
+// The supplied raw counters describe model.original under corpus and weights.
+fn editor_prepared(
+    term: &mut Terminal,
+    model: Model,
+    corpus: Corpus,
+    weights: Weights,
+    raw: Raw,
+) -> AppResult<()> {
+    editor_with_analysis(term, model, corpus, weights, raw, None)
+}
+
+fn editor_with_analysis(
+    term: &mut Terminal,
+    model: Model,
+    mut corpus: Corpus,
+    weights: Weights,
+    initial_raw: Raw,
+    mut timing: Option<crate::load_profile::LoadProfile>,
+) -> AppResult<()> {
+    let w = weights;
 
     let mut arr = model.original.clone();
     let mut baseline = arr.clone();
-    let mut undo: Vec<Vec<usize>>=Vec::new();
-    let mut redo: Vec<Vec<usize>>=Vec::new();
+    // Cursor movement, scrolling and redraws reuse these snapshots. A binding
+    // edit invalidates current_*; saving changes only the comparison baseline;
+    // changing corpus invalidates both.
+    let mut current_raw = initial_raw.clone();
+    let mut baseline_metrics = metrics(&initial_raw, &corpus);
+    let mut current_metrics = baseline_metrics.clone();
+    let mut previous_arr = arr.clone();
+    let mut previous_metrics = current_metrics.clone();
+    let mut isolated_changes = false;
+    let mut undo: Vec<Vec<usize>> = Vec::new();
+    let mut redo: Vec<Vec<usize>> = Vec::new();
     let mut cursor = 0;
     let mut keyboard_mode = false;
     let mut selected = None;
     let mut drag = None;
     let mut scroll = 0;
     let mut status = String::new();
-    timing.mark("Editor state");
-    let mut opening = Some(timing);
+    if let Some(timing) = timing.as_mut() {
+        timing.mark("Editor state");
+    }
+    let mut opening = timing;
     loop {
-        let highlights = selected.into_iter().chain(drag).collect:: <Vec<_>>();
-        let mut frame = dashboard(term, if arr == baseline {
-            "Layout editor"
-        } else {
-            "Layout editor *"
-        }, "Click stat for details | Space swap | u undo | U redo | r reset | s save | c corpus | . digits | ? help | q back", &model, &arr, &baseline, &c, &w, None, if keyboard_mode {
-            Some(cursor)
-        } else {
-            None
-        }, &status, None, false);
-        if !highlights.is_empty() {
-            keyboard(&mut frame, 2, &model, &arr, &baseline, None, if keyboard_mode {
-                Some(cursor)
+        let highlights = selected.into_iter().chain(drag).collect::<Vec<_>>();
+        let mut frame = dashboard_from_raw(
+            term,
+            if arr == baseline {
+                "Layout editor"
             } else {
-                None
-            }, &highlights);
+                "Layout editor *"
+            },
+            "? help · q back",
+            &model,
+            &arr,
+            &baseline,
+            &corpus,
+            &w,
+            &current_raw,
+            &current_raw,
+            if isolated_changes {
+                &previous_metrics
+            } else {
+                &baseline_metrics
+            },
+            &current_metrics,
+            None,
+            if keyboard_mode { Some(cursor) } else { None },
+            &status,
+            None,
+            false,
+            None,
+        );
+        let comparison = if isolated_changes {
+            "Latest edit"
+        } else {
+            "Loaded / saved layout"
+        };
+        frame.text(
+            0,
+            frame.h - 2,
+            &short(
+                &format!(
+                    "Compare: {comparison} · m stats: {} · ? help · q back",
+                    term.stats_view_name()
+                ),
+                frame.w,
+            ),
+            MUTED,
+        );
+        if !highlights.is_empty() {
+            keyboard(
+                &mut frame,
+                2,
+                &model,
+                &arr,
+                &baseline,
+                None,
+                if keyboard_mode { Some(cursor) } else { None },
+                &highlights,
+            );
         }
         term.present(&frame, scroll)?;
         if let Some(mut timing) = opening.take() {
             timing.mark("First dashboard metrics, rendering and presentation");
         }
-        let e = term.event()?;
+        let mut e = term.event()?;
         if scroll_event(&e, &mut scroll, frame.h, term.size.1) {
             continue;
+        }
+        if let Some(Action::Command(command)) = action_press(term, &frame, &e, scroll) {
+            e = Event::Char(command);
         }
         if let Some((dr, dc)) = direction(&e) {
             cursor = move_cursor(cursor, dr, dc, &model.board.keys);
@@ -2618,6 +3620,10 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
         }
         let mut swap = None;
         match e.clone() {
+            Event::Char('m') => {
+                term.toggle_stats_view();
+                scroll = 0;
+            },
             Event::Char(' ') | Event::Enter => {
                 keyboard_mode = true;
                 if let Some(a) = selected {
@@ -2643,7 +3649,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                         cursor = i;
                     },
                     Some(Action::Metric(m)) => {
-                        contributor_view(term, m, &model, &baseline, &arr, &c, false)?;
+                        contributor_view(term, m, &model, if isolated_changes { &previous_arr } else { &baseline }, &arr, &corpus, false)?;
                     },
                     _ => {
                     }
@@ -2686,28 +3692,59 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                     }
                 }
             },
+            Event::Char('d') => {
+                isolated_changes = !isolated_changes;
+                status.clear();
+            },
             Event::Char('.') => {
                 term.precise=!term.precise;
             },
             Event::Char('u') => {
                 if let Some(a) = undo.pop() {
+                    let changed = arr != a;
+                    if changed {
+                        previous_arr = arr.clone();
+                        previous_metrics = current_metrics.clone();
+                    }
                     redo.push(arr);
                     arr = a;
+                    if changed {
+                        current_raw = full_raw(&arr, &corpus, &model.geometry);
+                        current_metrics = metrics(&current_raw, &corpus);
+                    }
                     selected = None;
                     status = "undo".into();
                 }
             },
             Event::Char('U') => {
                 if let Some(a) = redo.pop() {
+                    let changed = arr != a;
+                    if changed {
+                        previous_arr = arr.clone();
+                        previous_metrics = current_metrics.clone();
+                    }
                     undo.push(arr);
                     arr = a;
+                    if changed {
+                        current_raw = full_raw(&arr, &corpus, &model.geometry);
+                        current_metrics = metrics(&current_raw, &corpus);
+                    }
                     selected = None;
                     status = "redo".into();
                 }
             },
             Event::Char('r') => {
+                let changed = arr != model.original;
+                if changed {
+                    previous_arr = arr.clone();
+                    previous_metrics = current_metrics.clone();
+                }
                 undo.push(arr);
                 arr = model.original.clone();
+                if changed {
+                    current_raw = full_raw(&arr, &corpus, &model.geometry);
+                    current_metrics = metrics(&current_raw, &corpus);
+                }
                 redo.clear();
                 selected = None;
                 status = "reset to loaded layout".into();
@@ -2721,6 +3758,7 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                     let jsonc = crate::layout_export::jsonc_text(&board_as_action_layout(&model.board, &symbols)?)?;
                     crate::layout_export::replace_pair(&path, &dat, &jsonc, true)?;
                     baseline = arr.clone();
+                    baseline_metrics = current_metrics.clone();
                     status = format!("{}; comparison baseline updated", saved_layout_message(&path));
                 }
             },
@@ -2734,25 +3772,71 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
                         .plain_tui(term, &path)
                         .and_then(|source| source.map(|source| model.corpus(&source)).transpose());
                     match next {
-                        Ok(Some(corpus)) => {
-                            c = corpus;
+                        Ok(Some(next_corpus)) => {
+                            corpus = next_corpus;
+                            let baseline_raw = full_raw(&baseline, &corpus, &model.geometry);
+                            baseline_metrics = metrics(&baseline_raw, &corpus);
+                            current_raw = full_raw(&arr, &corpus, &model.geometry);
+                            current_metrics = metrics(&current_raw, &corpus);
+                            previous_metrics = metrics(&full_raw(&previous_arr, &corpus, &model.geometry), &corpus);
                             selected = None;
                             drag = None;
-                            status = format!("Corpus changed to {}", c.name);
+                            status = format!("Corpus changed to {}", corpus.name);
                         },
                         Ok(None) => {},
                         Err(error) => status = format!("Corpus change failed: {error}"),
                     }
                 }
             },
+            Event::Char('z') => {
+                let enabled = !corpus.include_spacegrams;
+                match plain_corpus_with_spacegrams(&model, &corpus, enabled) {
+                    Ok(next_corpus) => match save_spacegram_setting(enabled) {
+                        Ok(()) => {
+                            corpus = next_corpus;
+                            let baseline_raw = full_raw(&baseline, &corpus, &model.geometry);
+                            baseline_metrics = metrics(&baseline_raw, &corpus);
+                            current_raw = full_raw(&arr, &corpus, &model.geometry);
+                            current_metrics = metrics(&current_raw, &corpus);
+                            previous_metrics = metrics(&full_raw(&previous_arr, &corpus, &model.geometry), &corpus);
+                            status = format!("Spacegrams {}", if enabled { "ON" } else { "OFF" });
+                        },
+                        Err(error) => status = format!("Spacegram setting was not changed: {error}"),
+                    },
+                    Err(error) => status = format!("Spacegram change failed: {error}"),
+                }
+            },
             Event::Char('v') => validation_view(term, &model, &baseline, &arr)?,
-            Event::Char('i') => show_corpus_info(term, &c)?,
-            Event::Char('a') => objective_view(term, &model, &baseline, &arr, &c, &w)?,
+            Event::Char('i') => show_corpus_info(term, &corpus)?,
+            Event::Char('a') => objective_view(term, &model, if isolated_changes { &previous_arr } else { &baseline }, &arr, &corpus, &w)?,
             Event::Char('?') => help_popup(
                 term,
                 &frame,
                 "Editor controls",
-                &["Click a stat for its contributing patterns.".into(), "Click two keys or drag one onto another to swap.".into(), "Arrows/hjkl move; Space selects/swaps. u/U undo/redo.".into(), "c changes corpus and keeps your edits and undo history.".into(), "a audits the objective; . toggles 2/4 decimals.".into(), "s saves both .dat and .jsonc after confirmation; S saves a new pair. — means unchanged; <0.01 is a nonzero amount below display precision.".into(), "Moved letters are blue. Green/red deltas compare with the loaded/saved baseline.".into()]
+                &[
+                    "Click / drag\tSelect two keys, or drag one onto another, to swap them.".into(),
+                    "hjkl / arrows\tMove between keys.".into(),
+                    "Space / Enter\tSelect a key, then swap with the next selected key.".into(),
+                    "d\tToggle isolated changes: compare stats with the layout before your latest edit.".into(),
+                    "m\tSwitch Simple / Detailed stats. Simple shows FSB/FSS/HSB/HSS; scoring stays unchanged.".into(),
+                    "u\tUndo the last edit.".into(),
+                    "U\tRedo the last undone edit.".into(),
+                    "r\tReset to the layout you opened.".into(),
+                    "s\tSave this layout after confirmation.".into(),
+                    "S\tSave a new copy.".into(),
+                    "c\tChoose a corpus; keep your edits.".into(),
+                    "z\tInclude or exclude patterns that contain Space, such as e + Space or Space + t.".into(),
+                    "a\tShow how weights contribute to the score.".into(),
+                    "v\tCheck the layout for problems.".into(),
+                    "i\tShow corpus information.".into(),
+                    ".\tSwitch between two and four decimal places.".into(),
+                    "Esc\tCancel key selection.".into(),
+                    "q\tReturn to the previous screen.".into(),
+                    String::new(),
+                    "Click a stat to see the key sequences behind it.".into(),
+                    "Green means better; red means worse. By default, compare with the loaded or saved layout. Isolated changes compare with the latest edit, including undo or reset.".into(),
+                    "Blue keys have moved since loading or saving. Saving does not reset the latest-edit comparison.".into(),
+                ]
             )?,
             Event::Escape if selected.is_some() || drag.is_some() => {
                 selected = None;
@@ -2772,12 +3856,17 @@ fn editor(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
             } else {
                 undo.push(arr.clone());
                 redo.clear();
+                let changed = arr[a] != arr[b];
+                if changed {
+                    previous_arr = arr.clone();
+                    previous_metrics = current_metrics.clone();
+                }
                 arr.swap(a, b);
-                status = format!(
-                    "{} ↔ {}",
-                    display_symbol(model.canonical[arr[a]]),
-                    display_symbol(model.canonical[arr[b]])
-                );
+                if changed {
+                    current_raw = full_raw(&arr, &corpus, &model.geometry);
+                    current_metrics = metrics(&current_raw, &corpus);
+                }
+                status.clear();
             }
         }
     }
@@ -2789,93 +3878,60 @@ fn metric_short_name(m: usize) -> &'static str {
         VTRAVEL => "VERT",
         LTRAVEL => "LAT",
         SFTRAVEL => "SF",
-        _ => METRIC_NAMES[m]
+        _ if m >= N_METRICS => weight_label(m),
+        _ => METRIC_NAMES[m],
     }
 }
 
-fn simple_denominator(id: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
-    match id {
-        0 => totals[1],
-        1 => totals[2],
-        2..=4 => totals[1] + totals[2],
-        5 | 6 => raw.0[SRAF_DEN],
-        _ => raw.0[ROLL_DEN],
-    }
+/// Day-to-day search settings shown in the optimizer's settings tab, as
+/// `(id, label, value)`. IDs are stable `Action::Setting` values and do not
+/// depend on which rows are shown. Workers, restarts, seed, passes, end
+/// temperature, 3-key share, candidates, min letters and method remain in
+/// `akler.conf`; measurements showed they rarely matter.
+fn settings_labels(s: &SearchSettings) -> Vec<(usize, String, String)> {
+    let lim = |v: Option<f64>| v.map(config_number).unwrap_or("none".into());
+    vec![
+        (
+            16,
+            "Scoring".into(),
+            s.mode.clone(),
+        ),
+        (14, "Design".into(), s.design.clone()),
+        (2, "Steps".into(), s.anneal_steps.to_string()),
+        // `magic_anneal_steps`: the magic and action optimizers' steps.
+        (21, "Magic steps".into(), s.magic_anneal_steps.to_string()),
+        (3, "Seconds".into(), fmt2(s.seconds)),
+        (10, "Temp start".into(), temperature_label(s)),
+        (17, "Preset".into(), s.preset.clone()),
+        (4, "SFB Δ max".into(), lim(s.sfb_limit)),
+        (5, "SFS Δ max".into(), lim(s.sfs_limit)),
+        (6, "Travel Δ max".into(), lim(s.travel_limit)),
+        (7, "SF travel Δ max".into(), lim(s.sftravel_limit)),
+    ]
 }
 
-fn simple_mass(id: usize, raw: &Raw) -> f64 {
-    match id {
-        0 => raw.0[SFB],
-        1 => raw.0[SFS],
-        2 => raw.0[LSB] + raw.0[LSS],
-        3 => raw.0[ROW1_BI] + raw.0[ROW1_SK],
-        4 => raw.0[ROW2_BI] + raw.0[ROW2_SK],
-        5 => raw.0[INSRAF],
-        6 => raw.0[OUTSRAF],
-        7 => raw.0[INROLL],
-        _ => raw.0[OUTROLL],
-    }
-}
-
-fn simple_contributors(
-    id: usize,
-    model: &Model,
-    before: &[usize],
-    after: &[usize],
-    co: &Corpus
-) -> Vec<Contributor> {
-    let p0 = positions(before);
-    let p1 = positions(after);
-    let r0 = full_raw(before, co, &model.geometry);
-    let r1 = full_raw(after, co, &model.geometry);
-    let den=|r: &Raw | simple_denominator(id, r, &co.totals);
-    let mut out = Vec::new();
-    for g in &co.grams {
-        let mut a = Raw::default();
-        let mut b = Raw::default();
-        add_gram(&mut a, g, &p0, &model.geometry, 1.0);
-        add_gram(&mut b, g, &p1, &model.geometry, 1.0);
-        let old = pct(simple_mass(id, &a).max(0.0), den(&r0));
-        let new = pct(simple_mass(id, &b).max(0.0), den(&r1));
-        if old != 0.0 || new != 0.0 {
-            out.push(Contributor {
-                gram: gram_name(g, &model.canonical),
-                ids: g.ids[..g.len].to_vec(),
-                before: old,
-                after: new,
-                why_before: 0,
-                why_after: 0
-            });
-        }
-    }
-    out.sort_by(|a, b| b.after.total_cmp(&a.after).then_with(|| a.gram.cmp(&b.gram)));
-    out
-}
-
-fn settings_labels(s: &SearchSettings) -> Vec<(String, String)> {
-    let lim=|v: Option<f64>|v.map(config_number).unwrap_or("none".into());
-    vec![("Method".into(), if s.hybrid {
-        "hybrid"
-    } else {
-        "sweep"
-    }.into()),("Restarts".into(), s.restarts.to_string()),("Steps".into(), s.anneal_steps.to_string()),("Seconds".into(), fmt2(s.seconds)),("SFB Δ max".into(), lim(s.sfb_limit)),("SFS Δ max".into(), lim(s.sfs_limit)),("Travel Δ max".into(), lim(s.travel_limit)),("SF travel Δ max".into(), lim(s.sftravel_limit)),("Seed".into(), format!("{:x}", s.seed)),("Passes".into(), s.passes.to_string()),("Temp start".into(), config_number(s.temperature)),("Temp end".into(), config_number(s.cooling_end)),("3-key share".into(), fmt2(s.cycle_probability)),("Candidates".into(), s.archive.to_string()),("Design".into(), s.design.clone()),("Min letters".into(), s.diversity.to_string()),("Metrics".into(), s.mode.clone()),("Preset".into(), s.preset.clone())]
+pub(crate) fn cycle_weight_system(s: &mut SearchSettings) {
+    s.mode = if s.mode == "aklgg" { "normal" } else { "aklgg" }.into();
+    s.preset = "custom".into();
 }
 
 fn edit_setting(term: &mut Terminal, s: &mut SearchSettings, i: usize) -> AppResult<()> {
     let mut next = s.clone();
-    if i == 0 {
-        next.hybrid=!next.hybrid;
-        validate_search_settings(&next)?;
-        * s = next;
+    if i == 16 {
+        cycle_weight_system(s);
+        validate_search_settings(s)?;
         return Ok(());
     }
-    let (name, value) = settings_labels(s).get(i).cloned().ok_or("invalid setting")?;
+    let (_, name, value) = settings_labels(s)
+        .into_iter()
+        .find(|(id, _, _)| *id == i)
+        .ok_or("invalid setting")?;
     let initial = match i {
         4 => s.sfb_limit,
         5 => s.sfs_limit,
         6 => s.travel_limit,
         7 => s.sftravel_limit,
-        _ => None
+        _ => None,
     };
     let initial = if (4..=7).contains(&i) {
         initial.map(|n| n.to_string()).unwrap_or("none".into())
@@ -2884,65 +3940,47 @@ fn edit_setting(term: &mut Terminal, s: &mut SearchSettings, i: usize) -> AppRes
     };
     if let Some(v) = input_box(term, &name, "", &initial)? {
         match i {
-            1 => next.restarts = bounded_usize(&v, 100000)?,
             2 => next.anneal_steps = bounded_usize(&v, 10000000)?,
+            21 => next.magic_anneal_steps = bounded_usize(&v, 10000000)?,
             3 => next.seconds = finite_nonnegative(&v)?,
             4 => next.sfb_limit = optional_limit(&v)?,
             5 => next.sfs_limit = optional_limit(&v)?,
             6 => next.travel_limit = optional_limit(&v)?,
             7 => next.sftravel_limit = optional_limit(&v)?,
-            8 => next.seed = u64::from_str_radix(v.trim_start_matches("0x"), 16)?,
-            9 => next.passes = bounded_usize(&v, 100000)?,
             10 => next.temperature = finite_nonnegative(&v)?,
-            11 => next.cooling_end = finite_nonnegative(&v)?,
-            12 => next.cycle_probability = finite_nonnegative(&v)?,
-            13 => next.archive = bounded_usize(&v, 100)?,
-            15 => next.diversity = v.parse()?,
-            _ => {
-            }
+            _ => {}
         }
         if (4..=7).contains(&i) {
             next.preset = "custom".into();
         }
         validate_search_settings(&next)?;
-        * s = next;
+        *s = next;
     }
     Ok(())
 }
 
-fn choose_design(
-    term: &mut Terminal,
-    s: &mut SearchSettings,
-    m: &Model,
-    _arr: &[usize],
-    locks: &mut Vec<bool>
-) -> AppResult<()> {
-    if let Some(i) = menu(term, "", &["Refine".into(), "Random".into(), "Evolve".into()])? {
-        let old = s.design.clone();
+fn choose_design(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
+    if let Some(i) = menu(
+        term,
+        "",
+        &["Refine".into(), "Random".into(), "Evolve".into()],
+    )? {
         s.design = ["refine", "random", "evolve"][i].into();
-        if old == "refine" && s.design != "refine" {
-            locks.fill(false);
-        } else if old != "refine" && s.design == "refine" {
-            * locks = default_locks(&m.board);
-        }
     }
     Ok(())
-}
-
-fn cycle_metrics(s: &mut SearchSettings) {
-    s.mode = match s.mode.as_str() {
-        "detailed" => "mana2",
-        "mana2" => "simple",
-        _ => "detailed",
-    }
-    .into();
-    s.preset = "custom".into();
 }
 
 fn choose_preset(term: &mut Terminal, s: &mut SearchSettings) -> AppResult<()> {
     let names = ["Balanced", "Strict", "Low travel", "Explore", "Custom"];
-    if let Some(i) = menu(term, "", &names.iter().map(|x| x.to_string()).collect:: <Vec<_>>())? {
-        apply_preset(s, ["balanced", "strict", "low-travel", "explore", "custom"][i]);
+    if let Some(i) = menu(
+        term,
+        "",
+        &names.iter().map(|x| x.to_string()).collect::<Vec<_>>(),
+    )? {
+        apply_preset(
+            s,
+            ["balanced", "strict", "low-travel", "explore", "custom"][i],
+        );
     }
     Ok(())
 }
@@ -2969,11 +4007,12 @@ fn optimizer_setup_frame(
     w: &Weights,
     s: &SearchSettings,
     status: &str,
+    selected: Option<usize>,
 ) -> Canvas {
     let mut c = Canvas::optimizer(width, 96);
     header(
         &mut c,
-        "Optimizer",
+        "Search settings",
         &source.name,
         &model.board.name,
         "? help",
@@ -2985,7 +4024,7 @@ fn optimizer_setup_frame(
         arr,
         &model.original,
         Some(locks),
-        None,
+        selected,
         &[],
     ) + 1;
     c.text(
@@ -2999,18 +4038,14 @@ fn optimizer_setup_frame(
         MUTED,
     );
     y += 2;
-    match s.mode.as_str() {
-        "detailed" => y = grouped_weight_rows(&mut c, y, w) + 1,
-        "mana2" => y = mana2_weight_rows(&mut c, y, &w.2) + 1,
-        "simple" => y = simple_weight_rows(&mut c, y, &w.3) + 1,
-        _ => unreachable!("validated search mode"),
-    }
+    y = typing_policy_row(&mut c, y, w);
+    y = combo_policy_row(&mut c, y, w) + 1;
     let labels = settings_labels(s);
     let cols = if c.w >= 80 { 4 } else { 2 };
     let width = c.w / cols;
-    for (i, (name, value)) in labels.iter().enumerate() {
-        let x = i % cols * width;
-        let yy = y + i / cols * 2;
+    for (cell, (i, name, value)) in labels.iter().enumerate() {
+        let x = cell % cols * width;
+        let yy = y + cell / cols * 2;
         c.text(x, yy, name, MUTED);
         c.text(x, yy + 1, &short(value, width - 1), CYAN);
         c.hit(
@@ -3020,7 +4055,7 @@ fn optimizer_setup_frame(
                 w: width - 1,
                 h: 2,
             },
-            Action::Setting(i),
+            Action::Setting(*i),
         );
     }
     y += (labels.len() + cols - 1) / cols * 2 + 1;
@@ -3050,6 +4085,110 @@ fn optimizer_setup_frame(
     c
 }
 
+fn optimizer_mana_weights_frame(
+    width: usize,
+    model: &Model,
+    source: &Source,
+    arr: &[usize],
+    locks: &[bool],
+    weights: &Weights,
+    status: &str,
+    selected: Option<usize>,
+) -> Canvas {
+    let mut c = Canvas::optimizer(width, 96);
+    header(
+        &mut c,
+        "Optimizer",
+        &source.name,
+        &model.board.name,
+        "? help",
+    );
+    let mut y = keyboard(
+        &mut c,
+        3,
+        model,
+        arr,
+        &model.original,
+        Some(locks),
+        selected,
+        &[],
+    ) + 1;
+    y = physical_weight_rows(&mut c, y, &weights.2) + 1;
+    c.text(0, y, &short(status, c.w), CYAN);
+    c.h = y + 3;
+    c
+}
+
+const OPTIMIZER_TABS: [&str; 4] =
+    [" [1] Overview ", " [2] Settings ", " [3] Weights ", " [4] Score "];
+
+pub(crate) fn optimizer_tabs(canvas: &mut Canvas, active: usize, corpus: &str, layout: &str, mode: &str) {
+    workspace_tabs_at(canvas, 0, active, &OPTIMIZER_TABS);
+    for x in 0..canvas.w {
+        canvas.put(x, 1, ' ', MUTED);
+    }
+    let scoring = format!("Scoring: {mode} [t]");
+    canvas.text(0, 1, &short(&format!("{scoring} · {corpus} · {layout}"), canvas.w), CYAN);
+    canvas.hit(Rect { x: 0, y: 1, w: scoring.chars().count().min(canvas.w), h: 1 }, Action::Command('t'));
+}
+
+/// Open the action optimizer on this arrangement, with a new magic key when
+/// `magic` is set and without one otherwise (combo fitting, `[combos]`).
+fn optimizer_actions(
+    term: &mut Terminal,
+    model: &Model,
+    source: &Source,
+    arr: &[usize],
+    locks: &[bool],
+    weights: &Weights,
+    settings: &SearchSettings,
+    magic: bool,
+    start: bool,
+) -> AppResult<bool> {
+    let layout = board_as_action_layout(&model.board, &model.symbols(arr))?;
+    let action_locks = layout
+        .slots
+        .iter()
+        .map(|slot| {
+            model
+                .board
+                .keys
+                .iter()
+                .position(|key| key.row == slot.row && key.col == slot.col)
+                .map(|index| locks[index])
+                .unwrap_or(true)
+        })
+        .collect();
+    let path = source.path.clone();
+    let mut limits = load_app_config()?.ngrams;
+    limits.include_spacegrams = source.include_spacegrams;
+    let Some(corpus) = action_ui::ngram_job(
+        term,
+        "Load action optimizer corpus",
+        &source.name,
+        &layout.name,
+        move |stop, progress| {
+            let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            action_ngrams::NgramCorpus::from_text_progress_with_limits(
+                &raw, &path, limits, stop, progress,
+            )
+        },
+    )?
+    else {
+        return Ok(false);
+    };
+    action_ui::action_optimizer_from_plain(
+        term,
+        layout,
+        corpus,
+        weights.clone(),
+        settings.clone(),
+        action_locks,
+        magic,
+        start,
+    )
+}
+
 fn optimizer_setup(
     term: &mut Terminal,
     model: &Model,
@@ -3059,15 +4198,197 @@ fn optimizer_setup(
     w: &mut Weights,
     s: &mut SearchSettings,
 ) -> AppResult<bool> {
+    // Optimizer panels are local to this setup session. Do not inherit the
+    // weights panel left open by another optimizer or layout.
+    term.optimizer_weights = false;
+    term.optimizer_score = false;
     let mut scroll = 0;
     let mut status = String::new();
+    let mut show_options = false;
+    let mut drag = None;
+    let mut drag_hover = None;
+    let mut preview_model = model.clone();
+    preview_model.geometry = Geometry::with_alts(model.board.keys.clone(), w.rolls());
+    let corpus = preview_model.corpus(source)?;
+    let mut preview_arr = arr.clone();
+    let mut preview_mana = s.mode.as_str() == "aklgg";
+    let mut baseline_raw = full_raw_with_mana2(
+        &model.original,
+        &corpus,
+        &preview_model.geometry,
+        preview_mana,
+    );
+    let mut baseline_metrics = metrics(&baseline_raw, &corpus);
+    let mut current_raw = full_raw_with_mana2(arr, &corpus, &preview_model.geometry, preview_mana);
+    let mut current_metrics = metrics(&current_raw, &corpus);
     loop {
-        let c = optimizer_setup_frame(term.width(), model, source, arr, locks, w, s, &status);
+        let mana = s.mode.as_str() == "aklgg";
+        if preview_model.geometry.rolls != w.rolls() || preview_mana != mana {
+            preview_model.geometry = Geometry::with_alts(model.board.keys.clone(), w.rolls());
+            preview_mana = mana;
+            baseline_raw = full_raw_with_mana2(
+                &model.original,
+                &corpus,
+                &preview_model.geometry,
+                preview_mana,
+            );
+            baseline_metrics = metrics(&baseline_raw, &corpus);
+            current_raw = full_raw_with_mana2(arr, &corpus, &preview_model.geometry, preview_mana);
+            current_metrics = metrics(&current_raw, &corpus);
+            preview_arr = arr.clone();
+        } else if preview_arr != *arr {
+            current_raw = full_raw_with_mana2(arr, &corpus, &preview_model.geometry, preview_mana);
+            current_metrics = metrics(&current_raw, &corpus);
+            preview_arr = arr.clone();
+        }
+        let mut c = if show_options {
+            optimizer_setup_frame(
+                term.width(),
+                model,
+                source,
+                arr,
+                locks,
+                w,
+                s,
+                &status,
+                drag_hover,
+            )
+        } else if term.optimizer_score {
+            let rows = if mana {
+                aklgg_score_rows(
+                    &mana_stats_for_corpus(&baseline_raw, &corpus),
+                    &mana_stats_for_corpus(&current_raw, &corpus),
+                    w,
+                )
+            } else {
+                metric_score_rows(&baseline_metrics, &current_metrics, w)
+            };
+            score_frame(term.width(), rows, term.decimals())
+        } else if term.optimizer_weights && mana {
+            optimizer_mana_weights_frame(
+                term.width(),
+                model,
+                source,
+                arr,
+                locks,
+                w,
+                &status,
+                drag_hover,
+            )
+        } else {
+            dashboard_from_raw(
+                term,
+                "Optimizer",
+                "",
+                &preview_model,
+                arr,
+                &model.original,
+                &corpus,
+                w,
+                &baseline_raw,
+                &current_raw,
+                &baseline_metrics,
+                &current_metrics,
+                Some(locks),
+                drag_hover,
+                &status,
+                None,
+                false,
+                Some(&s.mode),
+            )
+        };
+        let active_tab = if show_options {
+            1
+        } else if term.optimizer_score {
+            3
+        } else if term.optimizer_weights {
+            2
+        } else {
+            0
+        };
+        optimizer_tabs(&mut c, active_tab, &source.name, &model.board.name, &s.mode);
+        let footer = "Space run · m magic · s save · ? help · q back";
+        if show_options {
+            c.h += 1;
+        }
+        if !show_options {
+            c.text(
+                0,
+                c.h - 3,
+                &short(
+                    &format!(
+                        "Locked {} · Free {}   {}",
+                        locks.iter().filter(|&&v| v).count(),
+                        locks.iter().filter(|&&v| !v).count(),
+                        status
+                    ),
+                    c.w,
+                ),
+                CYAN,
+            );
+        }
+        c.text(0, c.h - 2, &short(&footer, c.w), MUTED);
         scroll = scroll.min(c.h.saturating_sub(term.size.1));
         term.present(&c, scroll)?;
         let mut e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
             continue;
+        }
+        match e.clone() {
+            Event::Escape if drag.is_some() => {
+                drag = None;
+                drag_hover = None;
+                continue;
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: false,
+                motion: false,
+            } => {
+                if let Some(Action::Key(i)) = term.hit(&c, x, y, scroll) {
+                    drag = Some(i);
+                    drag_hover = Some(i);
+                    continue;
+                }
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: false,
+                motion: true,
+            } if drag.is_some() => {
+                if let Some(Action::Key(i)) = term.hit(&c, x, y, scroll) {
+                    drag_hover = Some(i);
+                }
+                continue;
+            }
+            Event::Mouse {
+                x,
+                y,
+                button: 0,
+                release: true,
+                ..
+            } if drag.is_some() => {
+                let from = drag.take().unwrap();
+                let target = match term.hit(&c, x, y, scroll) {
+                    Some(Action::Key(i)) => Some(i),
+                    _ => None,
+                };
+                drag_hover = None;
+                if let Some(to) = target {
+                    if from == to {
+                        locks[to] = !locks[to];
+                    } else {
+                        arr.swap(from, to);
+                        status = "Swapped bindings".into();
+                    }
+                }
+                continue;
+            }
+            _ => {}
         }
         if let Some(action) = action_press(term, &c, &e, scroll) {
             match action {
@@ -3081,47 +4402,24 @@ fn optimizer_setup(
                     }
                     continue;
                 }
-                Action::Mana2Weight(i) => {
-                    match edit_mana2_weight(term, w, i) {
+                Action::ManaWeight(i) => {
+                    match edit_physical_weight(term, w, i) {
                         Ok(true) => {
                             s.preset = "custom".into();
-                            status = format!("Updated Mana2 {}", mana2_metrics::STAT_IDS[i]);
+                            status = format!("Updated {} {}", s.mode, mana2_metrics::STAT_IDS[i]);
                         }
                         Ok(false) => {}
                         Err(err) => status = err.to_string(),
                     }
                     continue;
                 }
-                Action::SimpleWeight(i) => {
-                    match edit_simple_weight(term, w, i) {
-                        Ok(true) => {
-                            s.preset = "custom".into();
-                            status = format!("Updated Simple {}", simple_metrics::STAT_IDS[i]);
-                        }
-                        Ok(false) => {}
-                        Err(err) => status = err.to_string(),
-                    }
-                    continue;
-                }
-                Action::SimpleSpeedSetting(i) => {
-                    match edit_simple_speed_setting(term, w, i) {
-                        Ok(true) => {
-                            s.preset = "custom".into();
-                            status =
-                                format!("Updated Simple {}", simple_metrics::SPEED_SETTING_IDS[i]);
-                        }
-                        Ok(false) => {}
-                        Err(err) => status = err.to_string(),
-                    }
+                Action::Metric(i) => {
+                    contributor_view(term, i, &preview_model, &model.original, arr, &corpus, true)?;
                     continue;
                 }
                 Action::Setting(i) => {
                     let res = match i {
-                        14 => choose_design(term, s, model, arr, locks),
-                        16 => {
-                            cycle_metrics(s);
-                            Ok(())
-                        }
+                        14 => choose_design(term, s),
                         17 => choose_preset(term, s),
                         _ => edit_setting(term, s, i),
                     };
@@ -3135,17 +4433,115 @@ fn optimizer_setup(
             }
         }
         match e {
-            Event::Char(' ') => return Ok(true),
+            Event::Char(tab @ '1'..='4') => {
+                show_options = tab == '2';
+                term.optimizer_weights = tab == '3';
+                term.optimizer_score = tab == '4';
+                scroll = 0;
+                continue;
+            }
+            _ => {}
+        }
+        match e {
+            Event::Char(' ') => {
+                term.optimizer_weights = false;
+                term.optimizer_score = false;
+                // With combo or swap fitting on, offer the action run that
+                // fits them.
+                let config = load_app_config()?;
+                let combos = config.combos.active_max(&config.weights);
+                let swaps = config.adaptive.max_swaps;
+                if combos == 0 && swaps == 0 {
+                    return Ok(true);
+                }
+                let extras: Vec<String> = [(combos, "combos"), (swaps, "adaptive swaps")]
+                    .into_iter()
+                    .filter(|(count, _)| *count > 0)
+                    .map(|(count, name)| format!("up to {count} {name}"))
+                    .collect();
+                let choices = [
+                    format!("Run with {}", extras.join(" and ")),
+                    "Run without them".to_string(),
+                ];
+                match menu(term, "Optimize", &choices)? {
+                    Some(0) => match optimizer_actions(term, model, source, arr, locks, w, s, false, true) {
+                        Ok(true) => return Ok(false),
+                        Ok(false) => {}
+                        Err(error) => status = error.to_string(),
+                    },
+                    Some(_) => return Ok(true),
+                    None => {}
+                }
+            }
+            Event::Char('m') | Event::Char('M') | Event::Char('c') => {
+                let magic = matches!(e, Event::Char('m') | Event::Char('M'));
+                match optimizer_actions(term, model, source, arr, locks, w, s, magic, false) {
+                    Ok(true) => return Ok(false),
+                    Ok(false) => {},
+                    Err(error) => status = error.to_string(),
+                }
+            },
+            Event::Char('e') => {
+                show_options = !show_options;
+                term.optimizer_weights = false;
+                term.optimizer_score = false;
+                scroll = 0;
+            },
+            Event::Char('w') => {
+                let open = !term.optimizer_weights;
+                term.optimizer_weights = open;
+                term.optimizer_score = false;
+                show_options = false;
+                scroll = 0;
+            },
+            Event::Enter if term.optimizer_weights => {
+                let result = if s.mode.as_str() == "aklgg" {
+                    choose_physical_weight(term, w).map(|_| ())
+                } else {
+                    choose_optimizer_weight(term, w)
+                };
+                if let Err(error) = result {
+                    status = error.to_string();
+                }
+            },
+            Event::Char('.') => term.precise = !term.precise,
+            Event::Escape | Event::Char('q') if show_options => {
+                show_options = false;
+                term.optimizer_weights = false;
+                scroll = 0;
+            },
+            Event::Char('v') => {
+                term.toggle_stats_view();
+                status = format!("{} stats display; scoring unchanged", term.stats_view_name());
+                scroll = 0;
+            },
+            Event::Escape | Event::Char('q') if term.optimizer_weights => { term.optimizer_weights = false; scroll = 0; },
+            Event::Escape | Event::Char('q') if term.optimizer_score => { term.optimizer_score = false; scroll = 0; },
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(false),
-            Event::Char('H')=>*locks = default_locks(&model.board),
+            Event::Char('H')=>*locks = home_locks(&model.board),
             Event::Char('U')=>locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o')=>*arr = model.original.clone(),
             Event::Char('n') => s.seed = new_seed(),
-            Event::Char('g') => choose_design(term, s, model, arr, locks)?,
-            Event::Char('m') => cycle_metrics(s),
+            Event::Char('g') => choose_design(term, s)?,
+            Event::Char('t') => {
+                cycle_weight_system(s);
+                status = format!("{} weights", s.mode);
+                scroll = 0;
+            },
             Event::Char('p') => choose_preset(term, s)?,
             Event::Char('x') => edit_mix(term, s)?,
+            Event::Char('f') => {
+                w.3 = !w.3;
+                status = format!(
+                    "Alternate fingers {}",
+                    if w.3 { "enabled" } else { "disabled" }
+                );
+            },
+            Event::Char('F') => {
+                w.4 = !w.4;
+                status = format!("Combos {}; s saves configuration", if w.4 { "enabled" } else { "disabled" });
+            },
             Event::Char('d') => {
                 * w = Weights::default();
                 * s = SearchSettings::default();
@@ -3174,7 +4570,35 @@ fn optimizer_setup(
                 term,
                 &c,
                 "Optimizer",
-                &["Space run; s save configuration; r reload; d defaults; o reset layout to original.".into(), "g design; m detailed/Mana2/Simple; p preset; n new seed; x corpus mixture.".into(), "Click a Mana2 schedule or Simple scalar weight to edit it. s saves the active weight sections.".into(), "H home/thumb locks; U unlock all; L lock all. Mouse toggles locks.".into(), "Limits are increases relative to the original on each training corpus.".into(), "Travel limits use u/100; SFB/SFS use percentage points. none disables.".into()]
+                &[
+                    "Click a key\tLock or unlock its physical slot.".into(),
+                    "Drag a key\tSwap its binding with another key.".into(),
+                    "Click a stat\tShow its contributing patterns.".into(),
+                    "Space\tStart optimization; with combos ([combos] fatfingering) or adaptive swaps ([adaptive] max) on, choose that run or an ordinary one.".into(),
+                    "m\tInject a magic key and open the action optimizer with this arrangement, locks, and settings.".into(),
+                    "c\tOpen the action optimizer without a magic key (fits combos and adaptive swaps when on).".into(),
+                    "1 / 2 / 3\tOverview / Settings / Weights.".into(),
+                    "e / w\tOpen Settings / Weights; press again for Overview.".into(),
+                    "Click weight\tEdit that weight.".into(),
+                    "Enter\tChoose a weight when the weights table is open.".into(),
+                    "v\tSwitch Simple / Detailed stats; scoring stays unchanged.".into(),
+                    "t\tSwitch Normal / AKL.GG scoring weights.".into(),
+                    "AKL.GG\tBigrams, skipgrams, and trigrams use their own retained populations; speed columns are numeric costs.".into(),
+                    "s\tSave weights and search settings to configuration.".into(),
+                    ".\tSwitch between two and four decimal places.".into(),
+                    "r\tReload configuration.".into(),
+                    "d\tRestore default weights and search settings.".into(),
+                    "o\tReset the layout to its original arrangement.".into(),
+                    "H\tLock home keys and thumbs.".into(),
+                    "U\tUnlock all keys.".into(),
+                    "L\tLock all keys.".into(),
+                    "g\tChoose Refine, Random, or Evolve.".into(),
+                    "p\tChoose a limit preset.".into(),
+                    "n\tChoose a new random seed.".into(),
+                    "x\tEdit the training corpus mixture.".into(),
+                    "q\tClose settings, or return to the previous screen.".into(),
+                    "Limits allow increases from the original layout; travel uses u/100, SFB/SFS use percentage points.".into(),
+                ]
             )?,
             _ => {
             }
@@ -3185,12 +4609,14 @@ fn optimizer_setup(
 fn load_training_sources(
     term: &mut Terminal,
     selected: &Source,
-    settings: &SearchSettings
+    settings: &SearchSettings,
 ) -> AppResult<Vec<Source>> {
     let mut out = vec![selected.clone()];
     for path in corpus_paths()? {
         let name = corpus_name(&path).to_ascii_lowercase();
-        if !name.eq_ignore_ascii_case(&selected.name) && settings.mix.get(&name).copied().unwrap_or(0.0)>0.0 {
+        if !name.eq_ignore_ascii_case(&selected.name)
+            && settings.mix.get(&name).copied().unwrap_or(0.0) > 0.0
+        {
             out.push(load_source_tui(term, &path)?);
         }
     }
@@ -3207,14 +4633,23 @@ fn optimizer_dashboard(
     status: &str,
 ) -> Canvas {
     let co = &p.corpora[0];
-    let physical = p.settings.uses_mana2_stats();
-    let r0 = full_raw_with_mana2(&p.model.original, co, &p.model.geometry, physical);
-    let r1 = full_raw_with_mana2(arr, co, &p.model.geometry, physical);
+    let mana = p.settings.uses_mana2_stats();
+    let r0 = full_raw_with_mana2(&p.model.original, co, &p.model.geometry, mana);
+    let r1 = full_raw_with_mana2(arr, co, &p.model.geometry, mana);
     let a = metrics(&r0, co);
     let b = metrics(&r1, co);
     let mut cv = Canvas::new(term.width(), 96);
-    header(&mut cv, title, &co.name, &p.model.board.name,
-        if title == "Optimizer result" { "? help" } else { controls });
+    header(
+        &mut cv,
+        title,
+        &co.name,
+        &p.model.board.name,
+        if title == "Optimizer result" {
+            "? help"
+        } else {
+            controls
+        },
+    );
     let mut y = keyboard(
         &mut cv,
         2,
@@ -3233,108 +4668,50 @@ fn optimizer_dashboard(
     } else {
         None
     };
-    if p.settings.mode == "mana2" {
-        let before = mana2_metrics::stats(r0.1.as_ref().unwrap(), co.totals);
-        let after = mana2_metrics::stats(r1.1.as_ref().unwrap(), co.totals);
-        for (label, id) in [
-            ("SFBW", "sfbw"),
-            ("SFSW", "sfsw"),
-            ("Stretch", "lsb"),
-            ("Scissor", "vsb"),
-            ("Weak RED", "redirectweak"),
-            ("Roll", "roll"),
-        ] {
-            let left = before.get(id).unwrap_or(0.0);
-            let right = after.get(id).unwrap_or(0.0);
-            let suffix = if matches!(id, "redirectweak" | "roll") {
-                "%"
-            } else {
-                ""
-            };
-            cv.text(
-                0,
-                y,
-                &short(
-                    &format!("{label:12} {left:.2}{suffix} → {right:.2}{suffix}"),
-                    cv.w,
-                ),
-                FG,
-            );
-            y += 1;
-        }
-        y += 1;
-        cv.text(
-            0,
-            y,
-            &short(
-                &format!(
-                    "Mana2 score {:.2} → {:.2} (higher is better)",
-                    mana2_metrics::score(&before, &p.weights.2),
-                    mana2_metrics::score(&after, &p.weights.2)
-                ),
-                cv.w,
-            ),
-            CYAN,
-        );
-        y += 1;
-        if let Some((old, new)) = mix {
-            cv.text(
-                0,
-                y,
-                &short(
-                    &format!(
-                        "Training objective {:.2} → {:.2} (lower is better)",
-                        old, new
-                    ),
-                    cv.w,
-                ),
-                MUTED,
-            );
-            y += 1;
-        }
-    } else if p.settings.mode == "simple" {
-        let before = mana2_metrics::stats(r0.1.as_ref().unwrap(), co.totals);
-        let after = mana2_metrics::stats(r1.1.as_ref().unwrap(), co.totals);
-        y = simple_stats_rows(
+    if p.settings.mode == "aklgg" {
+        y = aklgg_stat_table(
             &mut cv,
             y,
-            Some(&before),
-            &after,
-            &p.weights.3,
-            term.decimals(),
-        );
-        y = simple_speed_table(
-            &mut cv,
-            y + 1,
-            Some(&before),
-            &after,
-            &p.weights.3,
-            term.decimals(),
-        );
-        y = simple_score_line(
-            &mut cv,
-            y,
-            Some(simple_metrics::score(&before, &p.weights.3)),
-            simple_metrics::score(&after, &p.weights.3),
-            mix.map(|(_, new)| new),
+            &mana_stats_for_corpus(&r0, co),
+            &mana_stats_for_corpus(&r1, co),
             term.decimals(),
         );
     } else {
-        y = grouped_metric_cards(&mut cv, y, &a, &b, &r1, co, term.decimals());
+        y = grouped_metric_cards(
+            &mut cv,
+            y,
+            &a,
+            &b,
+            &r1,
+            co,
+            term.decimals(),
+            term.simple_stats,
+        );
         y = finger_table(&mut cv, y + 1, &a, &b, term.decimals());
     }
-    if p.settings.mode == "detailed" {
-        y = score_panel(
-            &mut cv,
-            y + 1,
-            &p.breakdown(&r0, co),
-            &p.breakdown(&r1, co),
-            mix,
-            term.decimals(),
-        );
-    }
+    y = score_panel(
+        &mut cv,
+        y + 1,
+        &p.breakdown(&r0, co),
+        &p.breakdown(&r1, co),
+        mix,
+        term.decimals(),
+    );
+    cv.text(
+        0,
+        y,
+        if p.settings.mode == "aklgg" { "Weights: AKL.GG" } else { "Weights: Normal" },
+        MUTED,
+    );
+    y += 1;
     cv.text(0, y, &short(status, cv.w), CYAN);
-    cv.h = y + 2;
+    cv.text(
+        0,
+        y + 1,
+        &format!("m stats: {} · ? help", term.stats_view_name()),
+        MUTED,
+    );
+    cv.h = y + 3;
     cv
 }
 
@@ -3342,7 +4719,7 @@ fn search_live(
     term: &mut Terminal,
     p: &Problem,
     arr: &mut Vec<usize>,
-    locks: &[bool]
+    locks: &[bool],
 ) -> AppResult<Option<Snapshot>> {
     let problem = p.clone();
     let start = arr.to_vec();
@@ -3352,23 +4729,19 @@ fn search_live(
     let (tx, rx) = mpsc::sync_channel(2);
     let (done_tx, done_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let mut callback=|s | {
+        let mut callback = |s| {
             let _ = tx.try_send(s);
         };
-        let result = run_search(
-            &problem,
-            &start,
-            &frozen_locks,
-            &worker_ctrl,
-            &mut callback
-        ).map_err(|e| e.to_string());
+        let result =
+            run_search_parallel(&problem, &start, &frozen_locks, &worker_ctrl, &mut callback)
+                .map_err(|e| e.to_string());
         let _ = done_tx.send(result);
     });
     let state = State::new(arr.to_vec(), p);
     let mut snap = Snapshot {
         best: Candidate {
             arr: arr.to_vec(),
-            score: state.score
+            score: state.score,
         },
         progress: Progress {
             phase: "starting".into(),
@@ -3376,7 +4749,7 @@ fn search_live(
             ..Progress::default()
         },
         archive: Vec::new(),
-        has_best: false
+        has_best: false,
     };
     let mut scroll = 0;
     let mut leave = false;
@@ -3387,16 +4760,25 @@ fn search_live(
             }
             match done_rx.try_recv() {
                 Ok(r) => return r.map(Some).map_err(|e| e.into()),
-                Err(mpsc::TryRecvError::Disconnected) => return Err("search worker exited without a result".into()),
-                Err(_) => {
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err("search worker exited without a result".into())
                 }
+                Err(_) => {}
             }
-            let pr=&snap.progress;
-            let status = format!("{}  {}/{}  {} trials  {:.1}s", if ctrl.pause.load(Ordering::Relaxed) {
-                "paused"
-            } else {
-                &pr.phase
-            }, pr.restart, p.settings.restarts, pr.evaluations, pr.elapsed);
+            let pr = &snap.progress;
+            let status = format!(
+                "{}  {}/{}  {} trials  {:.1}s · {} workers",
+                if ctrl.pause.load(Ordering::Relaxed) {
+                    "paused"
+                } else {
+                    &pr.phase
+                },
+                pr.restart,
+                p.settings.restarts,
+                pr.evaluations,
+                pr.elapsed,
+                search_worker_count(&p.settings)
+            );
             let c = optimizer_dashboard(
                 term,
                 p,
@@ -3404,7 +4786,7 @@ fn search_live(
                 locks,
                 "Optimizing",
                 "p pause | q setup (keep changes)",
-                &status
+                &status,
             );
             term.present(&c, scroll)?;
             let e = term.event()?;
@@ -3415,14 +4797,17 @@ fn search_live(
                 Event::Char('p') => {
                     let b = ctrl.pause.load(Ordering::Relaxed);
                     ctrl.pause.store(!b, Ordering::Relaxed);
-                },
-                Event::Char('.') => term.precise=!term.precise,
+                }
+                Event::Char('m') => {
+                    term.toggle_stats_view();
+                    scroll = 0;
+                }
+                Event::Char('.') => term.precise = !term.precise,
                 Event::Escape | Event::Char('q') | Event::Quit => {
                     leave = true;
                     return Ok(None);
-                },
-                _ => {
                 }
+                _ => {}
             }
         }
     })();
@@ -3441,19 +4826,6 @@ fn search_live(
     }
 }
 
-fn same_layout_for_save(board: &Board, symbols: &[u8], saved: &Board) -> bool {
-    // Blank IDs only distinguish interchangeable empty slots. Matching symbols
-    // alone does not establish physical layout identity.
-    board.keys == saved.keys
-        && board.row_stagger == saved.row_stagger
-        && symbols.len() == board.keys.len()
-        && symbols.len() == saved.symbols.len()
-        && symbols
-            .iter()
-            .zip(&saved.symbols)
-            .all(|(&a, &b)| a == b || (blank(a) && blank(b)))
-}
-
 fn save_result(
     p: &Problem,
     arr: &[usize],
@@ -3462,29 +4834,17 @@ fn save_result(
     progress: &Progress,
 ) -> AppResult<PathBuf> {
     let symbols = p.model.symbols(arr);
-    let mut b = p.model.board.clone();
-    if p.settings.design != "refine" {
-        let parent = b.path.parent().unwrap_or(Path::new(LAYOUT_DIR));
-        b.path = parent.join(format!("{}-{}.dat", b.name, p.settings.design));
-    }
-    let path = save_new_layout(&b, &symbols)?;
-    let physical_weights = if p.settings.mode == "mana2" {
-        format!("[mana2]\n{}\n", p.weights.2.config_text())
-    } else if p.settings.mode == "simple" {
-        format!("[simple]\n{}\n", p.weights.3.config_text())
-    } else {
-        String::new()
-    };
-
+    let b = p.model.board.clone();
+    let path = crate::layout_export::save_optimized(&board_as_action_layout(&b, &symbols)?)?;
     let mut report = format!(
-        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nobjective = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n{}[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
+        "model = {MODEL_VERSION}\nseed = 0x{:x}\ntrials = {}\nseconds = {:.6}\nscore = {:.17}\n\n[weights]\n{}\n[rolls]\n{}\n[aklgg]\n{}\n[search]\n{}\n[original]\n{}\n[start]\n{}\n[result]\n{}\n[locks]\n{:?}\n",
         progress.seed,
         progress.evaluations,
         progress.elapsed,
         State::new(arr.to_vec(), p).score,
         weights_text(&p.weights),
         rolls_config_text(p.weights.rolls()),
-        physical_weights,
+        p.weights.2.config_text(),
         search_settings_text(&p.settings),
         board_text(&p.model.board, &p.model.board.symbols),
         board_text(&p.model.board, &p.model.symbols(start)),
@@ -3503,43 +4863,6 @@ fn save_result(
                 "{} = {:.9} -> {:.9}\n",
                 METRIC_NAMES[j], old.v[j], new.v[j]
             ));
-        }
-        for j in 0..SIMPLE_KEYS.len() {
-            report.push_str(&format!(
-                "simple_{} = {:.9} -> {:.9}\n",
-                SIMPLE_KEYS[j], old.simple[j], new.simple[j]
-            ));
-        }
-        if p.settings.mode == "mana2" {
-            let before = mana2_stats_for(&p.model.original, c, &p.model);
-            let after = mana2_stats_for(arr, c, &p.model);
-            report.push_str(&format!(
-                "mana2_score = {:.9} -> {:.9}\n",
-                mana2_metrics::score(&before, &p.weights.2),
-                mana2_metrics::score(&after, &p.weights.2)
-            ));
-            for (index, id) in mana2_metrics::STAT_IDS.iter().enumerate() {
-                report.push_str(&format!(
-                    "mana2_{id} = {:.9} -> {:.9}\n",
-                    before.values[index], after.values[index]
-                ));
-            }
-        } else if p.settings.mode == "simple" {
-            let before = mana2_stats_for(&p.model.original, c, &p.model);
-            let after = mana2_stats_for(arr, c, &p.model);
-            report.push_str(&format!(
-                "simple_score = {:.9} -> {:.9}\n",
-                simple_metrics::score(&before, &p.weights.3),
-                simple_metrics::score(&after, &p.weights.3),
-            ));
-            let before_values = simple_metrics::values(&before, &p.weights.3);
-            let after_values = simple_metrics::values(&after, &p.weights.3);
-            for (index, id) in simple_metrics::STAT_IDS.iter().enumerate() {
-                report.push_str(&format!(
-                    "simple_metric_{id} = {:.9} -> {:.9}\n",
-                    before_values[index], after_values[index],
-                ));
-            }
         }
     }
     atomic_write(&path.with_extension("run.txt"), &report, false)?;
@@ -3560,19 +4883,6 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
         out.push(',');
         out.push_str(name);
     }
-    for name in SIMPLE_KEYS {
-        out.push_str(&format!(",simple_{name}"));
-    }
-    if p.settings.mode == "mana2" {
-        for id in mana2_metrics::STAT_IDS {
-            out.push_str(&format!(",mana2_{id}"));
-        }
-    } else if p.settings.mode == "simple" {
-        out.push_str(",simple_score");
-        for id in simple_metrics::STAT_IDS {
-            out.push_str(&format!(",simple_metric_{id}"));
-        }
-    }
     out.push('\n');
     for (j, candidate) in res.archive.iter().enumerate() {
         for (i, co) in p.corpora.iter().enumerate() {
@@ -3589,29 +4899,18 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
                 p.shares[i],
                 candidate.score
             ));
-            for v in m.v.into_iter().chain(m.simple) {
+            for v in m.v {
                 out.push_str(&format!(",{v:.9}"));
-            }
-            if p.settings.mode == "mana2" {
-                let stats = mana2_stats_for(&candidate.arr, co, &p.model);
-                for value in stats.values {
-                    out.push_str(&format!(",{value:.9}"));
-                }
-            } else if p.settings.mode == "simple" {
-                let stats = mana2_stats_for(&candidate.arr, co, &p.model);
-                out.push_str(&format!(
-                    ",{:.9}",
-                    simple_metrics::score(&stats, &p.weights.3)
-                ));
-                for value in simple_metrics::values(&stats, &p.weights.3) {
-                    out.push_str(&format!(",{value:.9}"));
-                }
             }
             out.push('\n');
         }
     }
     for n in 1..10000 {
-        let path = Path::new(LAYOUT_DIR).join(format!("{}-batch-{n:03}.csv", p.model.board.name));
+        let path = paths
+            .first()
+            .and_then(|path| path.parent())
+            .unwrap_or(Path::new(LAYOUT_DIR))
+            .join(format!("{}-batch-{n:03}.csv", p.model.board.name));
         match OpenOptions::new().create_new(true).write(true).open(&path) {
             Ok(mut f) => {
                 f.write_all(out.as_bytes())?;
@@ -3626,13 +4925,11 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
 }
 
 fn objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult<()> {
-    if p.settings.mode == "mana2" {
-        return mana2_objective_view(term, p, arr);
+    if matches!(p.settings.mode.as_str(), "aklgg") {
+        mana_objective_view(term, p, arr)
+    } else {
+        problem_objective_view(term, p, arr)
     }
-    if p.settings.mode == "simple" {
-        return simple_objective_view(term, p, arr);
-    }
-    problem_objective_view(term, p, arr)
 }
 
 fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
@@ -3644,25 +4941,36 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
     let mut locks = default_locks(&model.board);
     let mut weights = config.weights;
     let mut settings = config.search;
-    if settings.design != "refine" {
-        locks.fill(false);
-    }
     timing.mark("Weights, settings and locks");
     drop(timing);
     loop {
-        if !optimizer_setup(term, &model, source, &mut arr, &mut locks, &mut weights, &mut settings)? {
+        if !optimizer_setup(
+            term,
+            &model,
+            source,
+            &mut arr,
+            &mut locks,
+            &mut weights,
+            &mut settings,
+        )? {
             return Ok(());
         }
         if model.geometry.rolls != weights.rolls() {
-            model.geometry = Geometry::with_rolls(model.board.keys.clone(), weights.rolls());
+            model.geometry = Geometry::with_alts(model.board.keys.clone(), weights.rolls());
         }
         let sources = load_training_sources(term, source, &settings)?;
-        let mut problem = Problem::new(model.clone(), &sources, 0, weights.clone(), settings.clone())?;
+        let mut problem = Problem::new(
+            model.clone(),
+            &sources,
+            0,
+            weights.clone(),
+            settings.clone(),
+        )?;
         'runs: loop {
             let start = arr.clone();
             let result = match search_live(term, &problem, &mut arr, &locks)? {
                 Some(r) => r,
-                None => break 'runs
+                None => break 'runs,
             };
             if !result.has_best || result.archive.is_empty() {
                 break 'runs;
@@ -3671,7 +4979,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
             let mut scroll = 0;
             let mut status = String::new();
             loop {
-                let cur=&result.archive[choice];
+                let cur = &result.archive[choice];
                 arr = cur.arr.clone();
                 let text = if status.is_empty() {
                     format!(
@@ -3708,50 +5016,78 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                             &model.original,
                             &arr,
                             &problem.corpora[0],
-                            true
+                            true,
                         )?,
-                        _ => {
-                        }
+                        _ => {}
                     }
                 }
                 match e {
                     Event::Escape | Event::Char('q') | Event::Char('r') => break 'runs,
                     Event::Quit => return Ok(()),
-                    Event::Char('?') => help_popup(term, &frame, "Optimizer result", &[
-                        "q or r: return to setup with this candidate; Space: refine again.".into(),
-                        "[ / ]: previous / next candidate; b: compare candidates.".into(),
-                        "s: save a copy; S: save all candidates.".into(),
-                        "a: score contributions; i: corpus notes; v: validation; .: precision.".into(),
-                    ])?,
-                    Event::Char('.') => term.precise=!term.precise,
+                    Event::Char('?') => help_popup(
+                        term,
+                        &frame,
+                        "Optimizer result",
+                        &[
+                            "q or r: return to setup with this candidate; Space: refine again."
+                                .into(),
+                            "[ / ]: previous / next candidate; b: compare candidates.".into(),
+                            "s: save a copy; S: save all candidates.".into(),
+                            "m\tSwitch Simple / Detailed stats; scoring stays unchanged.".into(),
+                            "a: score contributions; i: corpus notes; v: validation; .: precision."
+                                .into(),
+                        ],
+                    )?,
+                    Event::Char('.') => term.precise = !term.precise,
+                    Event::Char('m') => {
+                        term.toggle_stats_view();
+                        scroll = 0;
+                    }
                     Event::Char(' ') => {
                         problem.settings.design = "refine".into();
                         problem.settings.seed = problem.settings.seed.wrapping_add(1);
                         continue 'runs;
-                    },
-                    Event::Char('[') => choice = (choice + result.archive.len() - 1) % result.archive.len(),
+                    }
+                    Event::Char('[') => {
+                        choice = (choice + result.archive.len() - 1) % result.archive.len()
+                    }
                     Event::Char(']') => choice = (choice + 1) % result.archive.len(),
-                    Event::Char('b') => choice = candidate_view(term, &problem, &result.archive, choice)?,
-                    Event::Char('s') => status = match save_result(&problem, &arr, &start, &locks, &result.progress) {
-                        Ok(p) => saved_layout_message(&p),
-                        Err(e) => e.to_string()
-                    },
-                    Event::Char('S') => status = match save_batch(&problem, &result, &start, &locks) {
-                        Ok(p) => format!("saved {} candidates (.dat + .jsonc); {}", result.archive.len(), p.display()),
-                        Err(e) => e.to_string()
-                    },
+                    Event::Char('b') => {
+                        choice = candidate_view(term, &problem, &result.archive, choice)?
+                    }
+                    Event::Char('s') => {
+                        status = match save_result(&problem, &arr, &start, &locks, &result.progress)
+                        {
+                            Ok(p) => saved_layout_message(&p),
+                            Err(e) => e.to_string(),
+                        }
+                    }
+                    Event::Char('S') => {
+                        status = match save_batch(&problem, &result, &start, &locks) {
+                            Ok(p) => format!(
+                                "saved {} candidates (.jsonc); {}",
+                                result.archive.len(),
+                                p.display()
+                            ),
+                            Err(e) => e.to_string(),
+                        }
+                    }
                     Event::Char('a') => objective_audit(term, &problem, &arr)?,
                     Event::Char('v') => validation_view(term, &model, &model.original, &arr)?,
                     Event::Char('i') => show_corpus_info(term, &problem.corpora[0])?,
-                    _ => {
-                    }
+                    _ => {}
                 }
             }
         }
     }
 }
 
-fn rebuild_source_tui(term: &mut Terminal, raw: &Path, cfg: CorpusConfig, hash: u64) -> AppResult<PathBuf> {
+fn rebuild_source_tui(
+    term: &mut Terminal,
+    raw: &Path,
+    cfg: CorpusConfig,
+    hash: u64,
+) -> AppResult<PathBuf> {
     let raw = raw.to_owned();
     let total = fs::metadata(&raw)?.len();
     let name = corpus_name(&raw);
@@ -3761,9 +5097,16 @@ fn rebuild_source_tui(term: &mut Terminal, raw: &Path, cfg: CorpusConfig, hash: 
     let worker_cancel = cancel.clone();
     let (tx, rx) = mpsc::channel();
     let handle = thread::spawn(move || {
-        let result = rebuild_corpus_control(&raw, &cfg, hash, &mut |n, _| {
-            worker_progress.store(n, Ordering::Relaxed);
-        }, Some(&worker_cancel)).map_err(|e| e.to_string());
+        let result = rebuild_corpus_control(
+            &raw,
+            &cfg,
+            hash,
+            &mut |n, _| {
+                worker_progress.store(n, Ordering::Relaxed);
+            },
+            Some(&worker_cancel),
+        )
+        .map_err(|e| e.to_string());
         let _ = tx.send(result);
     });
     let result = (|| -> AppResult<PathBuf> {
@@ -3771,14 +5114,21 @@ fn rebuild_source_tui(term: &mut Terminal, raw: &Path, cfg: CorpusConfig, hash: 
             match rx.try_recv() {
                 Ok(v) => return v.map_err(|e| e.into()),
                 Err(mpsc::TryRecvError::Disconnected) => return Err("corpus worker exited".into()),
-                Err(_) => {
-                }
+                Err(_) => {}
             }
             let mut c = Canvas::new(term.width(), 4);
             let n = progress.load(Ordering::Relaxed);
-            c.text(0, 1, &format!("{name}  {:.0}%", pct(n as f64, total as f64)), CYAN);
+            c.text(
+                0,
+                1,
+                &format!("{name}  {:.0}%", pct(n as f64, total as f64)),
+                CYAN,
+            );
             term.present(&c, 0)?;
-            if matches!(term.event()?, Event::Escape | Event::Quit | Event::Char('q')) {
+            if matches!(
+                term.event()?,
+                Event::Escape | Event::Quit | Event::Char('q')
+            ) {
                 return Err("corpus build cancelled".into());
             }
         }
@@ -3817,185 +5167,227 @@ mod saved_layout_identity_tests {
     }
 
     #[test]
-    fn optimizer_metrics_cycle_both_directions_and_resets_preset() {
-        let mut settings = SearchSettings::default();
-        settings.mode = "detailed".into();
-        settings.preset = "balanced".into();
-        cycle_metrics(&mut settings);
-        assert_eq!(settings.mode, "mana2");
-        assert_eq!(settings.preset, "custom");
-
-        settings.preset = "strict".into();
-        cycle_metrics(&mut settings);
-        assert_eq!(settings.mode, "simple");
-        assert_eq!(settings.preset, "custom");
-
-        settings.preset = "balanced".into();
-        cycle_metrics(&mut settings);
-        assert_eq!(settings.mode, "detailed");
-        assert_eq!(settings.preset, "custom");
-
+    fn normal_optimizer_exposes_only_akler_weights() {
         let source = Source::from_text(
             r#"{"letters":{"q":4,"w":2},"bigrams":{"qw":2},"trigrams":{"qwe":1}}"#,
             Path::new("inline.json"),
         )
         .unwrap();
         let model = Model::new(board("thumbs: space\n"));
-        let locks = default_locks(&model.board);
-        let mut weights = Weights::default();
-        let sfbw = mana2_metrics::STAT_IDS
+        let canvas = optimizer_setup_frame(
+            108,
+            &model,
+            &source,
+            &model.original,
+            &default_locks(&model.board),
+            &Weights::default(),
+            &SearchSettings::default(),
+            "ready",
+            None,
+        );
+        assert!(!canvas
+            .hits
             .iter()
-            .position(|id| *id == "sfbw")
-            .unwrap();
-        weights.2.set_schedule_text(sfbw, "[-11, 1.5, -9]").unwrap();
-        settings.mode = "mana2".into();
-        for width in [64, 108] {
-            let canvas = optimizer_setup_frame(
-                width,
-                &model,
-                &source,
-                &model.original,
-                &locks,
-                &weights,
-                &settings,
-                "ready",
-            );
-            let text: String = canvas.cells.iter().map(|cell| cell.ch).collect();
-            assert!(text.contains("[-11, 1.5, -9]"));
-            for id in 0..mana2_metrics::N_STATS {
-                let hits: Vec<_> = canvas
-                    .hits
-                    .iter()
-                    .filter(
-                        |(_, action)| matches!(action, Action::Mana2Weight(index) if *index == id),
-                    )
-                    .collect();
-                assert_eq!(hits.len(), 1);
-                let rect = hits[0].0;
-                assert!(rect.x + rect.w <= canvas.w);
-                assert!(rect.y < canvas.h);
-                assert!(
-                    matches!(canvas.action(rect.x, rect.y), Some(Action::Mana2Weight(index)) if index == id)
+            .any(|(_, a)| matches!(a, Action::Weight(SFB))));
+        let mut weights = Canvas::new(108, 96);
+        let corpus = model.corpus(&source).unwrap();
+        let raw = full_raw(&model.original, &corpus, &model.geometry);
+        let metrics = metrics(&raw, &corpus);
+        optimizer_metric_cards(
+            &mut weights,
+            0,
+            &metrics,
+            &metrics,
+            &raw,
+            &corpus,
+            &Weights::default(),
+            DISPLAY_DECIMALS,
+            false,
+            true,
+        );
+        for simple in [false, true] {
+            for width in [60, 108, 180] {
+                let mut w = Weights::default();
+                w.0[CNFJB] = 2222.0;
+                let mut stats = Canvas::new(width, 96);
+                let mut panel = Canvas::new(width, 96);
+                optimizer_metric_cards(
+                    &mut stats,
+                    3,
+                    &metrics,
+                    &metrics,
+                    &raw,
+                    &corpus,
+                    &w,
+                    DISPLAY_DECIMALS,
+                    simple,
+                    false,
                 );
+                optimizer_metric_cards(
+                    &mut panel,
+                    3,
+                    &metrics,
+                    &metrics,
+                    &raw,
+                    &corpus,
+                    &w,
+                    DISPLAY_DECIMALS,
+                    simple,
+                    true,
+                );
+                for (rect, action) in &stats.hits {
+                    if let Action::Metric(m) = action {
+                        if let Some(id) = optimizer_metric_weight(*m) {
+                            assert!(panel.hits.iter().any(
+                                |(r, a)| matches!(a, Action::Weight(i) if *i == id)
+                                    && r.x == rect.x
+                                    && r.y == rect.y
+                                    && r.w == rect.w
+                            ));
+                        }
+                    }
+                }
             }
-            assert!(!canvas
-                .hits
-                .iter()
-                .any(|(_, action)| matches!(action, Action::Weight(_))));
         }
-
-        cycle_metrics(&mut settings);
-        let canvas = optimizer_setup_frame(
-            108,
-            &model,
-            &source,
-            &model.original,
-            &locks,
-            &weights,
-            &settings,
-            "ready",
-        );
-        assert!(!canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::Mana2Weight(_))));
-        assert!(canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::SimpleWeight(0))));
-        assert!(!canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::Weight(_))));
-
-        cycle_metrics(&mut settings);
-        let canvas = optimizer_setup_frame(
-            108,
-            &model,
-            &source,
-            &model.original,
-            &locks,
-            &weights,
-            &settings,
-            "ready",
-        );
-        assert!(!canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::SimpleWeight(_))));
-        assert!(canvas
+        assert!(weights
             .hits
             .iter()
             .any(|(_, action)| matches!(action, Action::Weight(SFB))));
-        assert_eq!(weights.2.schedule_text(sfbw), "[-11, 1.5, -9]");
+        for i in (0..N_WEIGHTS).filter(|&i| !aggregate(i)) {
+            assert!(
+                weights
+                    .hits
+                    .iter()
+                    .any(|(_, action)| matches!(action, Action::Weight(id) if *id == i)),
+                "missing editable weight {}",
+                WEIGHT_NAMES[i]
+            );
+        }
+        assert!(weights.cells.iter().any(|cell| cell.ch == '├'));
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, a)| matches!(a, Action::Setting(16))));
+        for name in ["balanced", "strict", "low-travel", "explore"] {
+            let mut settings = SearchSettings::default();
+            apply_preset(&mut settings, name);
+            assert_eq!(settings.mode, "normal");
+        }
+
+        let mut aklgg_weights = Canvas::new(108, 96);
+        physical_weight_rows(&mut aklgg_weights, 0, &Weights::default().2);
+        let editable = aklgg_weights
+            .hits
+            .iter()
+            .filter_map(|(_, action)| match action {
+                Action::ManaWeight(index) => Some(mana2_metrics::STAT_IDS[*index]),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(editable.contains(&"weighted_speed"));
+        assert!(editable.contains(&"fspeed-LP"));
+        assert!(editable.contains(&"offpinky"));
+
+        let mut settings = SearchSettings::default();
+        cycle_weight_system(&mut settings);
+        assert_eq!(settings.mode, "aklgg");
+        cycle_weight_system(&mut settings);
+        assert_eq!(settings.mode, "normal");
+
+        let stats = mana_stats_for_corpus(&full_raw_with_mana2(
+            &model.original,
+            &corpus,
+            &model.geometry,
+            true,
+        ), &corpus);
+        let mut aklgg = Canvas::new(108, 48);
+        aklgg_stat_table(&mut aklgg, 0, &stats, &stats, DISPLAY_DECIMALS);
+        let rendered = aklgg
+            .cells
+            .chunks(aklgg.w)
+            .map(|row| row.iter().map(|cell| cell.ch).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        for label in ["AKL.GG patterns", "SKIPGRAM", "NO THUMBS", "Fspeed", "Weighted"] {
+            assert!(rendered.contains(label), "missing {label} from AKL.GG table");
+        }
+        let mut tabs = Canvas::new(108, 4);
+        optimizer_tabs(&mut tabs, 0, "reddit", "packet", "aklgg");
+        let tabs = tabs
+            .cells
+            .iter()
+            .map(|cell| cell.ch)
+            .collect::<String>();
+        assert!(tabs.contains("Scoring: aklgg [t]"));
     }
+}
 
-    #[test]
-    fn changed_row_stagger_is_a_different_saved_layout() {
-        let original = board("thumbs: space\n");
-        let staggered = board("thumbs: space\nrow-stagger: standard\n");
-        assert_eq!(original.symbols, staggered.symbols);
-        assert!(!same_layout_for_save(
-            &original,
-            &original.symbols,
-            &staggered
-        ));
+fn workspace_tabs(canvas: &mut Canvas, active: usize, labels: &[&str]) {
+    workspace_tabs_at(canvas, 0, active, labels);
+}
+
+/// Shared tab appearance and mouse targets across workspaces. Compact evenly
+/// when the terminal cannot fit the full labels, keeping every tab reachable.
+fn workspace_tabs_at(canvas: &mut Canvas, y: usize, active: usize, labels: &[&str]) {
+    if labels.is_empty() || y >= canvas.h {
+        return;
     }
-
-    #[test]
-    fn changed_finger_assignments_are_a_different_saved_layout() {
-        let standard = board("thumbs: space\nrow-stagger: standard\n");
-        let angle = board("thumbs: space\nrow-stagger: anglemod\n");
-        assert_eq!(standard.symbols, angle.symbols);
-        assert!(!same_layout_for_save(&standard, &standard.symbols, &angle));
-
-        // Also check resolved geometry independently of the preset name.
-        let mut reassigned = standard.clone();
-        reassigned.keys[0].finger = 1;
-        reassigned.keys[0].rank = 1;
-        assert!(!same_layout_for_save(
-            &standard,
-            &standard.symbols,
-            &reassigned
-        ));
+    canvas.row_style(
+        Rect {
+            x: 0,
+            y,
+            w: canvas.w,
+            h: 1,
+        },
+        Some((22, 22, 22)),
+        false,
+    );
+    for x in 0..canvas.w {
+        canvas.put(x, y, ' ', MUTED);
     }
-
-    #[test]
-    fn same_symbols_on_different_thumb_hands_are_distinct() {
-        let left = board("thumbs: space\n");
-        let right = board("            space\n");
-        assert_eq!(left.symbols, right.symbols);
-        assert!(!same_layout_for_save(&left, &left.symbols, &right));
-    }
-
-    #[test]
-    fn equivalent_aliases_names_and_blank_ids_share_save_identity() {
-        let text =
-            format!("{ROWS}thumbs: space\nrow-stagger: standard\n").replacen("q w", "~ blank", 1);
-        let original = board_from_text(&text, Path::new("original.dat")).unwrap();
-        let alias = text
-            .replacen("~ blank", "· ~", 1)
-            .replace("standard", "standart")
-            .replace("space", "␠");
-        let mut saved = board_from_text(&alias, Path::new("renamed.dat")).unwrap();
-        saved.symbols.swap(0, 1);
-
-        assert!(same_layout_for_save(&original, &original.symbols, &saved));
-    }
-
-    #[test]
-    fn save_identity_uses_candidate_bindings_and_checks_all_slots() {
-        let original = board("thumbs: space\n");
-        let mut candidate = original.symbols.clone();
-        candidate.swap(0, 1);
-        let mut saved = original.clone();
-        saved.symbols = candidate.clone();
-
-        assert!(same_layout_for_save(&original, &candidate, &saved));
-        assert!(!same_layout_for_save(&original, &original.symbols, &saved));
-        assert!(!same_layout_for_save(&original, &candidate[..30], &saved));
-
-        saved.keys[0].col -= 1;
-        assert!(!same_layout_for_save(&original, &candidate, &saved));
+    let natural: usize = labels.iter().map(|label| label.chars().count()).sum();
+    let compact = natural > canvas.w;
+    let mut x = 0;
+    for (index, label) in labels.iter().enumerate() {
+        let width = if compact {
+            canvas.w / labels.len() + usize::from(index < canvas.w % labels.len())
+        } else {
+            label.chars().count()
+        };
+        if width == 0 {
+            continue;
+        }
+        canvas.text(
+            x,
+            y,
+            &short(label, width),
+            if index == active { FG } else { MUTED },
+        );
+        canvas.row_style(
+            Rect {
+                x,
+                y,
+                w: width,
+                h: 1,
+            },
+            Some(if index == active {
+                (58, 58, 58)
+            } else {
+                (22, 22, 22)
+            }),
+            false,
+        );
+        if index < 9 {
+            canvas.hit(
+                Rect {
+                    x,
+                    y,
+                    w: width,
+                    h: 1,
+                },
+                Action::Command(char::from(b'1' + index as u8)),
+            );
+        }
+        x += width;
     }
 }

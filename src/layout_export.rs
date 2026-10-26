@@ -8,6 +8,68 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::action_keys::{Action, Basis, Binding, Emission, Layout, Result};
 use crate::Json;
 
+/// Save optimizer output separately from editable source layouts. Claim a
+/// fresh name without overwriting a layout or its existing run record.
+pub(crate) fn save_optimized(layout: &Layout) -> Result<PathBuf> {
+    let parent = layout
+        .path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("layouts"));
+    let dir = if parent.file_name().is_some_and(|name| name == "optimized") {
+        parent.to_owned()
+    } else {
+        parent.join("optimized")
+    };
+    let stem = layout
+        .path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("layout");
+    save_numbered_jsonc(layout, &dir, &format!("{stem}-optimized"))
+}
+
+/// Save a JSONC copy beside the supplied path without overwriting existing files.
+pub(crate) fn save_jsonc_copy(layout: &Layout) -> Result<PathBuf> {
+    let dir = layout
+        .path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("layouts"));
+    let stem = layout
+        .path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("layout");
+    save_numbered_jsonc(layout, dir, stem)
+}
+
+fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBuf> {
+    let text = jsonc_text(layout)?;
+    fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    for n in 1..10000 {
+        let path = dir.join(format!("{stem}-{n:03}.jsonc"));
+        if path.with_extension("run.txt").symlink_metadata().is_ok() {
+            continue;
+        }
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        };
+        let result = file
+            .write_all(text.as_bytes())
+            .and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(error) = result {
+            let _ = fs::remove_file(&path);
+            return Err(error.to_string());
+        }
+        return Ok(path);
+    }
+    Err("no unused result filename".into())
+}
+
 /// Claim both result names before writing either. Only files created by this
 /// call are removed on failure; an existing sibling or run record is retained.
 pub(crate) fn save_pair(dat_path: &Path, dat: &str, jsonc: &str) -> io::Result<()> {
@@ -258,9 +320,9 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                 let item_field = if field == "rules" { "rule" } else { "" };
                 let items: Vec<_> = values
                     .iter()
-                    .map(|value| format!("{padding}{},\n", json_text(value, depth + 1, item_field)))
+                    .map(|value| format!("{padding}{}", json_text(value, depth + 1, item_field)))
                     .collect();
-                format!("[\n{}{}]", items.concat(), "    ".repeat(depth))
+                format!("[\n{}\n{}]", items.join(",\n"), "    ".repeat(depth))
             }
         }
         Json::Object(values) => {
@@ -290,13 +352,13 @@ fn json_text(value: &Json, depth: usize, field: &str) -> String {
                 .into_iter()
                 .map(|(name, value)| {
                     format!(
-                        "{padding}{}: {},\n",
+                        "{padding}{}: {}",
                         json_quote(name),
                         json_text(value, depth + 1, name)
                     )
                 })
                 .collect();
-            format!("{{\n{}{}}}", lines.concat(), "    ".repeat(depth))
+            format!("{{\n{}\n{}}}", lines.join(",\n"), "    ".repeat(depth))
         }
     }
 }
@@ -333,6 +395,52 @@ fn rule_json(
         }
         Emission::None => Err("JSONC action rules cannot represent a none output".into()),
     }
+}
+
+fn wildcard_marker(layout: &Layout) -> Result<char> {
+    let mut used = [false; 128];
+    used[b'_' as usize] = true;
+    let mut mark = |bytes: &[u8]| {
+        for &byte in bytes {
+            if byte.is_ascii_graphic() {
+                used[byte as usize] = true;
+            }
+        }
+    };
+    let mark_emission = |emission: &Emission, mark: &mut dyn FnMut(&[u8])| {
+        if let Emission::Text(text) = emission {
+            mark(text);
+        }
+    };
+    for slot in &layout.slots {
+        mark(slot.label.as_bytes());
+        if let Binding::Text(text) = &slot.binding {
+            mark(text);
+        }
+    }
+    for action in layout.actions.values() {
+        match action {
+            Action::Text(text) => mark(text),
+            Action::Rules {
+                rules, fallback, ..
+            } => {
+                for (context, emission) in rules {
+                    mark(context);
+                    mark_emission(emission, &mut mark);
+                }
+                mark_emission(fallback, &mut mark);
+            }
+            _ => {}
+        }
+    }
+    drop(mark);
+    b"*%#~^+?!&"
+        .iter()
+        .copied()
+        .chain(33..=126)
+        .find(|byte| !used[*byte as usize])
+        .map(char::from)
+        .ok_or_else(|| "JSONC needs one unused printable ASCII wildcard marker".into())
 }
 
 fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Json>)> {
@@ -375,6 +483,11 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
                 ..
             }) if text == label.to_ascii_lowercase().as_bytes())
         });
+    let wildcard = if adaptive || labels.is_empty() {
+        '*'
+    } else {
+        wildcard_marker(layout)?
+    };
 
     let mut wildcard_rules = Vec::new();
     let mut explicit_rules = BTreeMap::new();
@@ -408,6 +521,7 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
         match basis {
             Basis::Text => {
                 if !adaptive
+                    && !matches!(fallback, Emission::Text(text) if text.len() == 1 && text[0].is_ascii_graphic())
                     && !matches!(
                         fallback,
                         Emission::Call(fallback_name)
@@ -415,13 +529,21 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
                     )
                 {
                     return Err(format!(
-                        "JSONC wildcard magic key {label:?} requires a repeat-output fallback"
+                        "JSONC wildcard magic key {label:?} requires a repeat-output or one-character literal fallback"
                     ));
                 }
                 if !adaptive {
                     wildcard_rules.push(object([
-                        ("inputs", string(format!("*{label}"))),
-                        ("output", string("**")),
+                        ("inputs", string(format!("{wildcard}{label}"))),
+                        (
+                            "output",
+                            string(match fallback {
+                                Emission::Text(text) => {
+                                    format!("{wildcard}{}", printable_byte(text, "magic fallback")?)
+                                }
+                                _ => format!("{wildcard}{wildcard}"),
+                            }),
+                        ),
                     ]));
                 }
                 for (context, emission) in rules {
@@ -436,10 +558,10 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
                                 .into(),
                         );
                     }
-                    if context == "*" {
-                        return Err(
-                            "JSONC magic context '*' is reserved as the wildcard marker".into()
-                        );
+                    if context.as_bytes() == [wildcard as u8] {
+                        return Err(format!(
+                            "JSONC magic context {wildcard:?} is reserved as the wildcard marker"
+                        ));
                     }
                     if let Emission::Text(output) = emission {
                         let output = printable_byte(output, "magic rule output")?;
@@ -472,8 +594,8 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
                     ));
                 }
                 wildcard_rules.push(object([
-                    ("inputs", string(format!("*_{label}"))),
-                    ("output", string("*_*")),
+                    ("inputs", string(format!("{wildcard}_{label}"))),
+                    ("output", string(format!("{wildcard}_{wildcard}"))),
                 ]));
                 for (context, emission) in rules {
                     let context = if let Some(label) = labels.get(
@@ -484,10 +606,10 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
                     } else {
                         printable_byte(context, "skip context")?.to_string()
                     };
-                    if context == "*" {
-                        return Err(
-                            "JSONC skip context '*' is reserved as the wildcard marker".into()
-                        );
+                    if context.as_bytes() == [wildcard as u8] {
+                        return Err(format!(
+                            "JSONC skip context {wildcard:?} is reserved as the wildcard marker"
+                        ));
                     }
                     let prefix = format!("{context}_");
                     let input = format!("{prefix}{label}");
@@ -514,7 +636,7 @@ fn action_blocks(layout: &Layout) -> Result<(BTreeMap<String, String>, Option<Js
     } else {
         object([
             ("keys", string(keys)),
-            ("wildcards", string("*")),
+            ("wildcards", string(wildcard.to_string())),
             ("rules", Json::Array(wildcard_rules)),
         ])
     };
@@ -552,8 +674,49 @@ fn offsets(values: impl IntoIterator<Item = i16>) -> Json {
     )
 }
 
+/// `layout` with the actions of keys labelled `@` and `$` named `magic` and
+/// `skip`, as JSONC reimports them. Some JSONC files load such a key's action
+/// under its label instead; names are internal, so typing is unchanged.
+fn canonical_action_names(layout: &Layout) -> Layout {
+    let mut layout = layout.clone();
+    for (label, expected) in [("@", "magic"), ("$", "skip")] {
+        let Some(name) = layout.slots.iter().find_map(|slot| match &slot.binding {
+            Binding::Named(name) if slot.label == label && name != expected => Some(name.clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+        if layout.actions.contains_key(expected) {
+            continue;
+        }
+        let Some(action) = layout.actions.remove(&name) else {
+            continue;
+        };
+        layout.actions.insert(expected.to_string(), action);
+        for slot in &mut layout.slots {
+            if slot.binding == Binding::Named(name.clone()) {
+                slot.binding = Binding::Named(expected.to_string());
+            }
+        }
+        for action in layout.actions.values_mut() {
+            if let Action::Rules {
+                rules, fallback, ..
+            } = action
+            {
+                for emission in rules.values_mut().chain([fallback]) {
+                    if *emission == Emission::Call(name.clone()) {
+                        *emission = Emission::Call(expected.to_string());
+                    }
+                }
+            }
+        }
+    }
+    layout
+}
+
 /// Export the subset that the readable Mana-style JSONC fields preserve exactly.
 pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
+    let layout = &canonical_action_names(layout);
     let (action_labels, magic) = action_blocks(layout)?;
     for slot in &layout.slots {
         let expected = match &slot.binding {
@@ -588,9 +751,9 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
             .filter(|slot| slot.main && slot.row == row)
             .collect();
         slots.sort_by_key(|slot| slot.col);
-        if !(10..=12).contains(&slots.len()) {
+        if !(10..=13).contains(&slots.len()) {
             return Err(format!(
-                "JSONC export needs 10, 11, or 12 physical slots in row {}",
+                "JSONC export needs 10 through 13 physical slots in row {}",
                 row + 1
             ));
         }
@@ -672,9 +835,19 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         }
         thumbs[hand].push(token(&slot.binding, &action_labels)?);
     }
+    let has_space = layout
+        .slots
+        .iter()
+        .any(|slot| matches!(&slot.binding, Binding::Text(text) if text.as_slice() == b" "));
     let thumbs = thumbs
         .into_iter()
-        .map(|group| string(group.join(" ")))
+        .map(|group| {
+            if group.is_empty() && !has_space {
+                string("none")
+            } else {
+                string(group.join(" "))
+            }
+        })
         .collect();
     let column_offsets: Vec<_> = columns.values().copied().collect();
     let has_columns = column_offsets.iter().any(|offset| *offset != 0);
@@ -685,7 +858,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
                 .into(),
         );
     }
-    let board = object([
+    let mut board = object([
         ("isRowStaggered", Json::Bool(!has_columns && has_rows)),
         ("isColumnStaggered", Json::Bool(has_columns)),
         ("mirrorLeftRowStagger", Json::Bool(false)),
@@ -699,6 +872,38 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
             },
         ),
     ]);
+    let thumb_columns: Vec<_> = layout
+        .slots
+        .iter()
+        .filter(|slot| !slot.main)
+        .map(|slot| slot.col)
+        .collect();
+    let default_columns: Vec<_> = layout
+        .slots
+        .iter()
+        .filter(|slot| !slot.main)
+        .enumerate()
+        .map(|(index, slot)| {
+            if index == 0 && slot.hand == 1 {
+                1
+            } else {
+                index as i8
+            }
+        })
+        .collect();
+    if thumb_columns != default_columns {
+        if let Json::Object(fields) = &mut board {
+            fields.insert(
+                "thumbColumns".into(),
+                Json::Array(
+                    thumb_columns
+                        .iter()
+                        .map(|&col| Json::Number(f64::from(col)))
+                        .collect(),
+                ),
+            );
+        }
+    }
     let mut root = BTreeMap::new();
     root.insert(
         "layout".into(),
@@ -710,6 +915,15 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     root.insert("fingermap".into(), Json::Array(finger_rows));
     root.insert("board".into(), board);
     root.insert("layers".into(), Json::Null);
+    if !layout.alt_fingers.is_empty() {
+        root.insert(
+            "alts".into(),
+            crate::alt_fingers::to_json(&layout.alt_fingers),
+        );
+    }
+    if !layout.combos.is_empty() {
+        root.insert("combos".into(), Json::Array(layout.combos.clone()));
+    }
     if let Some(magic) = magic {
         root.insert("magic".into(), magic);
     }
@@ -717,6 +931,9 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let restored = crate::layout_io::parse_json_layout(&text, &layout.path)
         .map_err(|error| format!("JSONC export failed its reimport check: {error}"))?;
     if restored.slots != layout.slots
+        || restored.alt_fingers != layout.alt_fingers
+        || crate::alt_fingers::compact_json(&Json::Array(restored.combos.clone()))
+            != crate::alt_fingers::compact_json(&Json::Array(layout.combos.clone()))
         || restored.actions != layout.actions
         || restored.left_outer != layout.left_outer
         || restored.right_outer != layout.right_outer
@@ -745,12 +962,40 @@ mod tests {
     }
 
     #[test]
+    fn magic_key_actions_named_after_their_label_still_export() {
+        // DAT and some JSONC files load an `@` magic key's action as @@,
+        // while JSONC reimports it as @magic.
+        let layout = Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l @\nz x c v b | n m , . /\ne@ eo\n",
+            Path::new("magic.dat"),
+        )
+        .unwrap();
+        let action = layout.actions["@"].clone();
+        let slot = layout
+            .slots
+            .iter()
+            .position(|slot| slot.label == "@")
+            .unwrap();
+        assert_eq!(layout.slots[slot].binding, Binding::Named("@".into()));
+        let jsonc = jsonc_text(&layout).unwrap();
+        let restored = Layout::parse(&jsonc, Path::new("restored.jsonc")).unwrap();
+        assert_eq!(restored.slots[slot].binding, Binding::Named("magic".into()));
+        assert_eq!(restored.actions["magic"], action);
+    }
+
+    #[test]
     fn ordinary_jsonc_round_trip_keeps_single_thumb_and_literal_punctuation() {
         let source = GRID.replace("q w e r t", "char:* char:~ char:| char:@ char:Q");
         let (original, restored) = round_trip(&source);
         assert_eq!(restored.slots.iter().filter(|slot| !slot.main).count(), 1);
         assert!(!original.extended());
         assert!(!restored.extended());
+        for thumbs in ["none | none", "none | r", "r | none"] {
+            let (_, restored) = round_trip(&format!("{GRID}thumbs: {thumbs}\n"));
+            assert!(!restored.slots.iter().any(|slot| {
+                matches!(&slot.binding, Binding::Text(text) if text.as_slice() == b" ")
+            }));
+        }
     }
 
     #[test]
@@ -854,16 +1099,14 @@ mod tests {
         let layout = Layout::parse(&source, Path::new("inline")).unwrap();
         let text = jsonc_text(&layout).unwrap();
         assert!(text.starts_with("{\n    \"layout\": {\n        \"fingers\": [\n"));
-        for row in [
-            "q w e r t y u i o p",
-            " a s d f g h j k l ;",
-            "  z x c v b n m , . /",
-        ] {
+        for row in ["q w e r t y u i o p", " a s d f g h j k l ;"] {
             assert!(text.contains(&format!("            \"{row}\",\n")));
         }
-        assert!(text.contains("        \"thumbs\": [\"space\", \"\"],\n"));
+        assert!(text.contains("            \"  z x c v b n m , . /\"\n        ]"));
+        assert!(text.contains("        \"thumbs\": [\"space\", \"\"]\n    }"));
         assert!(text.contains("    \"fingermap\": [\n        \"0 1 2 3 3 6 6 7 8 9\",\n"));
-        assert!(text.contains("        \"rowOrColumnStagger\": [0, 0.25, 0.75],\n"));
+        assert!(text.contains("        \"rowOrColumnStagger\": [0, 0.25, 0.75]\n    }"));
+        crate::parse_json(&text).unwrap();
 
         let fields = ["layout", "fingermap", "board", "layers"];
         let positions = fields.map(|field| text.find(&format!("    \"{field}\":")).unwrap());
@@ -925,6 +1168,56 @@ mod tests {
             assert_eq!(a.to_bits(), b.to_bits());
         }
         assert_eq!(round.score.to_bits(), original.score.to_bits());
+
+        let mut chog = Layout::parse(
+            r#"{
+                "layout": {
+                    "fingers": [
+                        "q w e r t y u i o p",
+                        "a s d f g h j k l ;",
+                        "z x c v b n m , . /"
+                    ],
+                    "thumbs": ["space", "*"]
+                },
+                "magic": {
+                    "magicKeys": [],
+                    "rules": [{"inputs": "a*", "output": "aa"}]
+                }
+            }"#,
+            Path::new("chog.jsonc"),
+        )
+        .unwrap();
+        let key = |layout: &Layout, label: &str| {
+            layout
+                .slots
+                .iter()
+                .position(|slot| slot.label == label)
+                .unwrap()
+        };
+        let (q, w) = (key(&chog, "q"), key(&chog, "w"));
+        chog.swap(q, w);
+        let jsonc = jsonc_text(&chog).unwrap();
+        assert!(jsonc.contains(r#""wildcards": "%""#), "{jsonc}");
+        assert!(jsonc.contains(r#""inputs": "%*""#), "{jsonc}");
+        assert!(jsonc.contains(r#""output": "%%""#), "{jsonc}");
+
+        let directory = test_directory();
+        let dat_path = directory.join("chog.dat");
+        save_pair(&dat_path, &chog.text(), &jsonc).unwrap();
+        for path in [dat_path.clone(), dat_path.with_extension("jsonc")] {
+            let restored = Layout::parse(&fs::read_to_string(&path).unwrap(), &path).unwrap();
+            assert_eq!(restored.slots, chog.slots);
+            assert_eq!(restored.actions, chog.actions);
+            assert_eq!(restored.text(), chog.text());
+            let presses = [key(&restored, "a"), key(&restored, "*")];
+            let output = crate::action_keys::trace_keys(&restored, &presses)
+                .unwrap()
+                .into_iter()
+                .flat_map(|step| step.output)
+                .collect::<Vec<_>>();
+            assert_eq!(output, b"aa");
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1016,7 +1309,10 @@ mod tests {
         .unwrap();
         let jsonc = jsonc_text(&original).unwrap();
         assert!(jsonc.contains("i e a $ # m t s n h q\""), "{jsonc}");
-        assert!(jsonc.contains("\"thumbs\": [\"\", \"l r\"]"), "{jsonc}");
+        assert!(
+            jsonc.contains("\"thumbs\": [\"space\", \"l r\"]"),
+            "{jsonc}"
+        );
         assert!(
             jsonc.contains("\"keys\": \"#$\"") || jsonc.contains("\"keys\": \"$#\""),
             "{jsonc}"
@@ -1042,11 +1338,28 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_magic_fallbacks_fail_clearly() {
-        let original =
-            Layout::parse(include_str!("../layouts/opal.dat"), Path::new("opal.dat")).unwrap();
-        let error = jsonc_text(&original).unwrap_err();
-        assert!(error.contains("wildcard magic key"), "{error}");
+    fn literal_magic_defaults_round_trip_and_multichar_defaults_fail() {
+        let mut layout = Layout::parse(GRID, Path::new("inline.dat")).unwrap();
+        layout.slots[0].binding = Binding::Named("◇".into());
+        layout.slots[0].label = "◇".into();
+        layout.actions.insert(
+            "◇".into(),
+            Action::Rules {
+                basis: Basis::Text,
+                rules: BTreeMap::new(),
+                fallback: Emission::Text(b"x".to_vec()),
+            },
+        );
+        let jsonc = jsonc_text(&layout).unwrap();
+        let restored = Layout::parse(&jsonc, Path::new("inline.jsonc")).unwrap();
+        assert_eq!(restored.slots, layout.slots);
+        assert_eq!(restored.actions, layout.actions);
+        if let Action::Rules { fallback, .. } = layout.actions.get_mut("◇").unwrap() {
+            *fallback = Emission::Text(b"xy".to_vec());
+        }
+        assert!(jsonc_text(&layout)
+            .unwrap_err()
+            .contains("one-character literal fallback"));
     }
 
     #[test]
@@ -1131,6 +1444,42 @@ mod tests {
             "JSONC two"
         );
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+
+        let mut layout = Layout::parse(GRID, Path::new("source.dat")).unwrap();
+        layout.path = directory.join("source.dat");
+        let first = save_optimized(&layout).unwrap();
+        let first_text = fs::read_to_string(&first).unwrap();
+        assert_eq!(first.parent(), Some(directory.join("optimized").as_path()));
+        assert_eq!(
+            first.extension().and_then(|value| value.to_str()),
+            Some("jsonc")
+        );
+        assert!(!first.with_extension("dat").exists());
+        crate::parse_json(&first_text).unwrap();
+        let restored = Layout::parse(&first_text, &first).unwrap();
+        assert_eq!(restored.slots, layout.slots);
+        assert_eq!(restored.actions, layout.actions);
+
+        let second = save_optimized(&layout).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(fs::read_to_string(&first).unwrap(), first_text);
+        let second_text = fs::read_to_string(&second).unwrap();
+        crate::parse_json(&second_text).unwrap();
+        let restored = Layout::parse(&second_text, &second).unwrap();
+        assert_eq!(restored.slots, layout.slots);
+        assert_eq!(restored.actions, layout.actions);
+        assert!(!second.with_extension("dat").exists());
+
+        layout.path = first;
+        let third = save_optimized(&layout).unwrap();
+        assert_eq!(third.parent(), second.parent());
+        assert!(!third.parent().unwrap().join("optimized").exists());
+        let third_text = fs::read_to_string(&third).unwrap();
+        crate::parse_json(&third_text).unwrap();
+        let restored = Layout::parse(&third_text, &third).unwrap();
+        assert_eq!(restored.slots, layout.slots);
+        assert_eq!(restored.actions, layout.actions);
+        assert!(!third.with_extension("dat").exists());
         fs::remove_dir_all(directory).unwrap();
     }
 }

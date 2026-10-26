@@ -80,7 +80,7 @@ fn ordinary_skips_keep_endpoints_across_an_unavailable_middle() {
     assert!(!corpus
         .grams
         .iter()
-        .any(|g| g.kind == 1 && gram_name(g, &model.canonical) == "aq"));
+        .any(|g| g.kind() == 1 && gram_name(g, &model.canonical) == "aq"));
 
     // An explicitly supplied skip population also needs no middle press or
     // trigram table to retain its frequency.
@@ -154,6 +154,36 @@ fn source_problem() -> Problem {
     s.travel_limit = None;
     s.sftravel_limit = None;
     Problem::new(model(), &[small_source()], 0, Weights::default(), s).unwrap()
+}
+
+#[test]
+fn action_fspeed_populations_match_ordinary_source_masses() {
+    // Magic/action layouts normalize Fspeed by the same whole-corpus bigram
+    // and skipgram masses as ordinary layouts (and akl.gg), unmapped
+    // characters included, with spacegrams on or off and unaffected by caps.
+    let text = "the quick brown fox! jumps over 42 lazy dogs. ~tests~ \n";
+    let mut c = CorpusConfig::default();
+    c.jobs = 1;
+    c.order = 5;
+    let (n, _, _) = count_reader(Cursor::new(text), &c, text.len() as u64, &mut |_, _| {}).unwrap();
+    let json = counts_text(&n);
+    let path = Path::new("corpus-test.json");
+    for include_spacegrams in [true, false] {
+        for trigrams in [None, Some(3)] {
+            let limits = NgramLimits {
+                include_spacegrams,
+                trigrams,
+                ..NgramLimits::default()
+            };
+            let source = Source::from_text_with_limits(&json, path, limits).unwrap();
+            let action =
+                crate::action_ngrams::NgramCorpus::from_text_with_limits(&json, path, limits)
+                    .unwrap();
+            assert!(source.masses[1] > 0.0 && source.masses[2] > 0.0);
+            close(action.speed_populations[0], source.masses[1]);
+            close(action.speed_populations[1], source.masses[2]);
+        }
+    }
 }
 
 #[test]
@@ -236,9 +266,8 @@ fn dat_preserves_action_mapping_metrics_and_moved_bindings() {
         }
         let baseline =
             action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
-        assert!(layout_export::jsonc_text(&layout)
-            .unwrap_err()
-            .contains("requires a repeat-output fallback"));
+        let error = layout_export::jsonc_text(&layout).unwrap_err();
+        assert!(error.contains("cannot call another action"), "{error}");
         for saved in [layout.text()] {
             let round = action_keys::Layout::parse(&saved, Path::new("extensionless")).unwrap();
             assert_eq!(round.slots, layout.slots);
@@ -265,6 +294,214 @@ fn dat_preserves_action_mapping_metrics_and_moved_bindings() {
             );
         }
     }
+}
+
+#[test]
+fn alt_rules_name_qwerty_positions_and_pick_the_rules_by_stagger() {
+    use crate::alt_fingers::AltRules;
+    let rules = AltRules::parse("fg f_g (LM LI) gf (li lm) rt_ (. LI)").unwrap();
+    assert_eq!(rules.len(), 4);
+    assert_eq!(
+        AltRules::text(&rules),
+        "fg f_g (LM LI) gf (LI LM) rt_ (. LI)"
+    );
+    assert_eq!(AltRules::parse(&AltRules::text(&rules)).unwrap(), rules);
+    for bad in [
+        "fg (LM)",
+        "f1 (LM LI)",
+        "fg",
+        "fg (XX LI)",
+        "f (LM)",
+        "fg (. .)",
+    ] {
+        assert!(AltRules::parse(bad).is_err(), "{bad}");
+    }
+    let config = parse_app_config("[alts]\ncolstag = fg f_g (LM LI) gf g_f (LI LM)\n").unwrap();
+    let alts = config.weights.1.alts.expect("rules");
+    // Writing the section back parses to the same shared rules.
+    let saved = format!("[alts]\n{}", alts_config_text(&config.weights));
+    assert!(std::ptr::eq(
+        parse_app_config(&saved).unwrap().weights.1.alts.unwrap(),
+        alts
+    ));
+    assert!(parse_app_config("[alts]\northo = fg (LM LI)").is_err());
+    assert!(parse_app_config("").unwrap().weights.1.alts.is_none());
+
+    // PACKET has no row offsets, so colstag applies. QWERTY f and g are c and
+    // g there: c-g and g-c press c with the middle finger; c-w does not.
+    let board = board_from_text(PACKET, Path::new("packet.dat")).unwrap();
+    let resolver = alts.resolver(&board.keys);
+    let slot = |ch: u8| board.symbols.iter().position(|&s| s == ch).unwrap();
+    let fingers = |ids: &[u8]| match ids {
+        [a, b] => resolver
+            .keys(&board.keys, [slot(*a), slot(*b)])
+            .map(|k| k.finger)
+            .to_vec(),
+        [a, b, c] => resolver
+            .keys(&board.keys, [slot(*a), slot(*b), slot(*c)])
+            .map(|k| k.finger)
+            .to_vec(),
+        _ => unreachable!(),
+    };
+    assert_eq!(fingers(b"cg"), [2, 3]);
+    assert_eq!(fingers(b"gc"), [3, 2]);
+    assert_eq!(fingers(b"cwg"), [2, 3, 3]);
+    assert_eq!(fingers(b"cw"), [3, 3]);
+    let staggered = format!("{PACKET}row-offsets: 0 0.25 0.75\n");
+    let staggered = board_from_text(&staggered, Path::new("rowstag.dat")).unwrap();
+    let resolver = alts.resolver(&staggered.keys);
+    assert_eq!(
+        resolver
+            .keys(&staggered.keys, [slot(b'c'), slot(b'g')])
+            .map(|k| k.finger),
+        [3, 3]
+    );
+
+    let text = "cg gc wx nq qn b; cwc hcg cxg nzp sts the ";
+    let mut corpus_config = CorpusConfig::default();
+    corpus_config.jobs = 1;
+    corpus_config.order = 5;
+    let (counts, _, _) = count_reader(
+        Cursor::new(text),
+        &corpus_config,
+        text.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let json = counts_text(&counts);
+    let source = Source::from_text(&json, Path::new("inline.json")).unwrap();
+    let action = action_ngrams::NgramCorpus::from_text(&json, Path::new("inline.json")).unwrap();
+    let layout = board_as_action_layout(&board, &board.symbols).unwrap();
+    // The same rules written for the letters now in those places.
+    let mut lettered = layout.clone();
+    lettered.alt_fingers = crate::alt_fingers::parse_json(
+        &parse_json(
+            r#"[{"ngram":["c","g"],"fingers":["LM","LI"]},
+            {"ngram":["c",null,"g"],"fingers":["LM",null,"LI"]},
+            {"ngram":["g","c"],"fingers":["LI","LM"]},
+            {"ngram":["g",null,"c"],"fingers":["LI",null,"LM"]}]"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let stop = AtomicBool::new(false);
+    let progress = AtomicU64::new(0);
+    let mut sfb = [0.0; 2];
+    let mut aklgg_sfb = [0.0; 2];
+    for (i, alt_fingers) in [false, true].into_iter().enumerate() {
+        let mut weights = Weights::new([0.0; N_WEIGHTS]).with_rolls(config.weights.1);
+        weights.3 = alt_fingers;
+        // The ordinary model applies the rules within each pair and triple.
+        let model = Model::with_rolls(board.clone(), weights.rolls());
+        let corpus = model.corpus(&source).unwrap();
+        let raw = full_raw_with_mana2(&model.original, &corpus, &model.geometry, true);
+        sfb[i] = raw.0[SFB];
+        aklgg_sfb[i] = mana_stats_for_corpus(&raw, &corpus).get("sfb").unwrap();
+        // Action evaluation matches them over context windows exactly as it
+        // matches a layout's own rules, which the position rules replace.
+        let evaluated =
+            action_ui::evaluate_progress(&layout, &action, &weights, &stop, &progress).unwrap();
+        let mut letters = Weights::new([0.0; N_WEIGHTS]);
+        letters.3 = alt_fingers;
+        let expected =
+            action_ui::evaluate_progress(&lettered, &action, &letters, &stop, &progress).unwrap();
+        for field in 0..N_RAW {
+            assert_eq!(
+                evaluated.raw.0[field].to_bits(),
+                expected.raw.0[field].to_bits()
+            );
+        }
+        // A layout's own rules win over [alts]; here they say the same.
+        let own =
+            action_ui::evaluate_progress(&lettered, &action, &weights, &stop, &progress).unwrap();
+        assert_eq!(own.score.to_bits(), evaluated.score.to_bits());
+    }
+    // Pinned own rules stay on their keys while letters move, and name the
+    // letters now there once unpinned.
+    let mut pinned = lettered.clone();
+    crate::alt_fingers::pin(&mut pinned);
+    let position = |l: &crate::action_keys::Layout, letter: u8| {
+        l.slots
+            .iter()
+            .position(|slot| slot.binding == crate::action_keys::Binding::Text(vec![letter]))
+            .unwrap()
+    };
+    let mut arr: Vec<_> = (0..pinned.slots.len()).collect();
+    arr.swap(position(&pinned, b'g'), position(&pinned, b'x'));
+    let mut moved = crate::action_search::arrangement(&pinned, &arr);
+    let mut letters = Weights::new([0.0; N_WEIGHTS]);
+    letters.3 = true;
+    let mut renamed = crate::action_search::arrangement(&lettered, &arr);
+    renamed.alt_fingers = crate::alt_fingers::parse_json(
+        &parse_json(
+            r#"[{"ngram":["c","x"],"fingers":["LM","LI"]},
+            {"ngram":["c",null,"x"],"fingers":["LM",null,"LI"]},
+            {"ngram":["x","c"],"fingers":["LI","LM"]},
+            {"ngram":["x",null,"c"],"fingers":["LI",null,"LM"]}]"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let at_spots =
+        action_ui::evaluate_progress(&moved, &action, &letters, &stop, &progress).unwrap();
+    let expected =
+        action_ui::evaluate_progress(&renamed, &action, &letters, &stop, &progress).unwrap();
+    assert_eq!(at_spots.score.to_bits(), expected.score.to_bits());
+    crate::alt_fingers::unpin(&mut moved);
+    assert_eq!(moved.alt_fingers, renamed.alt_fingers);
+    // [typing] alt_fingers = false turns the rules off; cw and wc stay same-finger.
+    assert!(0.0 < sfb[1] && sfb[1] < sfb[0], "{sfb:?}");
+    assert!(aklgg_sfb[1] < aklgg_sfb[0], "{aklgg_sfb:?}");
+}
+
+#[test]
+fn own_alt_rules_name_the_keys_their_letters_are_on() {
+    // After w the adaptive swap types c on x's key. The c and g rules stay on
+    // c's own key, exactly as the optimizers pin them, so evaluating the
+    // layout as saved and pinned gives the same result.
+    let text = "gwc wcg gwcg cg gc cwc wcwg ";
+    let mut corpus_config = CorpusConfig::default();
+    corpus_config.jobs = 1;
+    corpus_config.order = 5;
+    let (counts, _, _) = count_reader(
+        Cursor::new(text),
+        &corpus_config,
+        text.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    let action =
+        action_ngrams::NgramCorpus::from_text(&counts_text(&counts), Path::new("inline.json"))
+            .unwrap();
+    let mut layout =
+        crate::action_keys::Layout::parse(&format!("{PACKET}swap w cx\n"), Path::new("swap.dat"))
+            .unwrap();
+    layout.alt_fingers = crate::alt_fingers::parse_json(
+        &parse_json(
+            r#"[{"ngram":["c","g"],"fingers":["LM","LI"]},
+            {"ngram":["g",null,"c"],"fingers":["LI",null,"LM"]}]"#,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut pinned = layout.clone();
+    crate::alt_fingers::pin(&mut pinned);
+    let mut weights = Weights::default();
+    weights.3 = true;
+    let stop = AtomicBool::new(false);
+    let progress = AtomicU64::new(0);
+    let saved = action_ui::evaluate_progress(&layout, &action, &weights, &stop, &progress).unwrap();
+    let at_keys =
+        action_ui::evaluate_progress(&pinned, &action, &weights, &stop, &progress).unwrap();
+    assert_eq!(
+        saved.raw.0.map(f64::to_bits),
+        at_keys.raw.0.map(f64::to_bits)
+    );
+    assert_eq!(saved.score.to_bits(), at_keys.score.to_bits());
+    // The rules still apply on c's own key.
+    weights.3 = false;
+    let off = action_ui::evaluate_progress(&layout, &action, &weights, &stop, &progress).unwrap();
+    assert_ne!(off.score.to_bits(), saved.score.to_bits());
 }
 
 #[test]
@@ -426,7 +663,6 @@ fn concordant_jumps_and_nonadjacent_subsets() {
     assert!(!is_lateral_stretch(key(1, 3), key(2, 0)));
     assert_eq!(scissor_kind(key(0, 2), key(1, 3)), 0);
     // A concordant one-row jump is CAHJB but not the discordant HSB subset.
-    assert!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(ROW1_BI) != 0);
     assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CAHJB), 0);
     assert_eq!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(HSB), 0);
 }
@@ -452,9 +688,6 @@ fn alternation_hand_order_and_unfiltered_roll_credit() {
                 }
                 if t.bits & bit(ALT) != 0 {
                     assert_ne!(t.bits & bit(RAW_ALT), 0);
-                }
-                if t.bits & bit(SIMPLE_ROLL) != 0 {
-                    assert_ne!(t.bits & bit(ROLL), 0);
                 }
             }
         }
@@ -532,7 +765,6 @@ fn clean_sraf_direction_and_legacy_rewards_are_independent() {
     );
     let metrics = metrics(&raw, &corpus);
     close(metrics.v[INSRAF] + metrics.v[OUTSRAF], metrics.v[SRAF]);
-    close(metrics.simple[5] + metrics.simple[6], metrics.v[SRAF]);
     let mut weights = Weights::new([0.0; N_WEIGHTS]);
     weights.0[INSRAF] = 0.5;
     weights.0[OUTSRAF] = 1.0;
@@ -586,6 +818,18 @@ fn plain_layouts_round_trip() {
         assert_eq!(b.symbols, round.symbols);
         assert_eq!(b.keys, round.keys);
     }
+    let custom = board_from_text(
+        &format!("{PACKET}thumb-columns: 0 6\n"),
+        Path::new("custom.dat"),
+    )
+    .unwrap();
+    let dat = board_text(&custom, &custom.symbols);
+    let restored = board_from_text(&dat, Path::new("round.dat")).unwrap();
+    assert_eq!(restored.keys, custom.keys);
+    let layout = board_as_action_layout(&custom, &custom.symbols).unwrap();
+    let jsonc = layout_export::jsonc_text(&layout).unwrap();
+    let restored = board_from_text(&jsonc, Path::new("round.jsonc")).unwrap();
+    assert_eq!(restored.keys, custom.keys);
     let b = board_from_text(
         PACKET.replace("thumbs: r space", "r").as_str(),
         Path::new("legacy.dat"),
@@ -674,6 +918,29 @@ fn flexible_rows_and_thumb_alignment() {
 
 #[test]
 fn checked_json_and_legacy_frequency_import() {
+    for text in [
+        r#""""#,
+        r#""a q""#,
+        r#""é😀""#,
+        r#""a\"q""#,
+        r#""\u0061\uD83D\uDE00""#,
+        r#""\uD800""#,
+        r#""\x""#,
+        "\"a\nq\"",
+        "\"unfinished",
+        "not-a-string",
+    ] {
+        let mut fast = JsonParser { text, p: 0 };
+        let mut decoded = JsonParser { text, p: 0 };
+        assert_eq!(
+            fast.string_cow()
+                .map(|value| value.into_owned())
+                .map_err(|error| error.to_string()),
+            decoded.string_decoded().map_err(|error| error.to_string()),
+            "JSON string {text:?}",
+        );
+        assert_eq!(fast.p, decoded.p);
+    }
     assert!(parse_json("{\"x\":1,\"x\":2}").is_err());
     assert!(parse_json("{\"x\":1e999}").is_err());
     assert!(parse_json("{\"x\":\"\\uD83D\\uDE00\"}").is_ok());
@@ -885,9 +1152,39 @@ fn same_key_repeats_and_thumb_denominators() {
 
 #[test]
 fn incremental_swaps_and_cycles_in_both_objectives() {
-    for mode in ["mana2", "detailed", "simple"] {
+    // Exercise both native halves against the original u128 bit traversal.
+    for mask in [
+        0,
+        bit(0),
+        bit(63),
+        bit(64),
+        bit(N_RAW - 1),
+        (1u128 << N_RAW) - 1,
+    ] {
+        let mut actual = Raw::default();
+        let mut expected = Raw::default();
+        for (i, value) in actual.0.iter_mut().enumerate() {
+            *value = (i as f64 + 1.0) / 7.0;
+        }
+        expected.0 = actual.0;
+        for delta in [0.1, -0.1, 1e-20] {
+            add_bits(&mut actual, mask, delta);
+            let mut bits = mask;
+            while bits != 0 {
+                expected.0[bits.trailing_zeros() as usize] += delta;
+                bits &= bits - 1;
+            }
+            for (left, right) in actual.0.iter().zip(expected.0) {
+                assert_eq!(left.to_bits(), right.to_bits());
+            }
+        }
+    }
+    // Uncapped Mana2 trials maintain only Mana2 counters; a cap keeps both.
+    for (mode, cap) in [("aklgg", None), ("aklgg", Some(100.0)), ("normal", None)] {
         let mut p = source_problem();
         p.settings.mode = mode.into();
+        p.settings.sfb_limit = cap;
+        assert_eq!(p.normal_counters_unused(), mode == "aklgg" && cap.is_none());
         let mut s = State::new(p.model.original.clone(), &p);
         let mut t = s.clone();
         let mut rng = Rng::new(718);
@@ -897,6 +1194,80 @@ fn incremental_swaps_and_cycles_in_both_objectives() {
         for _ in 0..400 {
             let mv = rng.movement(&free, 0.5);
             trial_into(&mut t, &s, mv, &p);
+            if mv.len == 2 {
+                // Retain the original generic affected-list merge as a reference.
+                let mut reference = s.clone();
+                reference.arr.swap(mv.slots[0], mv.slots[1]);
+                for &slot in &mv.slots[..mv.len] {
+                    reference.pos[reference.arr[slot]] = slot;
+                }
+                let x = s.arr[mv.slots[0]];
+                let y = s.arr[mv.slots[1]];
+                for (i, corpus) in p.corpora.iter().enumerate() {
+                    let pair = p.caches[i].pair(x, y);
+                    let third: &[u32] = &[];
+                    let (mut a, mut b) = (0, 0);
+                    while a < pair.len() || b < third.len() {
+                        let index = if b == third.len() || (a < pair.len() && pair[a] < third[b]) {
+                            let j = pair[a];
+                            a += 1;
+                            j
+                        } else if a == pair.len() || third[b] < pair[a] {
+                            let j = third[b];
+                            b += 1;
+                            j
+                        } else {
+                            let j = pair[a];
+                            a += 1;
+                            b += 1;
+                            j
+                        };
+                        add_gram(
+                            &mut reference.raws[i],
+                            &corpus.grams[index as usize],
+                            &s.pos,
+                            &p.model.geometry,
+                            -1.0,
+                        );
+                        add_gram(
+                            &mut reference.raws[i],
+                            &corpus.grams[index as usize],
+                            &reference.pos,
+                            &p.model.geometry,
+                            1.0,
+                        );
+                    }
+                }
+                reference.score = p.score(&reference.raws);
+                assert_eq!(t.arr, reference.arr);
+                assert_eq!(t.pos, reference.pos);
+                assert_eq!(t.score.to_bits(), reference.score.to_bits());
+                for (actual, expected) in t.raws.iter().zip(&reference.raws) {
+                    if !p.normal_counters_unused() {
+                        for (left, right) in actual.0.iter().zip(expected.0) {
+                            assert_eq!(left.to_bits(), right.to_bits());
+                        }
+                    }
+                    match (&actual.1, &expected.1) {
+                        (Some(left), Some(right)) => {
+                            for (a, b) in left.0.iter().zip(right.0) {
+                                assert_eq!(a.to_bits(), b.to_bits());
+                            }
+                            for (a, b) in left
+                                .1
+                                .bigrams
+                                .iter()
+                                .chain(&left.1.skipgrams)
+                                .zip(right.1.bigrams.iter().chain(&right.1.skipgrams))
+                            {
+                                assert_eq!(a.to_bits(), b.to_bits());
+                            }
+                        }
+                        (None, None) => {}
+                        _ => panic!("Mana2 raw presence differs"),
+                    }
+                }
+            }
             checked_rescore(&mut t, &p).unwrap();
             std::mem::swap(&mut s, &mut t);
         }
@@ -905,6 +1276,41 @@ fn incremental_swaps_and_cycles_in_both_objectives() {
 
 #[test]
 fn contributors_reconcile_all_metrics() {
+    // Swapping unrelated letters between a main key and a thumb changes the
+    // SRAF denominator, while the physical t-h pair and its mass stay fixed.
+    let fixture = model();
+    let source = Source::from_text(
+        r#"{"letters":{"t":10,"h":10,"s":10,"r":10},"bigrams":{"th":2,"st":1,"rt":3}}"#,
+        Path::new("inline.json"),
+    )
+    .unwrap();
+    let corpus = fixture.corpus(&source).unwrap();
+    let mut moved = fixture.original.clone();
+    moved.swap(10, 30);
+    let before_raw = full_raw(&fixture.original, &corpus, &fixture.geometry);
+    let after_raw = full_raw(&moved, &corpus, &fixture.geometry);
+    let d0 = denominator(SRAF, &before_raw, &corpus);
+    let d1 = denominator(SRAF, &after_raw, &corpus);
+    let rows = contributor_data_mode(
+        SRAF,
+        &fixture.original,
+        &moved,
+        &corpus,
+        &fixture,
+        false,
+        CreditView::Clean,
+    );
+    let th = rows.iter().find(|row| row.gram == "th").unwrap();
+    assert!(th.after < th.before);
+    let (before, after) = contributor_comparison(th.before, th.after, d0, d1);
+    close(before, after);
+    assert_eq!(change_color(SRAF, before, after), FG);
+    assert_eq!(delta_text(before, after, DETAIL_DECIMALS), "—");
+    for (gram, color) in [("st", RED), ("rt", GREEN)] {
+        let row = rows.iter().find(|row| row.gram == gram).unwrap();
+        let (before, after) = contributor_comparison(row.before, row.after, d0, d1);
+        assert_eq!(change_color(SRAF, before, after), color);
+    }
     let p = source_problem();
     let mut after = p.model.original.clone();
     after.swap(0, 17);
@@ -925,17 +1331,6 @@ fn contributors_reconcile_all_metrics() {
                 pct(contribution_mass(m, &r1, view), denominator(m, &r1, c)),
             );
         }
-    }
-    for i in 0..SIMPLE_NAMES.len() {
-        let rows = simple_contributors(i, &p.model, before, &after, c);
-        close(
-            rows.iter().map(|x| x.before).sum(),
-            metrics(&r0, c).simple[i],
-        );
-        close(
-            rows.iter().map(|x| x.after).sum(),
-            metrics(&r1, c).simple[i],
-        );
     }
 }
 
@@ -1003,15 +1398,22 @@ fn config_round_trips_and_presets() {
     let w = weights_from_text(&weights_text(&weights)).unwrap();
     assert_eq!(w.0, weights.0);
     let mut s = SearchSettings::default();
+    s.workers = 4;
     s.design = "evolve".into();
     s.mix.insert("reddit".into(), 0.7);
     apply_preset(&mut s, "strict");
     let r = search_from_text(&search_settings_text(&s)).unwrap();
-    assert_eq!(r.mode, "mana2");
+    assert_eq!(r.mode, "normal");
     assert_eq!(r.travel_limit, Some(0.0));
     assert_eq!(r.design, "evolve");
     assert_eq!(r.mix, s.mix);
-    assert_eq!(search_from_text("mode = simple").unwrap().mode, "simple");
+    assert_eq!(r.workers, 4);
+    assert_eq!(search_from_text("workers = 0").unwrap().workers, 0);
+    assert!(search_from_text("workers = 257").is_err());
+    assert!(search_from_text("mode = simple").is_err());
+    assert_eq!(search_from_text("mode = mana2").unwrap().mode, "aklgg");
+    assert_eq!(search_from_text("mode = mana").unwrap().mode, "aklgg");
+    assert_eq!(search_from_text("mode = aklgg").unwrap().mode, "aklgg");
     assert!(search_from_text("mode = basic").is_err());
     assert!(search_from_text("simple_sfb = 12").is_err());
     assert!(search_from_text("seconds = NaN").is_err());
@@ -1096,38 +1498,102 @@ fn search_respects_locks_and_relative_limits() {
     p.settings.seconds = 0.0;
     p.settings.sfb_limit = Some(0.0);
     p.settings.sfs_limit = Some(0.0);
+    p.settings.travel_limit = Some(0.0);
+    p.settings.sftravel_limit = Some(0.0);
     let locks = default_locks(&p.model.board);
-    let result = run_search(&p, &p.model.original, &locks, &Control::new(), &mut |_| {}).unwrap();
+
+    p.settings.workers = 1;
+    let serial = run_search(&p, &p.model.original, &locks, &Control::new(), &mut |_| {}).unwrap();
+    let one_worker =
+        run_search_parallel(&p, &p.model.original, &locks, &Control::new(), &mut |_| {}).unwrap();
+    assert_eq!(one_worker.best.arr, serial.best.arr);
+    assert_eq!(one_worker.best.score.to_bits(), serial.best.score.to_bits());
+    assert_eq!(one_worker.progress.evaluations, serial.progress.evaluations);
+    assert_eq!(one_worker.progress.accepted, serial.progress.accepted);
+
+    p.settings.workers = 2;
+    let groups: Vec<_> = (0..2)
+        .map(|worker| {
+            let started = Instant::now();
+            run_search_plan(
+                &p,
+                &p.model.original,
+                &locks,
+                &Control::new(),
+                worker_seed(p.settings.seed, worker),
+                1,
+                worker,
+                started,
+                None,
+                &mut |_| {},
+            )
+            .unwrap()
+        })
+        .collect();
+    let expected = merge_search_snapshots(
+        &p,
+        &[Some(groups[0].clone()), Some(groups[1].clone())],
+        1,
+        Instant::now(),
+        Some("finished"),
+    )
+    .unwrap();
+    let result =
+        run_search_parallel(&p, &p.model.original, &locks, &Control::new(), &mut |_| {}).unwrap();
+    assert_eq!(result.best.arr, expected.best.arr);
+    assert_eq!(result.best.score.to_bits(), expected.best.score.to_bits());
+    assert_eq!(result.progress.restart, 2);
+    assert_eq!(result.progress.evaluations, expected.progress.evaluations);
+    assert_eq!(result.progress.accepted, expected.progress.accepted);
+    assert_eq!(result.archive.len(), expected.archive.len());
+    for (candidate, expected) in result.archive.iter().zip(&expected.archive) {
+        assert_eq!(candidate.arr, expected.arr);
+        assert_eq!(candidate.score.to_bits(), expected.score.to_bits());
+    }
+
     assert!(result.has_best);
+    assert!(result.best.score <= State::new(p.model.original.clone(), &p).score + 1e-10);
     assert!(!result.archive.is_empty());
-    for c in result.archive {
-        let mut state = State::new(c.arr.clone(), &p);
+    for candidate in result.archive {
+        let mut state = State::new(candidate.arr.clone(), &p);
         assert!(p.feasible(&state.raws));
         checked_rescore(&mut state, &p).unwrap();
+        assert!((candidate.score - state.score).abs() < 1e-8);
         for (i, &locked) in locks.iter().enumerate() {
             if locked {
-                assert_eq!(c.arr[i], p.model.original[i]);
+                assert_eq!(candidate.arr[i], p.model.original[i]);
             }
         }
     }
 }
 
 #[test]
+fn action_searches_use_magic_anneal_steps_and_round_trip_them() {
+    let s = search_from_text("anneal_steps = 30000\nmagic_anneal_steps = 2500\n").unwrap();
+    assert_eq!(s.anneal_steps, 30000);
+    assert_eq!(s.for_actions().anneal_steps, 2500);
+    let saved = search_settings_text(&s);
+    assert!(saved.contains("magic_anneal_steps = 2500") && !saved.contains("max_action"));
+    assert_eq!(search_from_text(&saved).unwrap().magic_anneal_steps, 2500);
+    // The ordinary anneal no longer limits the magic one.
+    let short = apply_search_text(s, "anneal_steps = 40").unwrap();
+    assert_eq!(short.for_actions().anneal_steps, 2500);
+    assert_eq!(SearchSettings::default().for_actions().anneal_steps, 12000);
+    // The old name still reads.
+    let old = search_from_text("max_action_anneal_steps = 700").unwrap();
+    assert_eq!(old.magic_anneal_steps, 700);
+    assert!(search_from_text("magic_anneal_steps = 0").is_err());
+}
+
+#[test]
 fn physical_objectives_swap_matches_full_physical_recalculation() {
-    for mode in ["mana2", "simple"] {
+    {
         let mut problem = source_problem();
-        problem.settings.mode = mode.into();
-        problem.weights.2 =
-            mana2_metrics::Weights::from_text("sfbw = [-19]\npinkyringcurl = [0]\n").unwrap();
-        problem.weights.3 =
-            simple_metrics::Weights::from_text("sfb = 19\nscissor_bigrams = 2\nroll = -0.4\n")
-                .unwrap();
+        problem.settings.mode = "aklgg".into();
+        problem.weights.2 = mana2_metrics::Weights::from_text("sfb = -29\n").unwrap();
         let before = State::new(problem.model.original.clone(), &problem);
-        let stats = mana2_metrics::stats(
-            before.raws[0].1.as_ref().unwrap(),
-            problem.corpora[0].totals,
-        );
-        close(before.score, problem.weights.physical_score(&stats, mode));
+        let stats = mana_stats_for_corpus(&before.raws[0], &problem.corpora[0]);
+        close(before.score, problem.weights.physical_score(&stats));
         let mut trial = before.clone();
         trial_into(&mut trial, &before, Move::pair(0, 1), &problem);
         let rebuilt = State::new(trial.arr.clone(), &problem);
@@ -1153,58 +1619,73 @@ fn physical_objectives_swap_matches_full_physical_recalculation() {
 #[test]
 fn rank_gradient_has_no_white_ties() {
     let r = RankRange { lo: 0.2, hi: 0.8 };
-    assert_eq!(rank_color(SFB, 0.2, r), gradient(1.0));
-    assert_eq!(rank_color(SFB, 0.8, r), gradient(0.0));
-    assert_eq!(rank_color(ROLL, 0.2, r), gradient(0.0));
-    assert_eq!(rank_color(ROLL, 0.8, r), gradient(1.0));
+    assert_eq!(rank_color_for(SFB, 0.2, r, false), gradient(1.0));
+    assert_eq!(rank_color_for(SFB, 0.8, r, false), gradient(0.0));
+    assert_eq!(rank_color_for(ROLL, 0.2, r, false), gradient(0.0));
+    assert_eq!(rank_color_for(ROLL, 0.8, r, false), gradient(1.0));
     assert_eq!(
-        rank_color(SFB, 0.2, RankRange { lo: 0.2, hi: 0.2 }),
+        rank_color_for(SFB, 0.2, RankRange { lo: 0.2, hi: 0.2 }, false),
         gradient(0.5)
     );
-    let left = rank_color(SFB, 0.21, r);
-    let right = rank_color(SFB, 0.22, r);
+    let left = rank_color_for(SFB, 0.21, r, false);
+    let right = rank_color_for(SFB, 0.22, r, false);
     assert!((left as i32 - right as i32).abs() <= 2);
 
     let p = source_problem();
     let raw = full_raw(&p.model.original, &p.corpora[0], &p.model.geometry);
     let values = metrics(&raw, &p.corpora[0]);
-    let rows: Vec<_> = (0..3)
+    let rows: Vec<_> = (0..10)
         .map(|_| RankRow::Plain {
             model: p.model.clone(),
-            corpus: p.corpora[0].clone(),
+            corpus: Arc::new(p.corpora[0].clone()),
             raw: raw.clone(),
             metrics: values.clone(),
             score: 0.0,
         })
         .collect();
-    let mut columns = RankColumns::new();
+    let mut columns = RankColumns::new(false);
     let grid = RankGrid::new(108, 24, 10, &mut columns);
     let ranges = rank_ranges(&rows, &BTreeSet::new());
-    for top in [0, 1] {
+    let order: Vec<_> = (0..rows.len()).collect();
+    for (top, selected) in [(0, 0), (0, 1), (1, 1), (1, 2), (3, 3), (4, 6)] {
         let mut c = Canvas::ranking(108, 1);
         draw_rank_table(
             &mut c,
             &grid,
             &rows,
-            &[0, 1, 2],
+            &order,
             top,
-            0,
-            3 - top,
+            selected,
+            rows.len() - top,
             Some(RANK_SCORE),
             true,
             2,
             &ranges,
+            false,
+            false,
         );
-        for offset in 0..3 - top {
+        for offset in 0..rows.len() - top {
             let y = RANK_DATA + offset;
-            let expected = if (top + offset) % 2 == 0 {
-                None
+            let expected = if top + offset == selected {
+                Some((36, 36, 36))
             } else {
-                Some((28, 16, 18))
+                match (top + offset) % 4 {
+                    1 => Some((30, 30, 30)),
+                    3 => Some((18, 18, 18)),
+                    _ => None,
+                }
             };
+            assert_eq!(c.cells[y * c.w + 1].color, FG);
             for cell in &c.cells[y * c.w + 1..y * c.w + grid.width - 1] {
                 assert_eq!(cell.background, expected);
-                assert_eq!(cell.bold, (top + offset) % 2 == 0);
+                assert!(!cell.bold);
+            }
+            for (j, &metric) in grid.metrics.iter().enumerate() {
+                let color = rank_value(&rows[0], metric)
+                    .map(|value| rank_color_for(metric, value, ranges[metric], false))
+                    .unwrap_or(MUTED);
+                let x = grid.content_x(j) + grid.cell - 2;
+                assert_eq!(c.cells[y * c.w + x].color, color);
             }
             assert_eq!(c.cells[y * c.w].background, None);
             assert_eq!(c.cells[y * c.w + grid.width - 1].background, None);
@@ -1214,7 +1695,7 @@ fn rank_gradient_has_no_white_ties() {
             let old_color = c.cells[y * c.w + 1].color;
             c.put(1, y, 'x', old_color);
             assert_eq!(c.cells[y * c.w + 1].background, expected);
-            assert_eq!(c.cells[y * c.w + 1].bold, (top + offset) % 2 == 0);
+            assert!(!c.cells[y * c.w + 1].bold);
         }
         assert!(c.cells[..RANK_DATA * c.w]
             .iter()
@@ -1234,13 +1715,14 @@ fn rank_gradient_has_no_white_ties() {
             scroll = usize::MAX;
         }
     }
-    assert_eq!(ansi_background(Some((28, 16, 18))), "\x1b[48;2;28;16;18m");
+    assert_eq!(ansi_background(Some((24, 24, 24))), "\x1b[48;2;24;24;24m");
+    assert_eq!(ansi_color(FG), "\x1b[39m");
     assert_eq!(ansi_background(None), "\x1b[49m");
 }
 
 #[test]
 fn rank_hide_history_and_hitboxes() {
-    let mut columns = RankColumns::new();
+    let mut columns = RankColumns::new(false);
     let g = RankGrid::new(120, 24, 10, &mut columns);
     assert_eq!(g.layout_at(4, RANK_DATA + 2, 10), Some(2));
     assert_eq!(
@@ -1291,7 +1773,7 @@ fn metric_grid_has_room_for_values_and_deltas() {
     for width in [64, 80, 108, 240] {
         for dp in [2, 4] {
             let mut c = Canvas::new(width, 1);
-            let end = grouped_metric_cards(&mut c, 0, &m, &m, &raw, &p.corpora[0], dp);
+            let end = grouped_metric_cards(&mut c, 0, &m, &m, &raw, &p.corpora[0], dp, false);
             assert!(end <= c.h);
             for &(r, a) in &c.hits {
                 if let Action::Metric(_) = a {
@@ -1385,7 +1867,7 @@ fn metric_grid_has_room_for_values_and_deltas() {
         }
     }
     let mut editor = Canvas::new(108, 1);
-    editor_metric_cards(&mut editor, 0, &m, &m, &raw, &p.corpora[0], 2);
+    editor_metric_cards(&mut editor, 0, &m, &m, &raw, &p.corpora[0], 2, false);
     let editor_text: String = editor.cells.iter().map(|cell| cell.ch).collect();
     assert_eq!(editor.cells[0].ch, ' ');
     assert_ne!(editor.cells[1].ch, ' ');
@@ -1405,9 +1887,88 @@ fn metric_grid_has_room_for_values_and_deltas() {
     for label in ["INSRAF", "OUTSRAF", "INROLL", "OUTROLL", "IN2", "OUT2"] {
         assert!(!editor_text.contains(label));
     }
+
+    let mut simple = Canvas::new(108, 1);
+    grouped_metric_cards(&mut simple, 0, &m, &m, &raw, &p.corpora[0], 2, true);
+    let simple_text: String = simple.cells.iter().map(|cell| cell.ch).collect();
+    for label in ["FSB", "FSS", "HSB", "HSS"] {
+        assert!(
+            simple_text.contains(label),
+            "simple table is missing {label}"
+        );
+    }
+    for label in [
+        "daFJB", "caFJB", "dnFJB", "cnFJB", "daFJS", "caFJS", "dnFJS", "cnFJS", "daHJB", "caHJB",
+        "dnHJB", "cnHJB", "daHJS", "caHJS", "dnHJS", "cnHJS",
+    ] {
+        assert!(
+            !simple_text.contains(label),
+            "simple table contains detailed jump {label}"
+        );
+    }
+    let simple_hits = simple
+        .hits
+        .iter()
+        .filter_map(|(_, action)| match action {
+            Action::Metric(metric) => Some(*metric),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for alias in [FSB, FSS, HSB, HSS] {
+        assert!(simple_hits.contains(&alias));
+    }
+    for detailed in [
+        DAFJB, CAFJB, DNFJB, CNFJB, DAFJS, CAFJS, DNFJS, CNFJS, DAHJB, CAHJB, DNHJB, CNHJB, DAHJS,
+        CAHJS, DNHJS, CNHJS,
+    ] {
+        assert!(!simple_hits.contains(&detailed));
+    }
     assert_eq!(number(0.0001, 2), "<0.01");
     assert_eq!(delta_text(1.0, 1.0, 2), "—");
     assert_eq!(number(3.1, 2), "3.10");
+
+    for (width, decimals, blocks) in [(108, 2, 1), (64, 2, 2), (64, 12, 2)] {
+        let mut fingers = Canvas::new(width, 1);
+        let end = finger_table(&mut fingers, 0, &m, &m, decimals);
+        assert_eq!(end, fingers.h);
+        assert_eq!(end, 2 + blocks * 4);
+        let rows = fingers
+            .cells
+            .chunks(fingers.w)
+            .map(|row| row.iter().map(|cell| cell.ch).collect::<String>())
+            .collect::<Vec<_>>();
+        let headers = (0..blocks)
+            .map(|block| rows[1 + block * 4].as_str())
+            .collect::<Vec<_>>();
+        let header_text = headers.join(" ");
+        for name in FINGER_NAMES {
+            assert!(
+                header_text.contains(name),
+                "missing {name} at {width}x{decimals}"
+            );
+        }
+        if blocks == 2 {
+            for (header, names) in [
+                (headers[0], ["LP", "LR", "LM", "LI", "LT"]),
+                (headers[1], ["RI", "RM", "RR", "RP", "RT"]),
+            ] {
+                let positions = names.map(|name| header.find(name).unwrap());
+                assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+            }
+        }
+        let cols = 10 / blocks;
+        for block in 0..blocks {
+            for stat_row in [3 + block * 4, 4 + block * 4] {
+                assert_eq!(
+                    rows[stat_row].chars().filter(|&ch| ch == '-').count(),
+                    2 / blocks
+                );
+            }
+            for row in &rows[1 + block * 4..=4 + block * 4] {
+                assert_eq!(row.chars().filter(|&ch| ch == '│').count(), cols + 2);
+            }
+        }
+    }
 }
 
 #[test]
@@ -1421,8 +1982,16 @@ fn numeric_metric_panel_matches_corpus_panel() {
         for decimals in [2, 4] {
             let mut detailed = Canvas::new(width, 1);
             let mut numeric = Canvas::new(width, 1);
-            let detailed_end =
-                grouped_metric_cards(&mut detailed, 0, &values, &values, &raw, corpus, decimals);
+            let detailed_end = grouped_metric_cards(
+                &mut detailed,
+                0,
+                &values,
+                &values,
+                &raw,
+                corpus,
+                decimals,
+                false,
+            );
             let numeric_end = grouped_metric_totals(
                 &mut numeric,
                 0,
@@ -1518,20 +2087,6 @@ fn cache_metadata_and_higher_orders() {
 }
 
 #[test]
-fn ordered_text_sidecars_accept_both_names() {
-    let dir = TestDir::new();
-    let seq = dir.0.join("sample.seq");
-    for header in [
-        b"AKLER-SEQUENCES-1\n".as_slice(),
-        b"LAYOUTER-SEQUENCES-1\n".as_slice(),
-    ] {
-        fs::write(&seq, [header, b"abc\n"].concat()).unwrap();
-        let corpus = action_keys::TextCorpus::load(&seq).unwrap();
-        assert_eq!(corpus.sequences, vec![(b"abc".to_vec(), 1)]);
-    }
-}
-
-#[test]
 fn config_and_native_free_cancellation() {
     let dir = TestDir::new();
     let conf = dir.0.join("a.config.json");
@@ -1601,7 +2156,7 @@ fn hidden_rows_leave_the_color_range() {
         m.v[SFB] = *v;
         rows.push(RankRow::Plain {
             model,
-            corpus: p.corpora[0].clone(),
+            corpus: Arc::new(p.corpora[0].clone()),
             raw: raw.clone(),
             metrics: m,
             score: *v,
@@ -1616,6 +2171,18 @@ fn hidden_rows_leave_the_color_range() {
     close(range[SFB].lo, 0.2);
     close(range[SFB].hi, 0.21);
     assert_eq!(rank_order(&rows, "", Some(SFB), true, &hidden).len(), 2);
+
+    // The picker includes hidden rows, distinguishes equal names by path, and
+    // never drops hidden paths belonging to temporarily unavailable layouts.
+    assert_eq!(rank_layout_choices(&rows, ""), vec![0, 1, 2]);
+    assert_eq!(rank_layout_choices(&rows, "2.DAT"), vec![2]);
+    assert!(rank_layout_choices(&rows, "missing").is_empty());
+    hidden.insert(PathBuf::from("unavailable.dat"));
+    toggle_rank_layout(&mut hidden, rows[2].path());
+    assert_eq!(rank_order(&rows, "", None, true, &hidden).len(), 3);
+    toggle_rank_layout(&mut hidden, rows[0].path());
+    assert_eq!(rank_order(&rows, "", None, true, &hidden), vec![1, 2]);
+    assert!(hidden.contains(Path::new("unavailable.dat")));
 }
 
 #[test]
@@ -1809,7 +2376,6 @@ fn directional_rolls_match_mana_finger_rules_without_thumbs() {
                     assert_eq!(flags.bits & bit(kind) != 0, expected == Some(kind));
                 }
                 assert_eq!(flags.bits & bit(ROLL) != 0, expected.is_some());
-                assert_eq!(flags.bits & bit(SIMPLE_ROLL) != 0, expected.is_some());
                 assert_eq!(
                     flags.bits & bit(INROLL) != 0,
                     matches!(expected, Some(IN2 | IN3))
@@ -1846,12 +2412,7 @@ fn roll_percentages_exclude_thumbs_and_reward_the_total_once() {
         ([0, 4, 1], 11.0),  // Alternation; still in the roll denominator.
         ([5, 0, 1], 100.0), // Thumb; excluded entirely, not spliced out.
     ] {
-        let gram = Gram {
-            ids,
-            len: 3,
-            kind: 3,
-            f: frequency,
-        };
+        let gram = Gram::new(ids, 3, 3, frequency);
         add_gram(&mut raw, &gram, &positions, &geometry, 1.0);
     }
 
@@ -1872,8 +2433,6 @@ fn roll_percentages_exclude_thumbs_and_reward_the_total_once() {
         assert!(higher_better(metric));
     }
     close(metrics.v[INROLL] + metrics.v[OUTROLL], metrics.v[ROLL]);
-    assert_eq!(metrics.simple[7].to_bits(), metrics.v[INROLL].to_bits());
-    assert_eq!(metrics.simple[8].to_bits(), metrics.v[OUTROLL].to_bits());
 
     let mut weights = Weights::new([0.0; N_WEIGHTS]);
     weights.0[ROLL] = 1000.0; // Combined total is display-only.
@@ -1936,6 +2495,7 @@ fn roll_filters_are_independent_and_only_check_consecutive_pairs() {
                 include_thumbs: false,
                 include_scissors,
                 include_stretches,
+                alts: None,
             };
             for (keys, allowed) in [
                 (scissor, include_scissors),
@@ -1948,7 +2508,6 @@ fn roll_filters_are_independent_and_only_check_consecutive_pairs() {
                 assert_eq!(flags.bits & bit(IN2) != 0, allowed);
                 assert_eq!(flags.bits & bit(INROLL) != 0, allowed);
                 assert_eq!(flags.bits & bit(ROLL) != 0, allowed);
-                assert_eq!(flags.bits & bit(SIMPLE_ROLL) != 0, allowed);
                 // Filtering the numerator must never shrink its denominator.
                 assert_ne!(flags.bits & bit(ROLL_DEN), 0);
             }
@@ -1966,6 +2525,7 @@ fn roll_filters_are_independent_and_only_check_consecutive_pairs() {
         include_thumbs: false,
         include_scissors: false,
         include_stretches: false,
+        alts: None,
     };
     assert_ne!(
         tri_flags_with_settings(a, b, c, settings).bits & bit(IN3),
@@ -2024,12 +2584,7 @@ fn thumb_rolls_have_their_own_denominator_and_inward_finger_rank() {
         for (ids, f) in [([0, 1, 2], 2.0), ([0, 3, 2], 3.0), ([3, 0, 3], 5.0)] {
             add_gram(
                 &mut raw,
-                &Gram {
-                    ids,
-                    len: 3,
-                    kind: 3,
-                    f,
-                },
+                &Gram::new(ids, 3, 3, f),
                 &positions,
                 &geometry,
                 1.0,
@@ -2037,7 +2592,6 @@ fn thumb_rolls_have_their_own_denominator_and_inward_finger_rank() {
         }
         assert_eq!(raw.0[RHYTHM_DEN], 2.0);
         let metrics = metrics_totals(&raw, &[0.0, 0.0, 0.0, 10.0]);
-        close(metrics.simple[7] + metrics.simple[8], metrics.v[ROLL]);
         totals.push((raw.0[ROLL_DEN], metrics.v[IN2]));
     }
     assert_eq!(totals, [(2.0, 100.0), (10.0, 50.0)]);
@@ -2059,6 +2613,7 @@ fn ordinary_search_refreshes_roll_geometry_after_policy_changes() {
                     include_thumbs,
                     include_scissors,
                     include_stretches,
+                    alts: None,
                 };
                 let weights = Weights::default().with_rolls(rolls);
                 let problem = Problem::new(
@@ -2070,6 +2625,16 @@ fn ordinary_search_refreshes_roll_geometry_after_policy_changes() {
                 )
                 .unwrap();
                 assert_eq!(problem.model.geometry.rolls, rolls);
+                let geometry = &problem.model.geometry;
+                for (a, &ka) in geometry.keys.iter().enumerate() {
+                    for (b, &kb) in geometry.keys.iter().enumerate() {
+                        for (c, &kc) in geometry.keys.iter().enumerate() {
+                            let expected = tri_flags_with_settings(ka, kb, kc, rolls);
+                            let cached = geometry.tri.raw((a * geometry.n + b) * geometry.n + c);
+                            assert_eq!(cached, tri_raw_bits(expected));
+                        }
+                    }
+                }
                 let raw = full_raw(
                     &problem.model.original,
                     &problem.corpora[0],
@@ -2090,4 +2655,32 @@ fn ordinary_search_refreshes_roll_geometry_after_policy_changes() {
             }
         }
     }
+}
+
+#[test]
+fn score_tab_rows_sum_to_the_objective_in_both_modes() {
+    let mut problem = source_problem();
+    let state = State::new(problem.model.original.clone(), &problem);
+    let mut moved = state.clone();
+    trial_into(&mut moved, &state, Move::pair(0, 1), &problem);
+    let metrics = |s: &State| metrics(&s.raws[0], &problem.corpora[0]);
+    let rows = metric_score_rows(&metrics(&state), &metrics(&moved), &problem.weights);
+    close(
+        rows.iter().map(|r| r.points.0).sum(),
+        breakdown(&metrics(&state), &problem.weights).net,
+    );
+    close(
+        rows.iter().map(|r| r.points.1).sum(),
+        breakdown(&metrics(&moved), &problem.weights).net,
+    );
+
+    problem.settings.mode = "aklgg".into();
+    let state = State::new(problem.model.original.clone(), &problem);
+    let mut moved = state.clone();
+    trial_into(&mut moved, &state, Move::pair(0, 1), &problem);
+    let stats = |s: &State| mana_stats_for_corpus(&s.raws[0], &problem.corpora[0]);
+    let rows = aklgg_score_rows(&stats(&state), &stats(&moved), &problem.weights);
+    close(rows.iter().map(|r| r.points.0).sum(), state.score);
+    close(rows.iter().map(|r| r.points.1).sum(), moved.score);
+    assert!(rows.iter().any(|r| r.points.0 != r.points.1));
 }

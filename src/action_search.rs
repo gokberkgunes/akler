@@ -59,6 +59,90 @@ fn permutation(seed: &ak::Layout, layout: &ak::Layout) -> Option<Vec<usize>> {
     Some(arr)
 }
 
+/// `layout`'s letter placement as an arrangement of `seed`, matching keys by
+/// what they type alone, whatever adaptive rules, combos or magic rules either
+/// has: an adaptive key types its fallback letter like a plain one. None when
+/// the two hold different keys.
+pub(crate) fn letter_arrangement(seed: &ak::Layout, layout: &ak::Layout) -> Option<Vec<usize>> {
+    fn identity<'a>(
+        layout: &'a ak::Layout,
+        slot: &'a ak::Slot,
+    ) -> Result<&'a [u8], &'a ak::Binding> {
+        match &slot.binding {
+            ak::Binding::Text(text) => Ok(text),
+            ak::Binding::Named(name) => match layout.actions.get(name) {
+                Some(ak::Action::Rules {
+                    basis: ak::Basis::Text,
+                    fallback: ak::Emission::Text(text),
+                    ..
+                }) if name.as_bytes() == text.as_slice() => Ok(text),
+                _ => Err(&slot.binding),
+            },
+            ak::Binding::Empty => Err(&slot.binding),
+        }
+    }
+    if !same_geometry(seed, layout) {
+        return None;
+    }
+    let mut used = vec![false; seed.slots.len()];
+    let mut arr = Vec::with_capacity(seed.slots.len());
+    for slot in &layout.slots {
+        let key = identity(layout, slot);
+        let id = (0..seed.slots.len())
+            .position(|id| !used[id] && identity(seed, &seed.slots[id]) == key)?;
+        used[id] = true;
+        arr.push(id);
+    }
+    Some(arr)
+}
+
+/// The saved layouts results keep their distance from. Every epoch of every
+/// worker reads them, so they are parsed once per process and again only
+/// after a file in the layout folders is added, removed or changed.
+fn saved_layouts() -> Arc<[ak::Layout]> {
+    type Stamp = Vec<(PathBuf, u64, Option<std::time::SystemTime>)>;
+    static CACHE: std::sync::Mutex<Option<(Stamp, Arc<[ak::Layout]>)>> =
+        std::sync::Mutex::new(None);
+    let directory = Path::new(LAYOUT_DIR);
+    let mut stamp = Stamp::new();
+    for folder in [directory.to_path_buf(), directory.join("optimized")] {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let meta = entry.metadata().ok();
+            stamp.push((
+                entry.path(),
+                meta.as_ref().map_or(0, |meta| meta.len()),
+                meta.and_then(|meta| meta.modified().ok()),
+            ));
+        }
+    }
+    stamp.sort();
+    // Workers starting together wait for one parse instead of repeating it.
+    let mut cache = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((cached, layouts)) = cache.as_ref() {
+        if *cached == stamp {
+            return layouts.clone();
+        }
+    }
+    let mut layouts = Vec::new();
+    if let Ok(paths) = discover_layouts(directory) {
+        for path in paths {
+            if let Ok(text) = fs::read_to_string(&path) {
+                if let Ok(layout) = ak::Layout::parse(&text, &path) {
+                    layouts.push(layout);
+                }
+            }
+        }
+    }
+    let layouts: Arc<[ak::Layout]> = layouts.into();
+    *cache = Some((stamp, layouts.clone()));
+    layouts
+}
+
 fn same_visible(seed: &ak::Layout, a: &[usize], b: &[usize]) -> bool {
     a.iter().zip(b).all(|(&a, &b)| {
         seed.slots[a].binding == seed.slots[b].binding && seed.slots[a].label == seed.slots[b].label
@@ -130,6 +214,116 @@ fn violation(metrics: &Metrics, baseline: &Metrics, settings: &SearchSettings) -
     amount
 }
 
+/// Points a joint epoch charges per unit above a cap (a percentage point of
+/// SFB or SFS, a travel unit). Between epochs the rule, combo and swap fits can
+/// still bring the layout back under, and only results within the caps after
+/// them are kept, so annealing may pass through layouts above a cap.
+const SOFT_CAP_POINTS: f64 = 20.0;
+
+/// How far `metrics` go above `baseline` plus each active cap, summed in the
+/// caps' own units; zero within every cap.
+pub(crate) fn overshoot(metrics: &Metrics, baseline: &Metrics, settings: &SearchSettings) -> f64 {
+    let mut amount = 0.0;
+    for (metric, limit) in [
+        (SFB, settings.sfb_limit),
+        (SFS, settings.sfs_limit),
+        (TRAVEL, settings.travel_limit),
+        (SFTRAVEL, settings.sftravel_limit),
+    ] {
+        if let Some(increase) = limit {
+            let excess = metrics.v[metric] - (baseline.v[metric] + increase);
+            if excess > 1e-10 {
+                amount += excess;
+            }
+        }
+    }
+    amount
+}
+
+/// A fitter's view of the search caps: candidates closer to within them win
+/// first, then lower scores.
+#[derive(Clone, Copy)]
+pub(crate) struct Caps<'a> {
+    pub(crate) baseline: &'a Metrics,
+    pub(crate) settings: &'a SearchSettings,
+}
+
+impl Caps<'_> {
+    /// Whether `a` beats `b`: less overshoot, or as much and a score lower by
+    /// more than `margin`. Without caps only the scores decide.
+    pub(crate) fn beats(
+        caps: Option<Self>,
+        a: &crate::action_summary::Summary,
+        b: &crate::action_summary::Summary,
+        margin: f64,
+    ) -> bool {
+        let over = |summary: &crate::action_summary::Summary| {
+            caps.map_or(0.0, |caps| {
+                overshoot(&summary.metrics, caps.baseline, caps.settings)
+            })
+        };
+        let (a_over, b_over) = (over(a), over(b));
+        if a_over != b_over {
+            return a_over < b_over;
+        }
+        a.score < b.score - margin
+    }
+
+    pub(crate) fn overshoot(caps: Option<Self>, summary: &crate::action_summary::Summary) -> f64 {
+        caps.map_or(0.0, |caps| {
+            overshoot(&summary.metrics, caps.baseline, caps.settings)
+        })
+    }
+
+    /// `overshoot` of a screened summary; None when a capped metric is so
+    /// close to its cap that the exact summary may count it differently.
+    fn screened_overshoot(
+        caps: Option<Self>,
+        summary: &crate::action_summary::Summary,
+    ) -> Option<f64> {
+        if let Some(caps) = caps {
+            let settings = caps.settings;
+            for (metric, limit) in [
+                (SFB, settings.sfb_limit),
+                (SFS, settings.sfs_limit),
+                (TRAVEL, settings.travel_limit),
+                (SFTRAVEL, settings.sftravel_limit),
+            ] {
+                if let Some(increase) = limit {
+                    let excess = summary.metrics.v[metric] - (caps.baseline.v[metric] + increase);
+                    if near(excess, 1e-10) {
+                        return None;
+                    }
+                }
+            }
+        }
+        Some(Self::overshoot(caps, summary))
+    }
+
+    /// `beats` on the exact summaries, judged from a screened `a` (and `b`
+    /// when `b_screened`); None when they are too close to tell.
+    pub(crate) fn screened_beats(
+        caps: Option<Self>,
+        a: &crate::action_summary::Summary,
+        b: &crate::action_summary::Summary,
+        b_screened: bool,
+        margin: f64,
+    ) -> Option<bool> {
+        let a_over = Self::screened_overshoot(caps, a)?;
+        let b_over = if b_screened {
+            Self::screened_overshoot(caps, b)?
+        } else {
+            Self::overshoot(caps, b)
+        };
+        // Overshoot without any capped metric over is exactly zero.
+        if a_over != 0.0 || b_over != 0.0 {
+            return (!near(a_over, b_over)).then_some(a_over < b_over);
+        }
+        let threshold = b.score - margin;
+        (!near(a.score, threshold)).then_some(a.score < threshold)
+    }
+}
+
 struct Problem<'a> {
     seed: &'a ak::Layout,
     weights: &'a Weights,
@@ -139,6 +333,20 @@ struct Problem<'a> {
     effort: LocalEffort,
     caches: Vec<ng::Incremental>,
     proposals: Vec<ng::Proposal>,
+    /// Trials return screened scores (`Incremental::enable_aggregation`);
+    /// decisions near a threshold call `exact` first.
+    screening: bool,
+    /// Joint epochs charge `SOFT_CAP_POINTS` above a cap instead of
+    /// rejecting the move.
+    soft_caps: bool,
+}
+
+/// Screened scores differ from exact ones in the last bits; any decision
+/// this close to its threshold is made on the exact score.
+const SCREEN_MARGIN: f64 = 1e-9;
+
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= SCREEN_MARGIN * (1.0 + a.abs().max(b.abs()))
 }
 
 #[derive(Clone)]
@@ -156,13 +364,19 @@ impl Problem<'_> {
         for (i, cache) in self.caches.iter().enumerate() {
             let metrics = cache.metrics();
             let value = if self.settings.uses_mana2_stats() {
-                cache.physical_score(self.weights, &self.settings.mode)
+                cache.physical_score(self.weights)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
             score += self.shares[i] * value;
             if self.shares[i] != 0.0 {
-                excess += violation(&metrics, &self.baseline[i], self.settings);
+                if self.soft_caps {
+                    score += self.shares[i]
+                        * SOFT_CAP_POINTS
+                        * overshoot(&metrics, &self.baseline[i], self.settings);
+                } else {
+                    excess += violation(&metrics, &self.baseline[i], self.settings);
+                }
             }
         }
         State {
@@ -224,13 +438,61 @@ impl Problem<'_> {
                 + u64::from(self.proposals.iter().any(|proposal| proposal.all_contexts));
         }
 
+        let mut result = self.proposal_scores::<PROFILE>(profile);
+        if self.screening && self.near_cap() {
+            result = self.exact();
+        }
+        if PROFILE {
+            profile.candidates += 1;
+        }
+        Ok(result)
+    }
+
+    /// Whether a screened proposal's capped metric is close enough to its cap
+    /// that the last bits could decide whether it is above.
+    fn near_cap(&self) -> bool {
+        let limits = [
+            (SFB, self.settings.sfb_limit),
+            (SFS, self.settings.sfs_limit),
+            (TRAVEL, self.settings.travel_limit),
+            (SFTRAVEL, self.settings.sftravel_limit),
+        ];
+        if limits.iter().all(|(_, limit)| limit.is_none()) {
+            return false;
+        }
+        self.proposals.iter().enumerate().any(|(i, proposal)| {
+            if self.shares[i] == 0.0 {
+                return false;
+            }
+            let metrics = proposal.metrics();
+            limits.iter().any(|&(metric, limit)| {
+                limit.is_some_and(|increase| {
+                    near(
+                        metrics.v[metric],
+                        self.baseline[i].v[metric] + increase + 1e-10,
+                    )
+                })
+            })
+        })
+    }
+
+    /// The current proposals' exact score and excess: replays screened
+    /// proposals context by context.
+    fn exact(&mut self) -> (f64, f64) {
+        for (cache, proposal) in self.caches.iter().zip(&mut self.proposals) {
+            cache.exact(proposal);
+        }
+        self.proposal_scores::<false>(&mut Profile::default())
+    }
+
+    fn proposal_scores<const PROFILE: bool>(&self, profile: &mut Profile) -> (f64, f64) {
         let mut score = 0.0;
         let mut excess = 0.0;
         for (i, proposal) in self.proposals.iter().enumerate() {
             let score_start = clock::<PROFILE>();
             let metrics = proposal.metrics();
             let value = if self.settings.uses_mana2_stats() {
-                proposal.physical_score(self.weights, &self.settings.mode)
+                proposal.physical_score(self.weights)
             } else {
                 objective(&metrics, self.weights, self.settings)
             };
@@ -241,16 +503,19 @@ impl Problem<'_> {
 
             let check_start = clock::<PROFILE>();
             if self.shares[i] != 0.0 {
-                excess += violation(&metrics, &self.baseline[i], self.settings);
+                if self.soft_caps {
+                    score += self.shares[i]
+                        * SOFT_CAP_POINTS
+                        * overshoot(&metrics, &self.baseline[i], self.settings);
+                } else {
+                    excess += violation(&metrics, &self.baseline[i], self.settings);
+                }
             }
             if PROFILE {
                 profile.checks += elapsed::<PROFILE>(check_start);
             }
         }
-        if PROFILE {
-            profile.candidates += 1;
-        }
-        Ok((score, excess))
+        (score, excess)
     }
 
     fn commit<const PROFILE: bool>(
@@ -437,8 +702,14 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
                     return Ok(());
                 }
                 let movement = Move::pair(free[i], free[j]);
-                let (score, excess) =
+                let (mut score, excess) =
                     trial::<PROFILE, DETAIL>(problem, current, movement, runtime, profile)?;
+                // Improvements are ranked by their exact gain.
+                if problem.screening
+                    && (score < current.score - 1e-10 || near(score, current.score - 1e-10))
+                {
+                    score = problem.exact().0;
+                }
                 if score < current.score - 1e-10 && excess == 0.0 {
                     good.push((score - current.score, movement));
                 }
@@ -458,8 +729,13 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
             if runtime.checkpoint(problem.settings) {
                 return Ok(());
             }
-            let (score, excess) =
+            let (mut score, excess) =
                 trial::<PROFILE, DETAIL>(problem, current, *movement, runtime, profile)?;
+            if problem.screening
+                && (score < current.score - 1e-10 || near(score, current.score - 1e-10))
+            {
+                score = problem.exact().0;
+            }
             if score < current.score - 1e-10 && excess == 0.0 {
                 problem.commit::<PROFILE>(current, *movement, profile);
                 if PROFILE {
@@ -499,8 +775,12 @@ fn repair<const PROFILE: bool, const DETAIL: bool>(
                     return Ok(false);
                 }
                 let movement = Move::pair(free[i], free[j]);
-                let (_, excess) =
+                let (_, mut excess) =
                     trial::<PROFILE, DETAIL>(problem, current, movement, runtime, profile)?;
+                // Repair compares excesses themselves, so exactly.
+                if problem.screening {
+                    excess = problem.exact().1;
+                }
                 if excess < best {
                     best = excess;
                     chosen = Some(movement);
@@ -535,13 +815,16 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
     callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
     profile: &mut Profile,
     known: Vec<Vec<usize>>,
+    started: Instant,
+    restart_offset: usize,
+    run_sweeps: bool,
+    parents: &[Candidate],
 ) -> ak::Result<Snapshot> {
     let generation = problem.settings.design != "refine";
     if !generation && initial.violation != 0.0 {
         return Err("starting arrangement violates active limits".into());
     }
     let free: Vec<_> = (0..locked.len()).filter(|&slot| !locked[slot]).collect();
-    let started = Instant::now();
     let mut runtime = Runtime {
         started,
         last_frame: started,
@@ -572,15 +855,21 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
 
     let outcome = (|| -> ak::Result<()> {
         for restart in 0..problem.settings.restarts {
+            let global_restart = restart_offset + restart;
             if !can_search || runtime.checkpoint(problem.settings) {
                 break;
             }
             runtime.progress.restart = restart + 1;
             runtime.progress.pass = 0;
             if generation {
+                // Earlier restarts' results (`parents`) breed with this
+                // search's own when `evolve` crosses two of them.
+                let mut pool = runtime.pool.clone();
+                pool.extend_from_slice(parents);
+                pool.sort_by(|a, b| a.score.total_cmp(&b.score).then_with(|| a.arr.cmp(&b.arr)));
                 let parents = diverse(
                     problem.seed,
-                    &runtime.pool,
+                    &pool,
                     64,
                     problem.settings.diversity.max(2),
                     true,
@@ -610,12 +899,12 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                     continue;
                 }
             } else {
-                current.clone_from(if restart == 0 {
+                current.clone_from(if global_restart == 0 {
                     &initial
                 } else {
                     &runtime.best
                 });
-                if restart > 0 {
+                if global_restart > 0 {
                     problem.restore(&current, control)?;
                     for _ in 0..48 {
                         if runtime.checkpoint(problem.settings) {
@@ -661,8 +950,23 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                         &mut runtime,
                         profile,
                     )?;
-                    let delta = score - current.score;
-                    if excess == 0.0 && (delta < 0.0 || rng.unit() < (-delta / temperature).exp()) {
+                    let mut delta = score - current.score;
+                    // A screened gain decides alone only when clearly positive;
+                    // the acceptance draw happens exactly when the exact gain
+                    // is not negative.
+                    if problem.screening && (delta < 0.0 || near(score, current.score)) {
+                        delta = problem.exact().0 - current.score;
+                    }
+                    let mut accept = |delta: &mut f64| {
+                        let unit = rng.unit();
+                        let mut threshold = (-*delta / temperature).exp();
+                        if problem.screening && near(unit, threshold) {
+                            *delta = problem.exact().0 - current.score;
+                            threshold = (-*delta / temperature).exp();
+                        }
+                        unit < threshold
+                    };
+                    if excess == 0.0 && (delta < 0.0 || accept(&mut delta)) {
                         problem.commit::<PROFILE>(&mut current, movement, profile);
                         if PROFILE {
                             profile.accepted += 1;
@@ -684,7 +988,9 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                 }
                 problem.restore(&current, control)?;
             }
-            sweep::<PROFILE, DETAIL>(problem, &mut current, &free, &mut runtime, profile)?;
+            if run_sweeps {
+                sweep::<PROFILE, DETAIL>(problem, &mut current, &free, &mut runtime, profile)?;
+            }
             runtime.keep(&current, problem);
             runtime.frame(true);
         }
@@ -717,10 +1023,14 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
     }
     .into();
     runtime.progress.elapsed = started.elapsed().as_secs_f64();
+    // Pair every returned best with an exact callback payload. Parallel
+    // coordination relies on this final frame when cancellation lands between
+    // the periodic frame interval and an accepted move.
+    runtime.frame(true);
     Ok(runtime.snapshot())
 }
 
-fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
+fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
     original: &ak::Layout,
     seed: &ak::Layout,
     corpora: &[(ng::NgramCorpus, f64)],
@@ -730,13 +1040,25 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
     control: &Control,
     callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
     profile: &mut Profile,
+    search_started: Option<Instant>,
+    restart_offset: usize,
+    external_baseline: Option<&[Metrics]>,
+    run_sweeps: bool,
+    parents: &[Candidate],
 ) -> ak::Result<Snapshot> {
     validate_search_settings(settings).map_err(|error| error.to_string())?;
     if locked.len() != seed.slots.len() || corpora.is_empty() {
         return Err("invalid action search lock mask or empty training corpus list".into());
     }
-    let baseline_arr = permutation(seed, original)
-        .ok_or("baseline layout is not a permutation of the search layout")?;
+    if external_baseline.is_some_and(|baseline| baseline.len() != corpora.len()) {
+        return Err("joint search baseline/corpus count mismatch".into());
+    }
+    let baseline_arr = if external_baseline.is_some() {
+        (0..seed.slots.len()).collect()
+    } else {
+        permutation(seed, original)
+            .ok_or("baseline layout is not a permutation of the search layout")?
+    };
     let shares: Vec<_> = corpora.iter().map(|(_, share)| *share).collect();
     let total: f64 = shares.iter().sum();
     if shares
@@ -750,22 +1072,38 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
     let shares: Vec<_> = shares.into_iter().map(|share| share / total).collect();
     let start = clock::<PROFILE>();
     let effort = LocalEffort::new(seed, weights);
+    // A finite effort table lets trials remap only the contexts whose
+    // dependencies a move touches; see `Incremental::enable_finite_effort`.
+    let finite_effort = effort.all_finite();
+    // Screened scores and capped metrics are exact wherever a decision is
+    // close (`Problem::trial`).
+    let screening = true;
     let geometry = Geometry::with_rolls(physical_keys(seed), weights.rolls());
     let identity: Vec<_> = (0..seed.slots.len()).collect();
     let mut caches = Vec::with_capacity(corpora.len());
     let mut baseline = Vec::with_capacity(corpora.len());
-    for (corpus, _) in corpora {
-        let mut cache = ng::Incremental::new(
+    for (corpus_index, (corpus, _)) in corpora.iter().enumerate() {
+        let mut cache = ng::Incremental::new_with_policy(
             corpus,
             seed,
             geometry.clone(),
             &control.cancel,
+            weights.alts(),
+            weights.combo_policy(),
             |a, b, key| effort.get(a, b, key),
         )?;
+        if finite_effort {
+            cache.enable_finite_effort();
+        }
+        if screening {
+            cache.enable_aggregation();
+        }
         if settings.uses_mana2_stats() {
             cache.enable_mana2();
         }
-        if baseline_arr != identity {
+        if let Some(metrics) = external_baseline {
+            baseline.push(metrics[corpus_index].clone());
+        } else if baseline_arr != identity {
             let saved = cache.numeric_state();
             cache.restore(&baseline_arr, None, &control.cancel, |a, b, key| {
                 effort.get(a, b, key)
@@ -795,20 +1133,16 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
         effort,
         proposals: (0..caches.len()).map(|_| ng::Proposal::new()).collect(),
         caches,
+        screening,
+        soft_caps: external_baseline.is_some(),
     };
     let initial = problem.current(identity);
     let generation = settings.design != "refine";
     let mut known = vec![initial.arr.clone()];
     if generation {
-        if let Ok(paths) = discover_layouts(Path::new(LAYOUT_DIR)) {
-            for path in paths {
-                if let Ok(text) = fs::read_to_string(&path) {
-                    if let Ok(layout) = ak::Layout::parse(&text, &path) {
-                        if let Some(arr) = permutation(problem.seed, &layout) {
-                            known.push(arr);
-                        }
-                    }
-                }
+        for layout in saved_layouts().iter() {
+            if let Some(arr) = permutation(problem.seed, layout) {
+                known.push(arr);
             }
         }
     }
@@ -820,7 +1154,118 @@ fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
         callback,
         profile,
         known,
+        search_started.unwrap_or_else(Instant::now),
+        restart_offset,
+        run_sweeps,
+        parents,
     )
+}
+
+fn run_profiled<const PROFILE: bool, const DETAIL: bool>(
+    original: &ak::Layout,
+    seed: &ak::Layout,
+    corpora: &[(ng::NgramCorpus, f64)],
+    weights: &Weights,
+    settings: &SearchSettings,
+    locked: &[bool],
+    control: &Control,
+    callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
+    profile: &mut Profile,
+) -> ak::Result<Snapshot> {
+    run_profiled_at::<PROFILE, DETAIL>(
+        original,
+        seed,
+        corpora,
+        weights,
+        settings,
+        locked,
+        control,
+        callback,
+        profile,
+        None,
+        0,
+        None,
+        true,
+        &[],
+    )
+}
+
+/// One normal search epoch with fixed external caps. The joint coordinator
+/// owns dictionary changes and parallel restart chains; ordinary search is unchanged.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_joint_epoch(
+    seed: &ak::Layout,
+    corpora: &[(ng::NgramCorpus, f64)],
+    weights: &Weights,
+    settings: &SearchSettings,
+    locked: &[bool],
+    control: &Control,
+    baseline: &[Metrics],
+    run_sweeps: bool,
+    restart_offset: usize,
+    parents: &[Candidate],
+    callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
+) -> ak::Result<Snapshot> {
+    let level = crate::action_profile::level();
+    let mut profile = Profile::default();
+    let started = (level != 0).then(Instant::now);
+    let result = match level {
+        0 => run_profiled_at::<false, false>(
+            seed,
+            seed,
+            corpora,
+            weights,
+            settings,
+            locked,
+            control,
+            callback,
+            &mut profile,
+            None,
+            restart_offset,
+            Some(baseline),
+            run_sweeps,
+            parents,
+        ),
+        1 => run_profiled_at::<true, false>(
+            seed,
+            seed,
+            corpora,
+            weights,
+            settings,
+            locked,
+            control,
+            callback,
+            &mut profile,
+            None,
+            restart_offset,
+            Some(baseline),
+            run_sweeps,
+            parents,
+        ),
+        _ => run_profiled_at::<true, true>(
+            seed,
+            seed,
+            corpora,
+            weights,
+            settings,
+            locked,
+            control,
+            callback,
+            &mut profile,
+            None,
+            restart_offset,
+            Some(baseline),
+            run_sweeps,
+            parents,
+        ),
+    };
+    if let Some(started) = started {
+        profile.total = started.elapsed();
+        let mut report = Vec::new();
+        let _ = profile.report(&mut report, "joint epoch", level == 2);
+        crate::profile_output::write_report(&report);
+    }
+    result
 }
 
 pub(crate) fn run(
@@ -833,6 +1278,7 @@ pub(crate) fn run(
     control: &Control,
     callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
 ) -> ak::Result<Snapshot> {
+    let settings = &settings.for_actions();
     let level = match std::env::var("AKLER_PROFILE")
         .or_else(|_| std::env::var("LAYOUTER_PROFILE"))
         .as_deref()
@@ -893,6 +1339,264 @@ pub(crate) fn run(
         crate::profile_output::write_report(&report);
     }
     result
+}
+
+struct ParallelView {
+    snapshot: Snapshot,
+    report: Option<(Metrics, Raw, [f64; 4])>,
+}
+
+enum ParallelMessage {
+    Update {
+        worker: usize,
+        snapshot: Snapshot,
+        baseline: Metrics,
+        raw: Raw,
+        totals: [f64; 4],
+    },
+    Done {
+        worker: usize,
+        result: ak::Result<Snapshot>,
+    },
+    Panicked {
+        worker: usize,
+    },
+}
+
+fn merge_parallel_views(
+    seed: &ak::Layout,
+    settings: &SearchSettings,
+    views: &[Option<ParallelView>],
+    started: Instant,
+    finished: bool,
+) -> Option<(Snapshot, usize)> {
+    let populated: Vec<_> = views
+        .iter()
+        .enumerate()
+        .filter_map(|(worker, view)| view.as_ref().map(|view| (worker, view)))
+        .collect();
+    let &(winner, best_view) = populated.iter().min_by(|(a_worker, a), (b_worker, b)| {
+        // A feasible best always outranks a placeholder initial state. Stable
+        // arrangement and worker tie breaks keep aggregation deterministic.
+        b.snapshot
+            .has_best
+            .cmp(&a.snapshot.has_best)
+            .then_with(|| a.snapshot.best.score.total_cmp(&b.snapshot.best.score))
+            .then_with(|| a.snapshot.best.arr.cmp(&b.snapshot.best.arr))
+            .then_with(|| a_worker.cmp(b_worker))
+    })?;
+
+    let mut pool: Vec<_> = populated
+        .iter()
+        .flat_map(|(_, view)| view.snapshot.archive.iter().cloned())
+        .collect();
+    pool.sort_by(|a, b| a.score.total_cmp(&b.score).then_with(|| a.arr.cmp(&b.arr)));
+    let archive = diverse(
+        seed,
+        &pool,
+        settings.archive,
+        settings.diversity,
+        settings.design != "refine",
+    );
+    let mut progress = Progress {
+        phase: if finished {
+            "finished".into()
+        } else {
+            best_view.snapshot.progress.phase.clone()
+        },
+        restart: 0,
+        pass: 0,
+        evaluations: 0,
+        accepted: 0,
+        elapsed: started.elapsed().as_secs_f64(),
+        seed: settings.seed,
+    };
+    for (_, view) in &populated {
+        progress.restart = progress
+            .restart
+            .saturating_add(view.snapshot.progress.restart);
+        progress.pass = progress.pass.max(view.snapshot.progress.pass);
+        progress.evaluations = progress
+            .evaluations
+            .saturating_add(view.snapshot.progress.evaluations);
+        progress.accepted = progress
+            .accepted
+            .saturating_add(view.snapshot.progress.accepted);
+    }
+    Some((
+        Snapshot {
+            best: best_view.snapshot.best.clone(),
+            progress,
+            archive,
+            has_best: best_view.snapshot.has_best,
+        },
+        winner,
+    ))
+}
+
+/// Run independent restart groups concurrently. Each worker executes the
+/// existing serial search unchanged with its own caches and deterministic RNG
+/// seed; this coordinator only partitions restarts and merges snapshots.
+pub(crate) fn run_parallel(
+    original: &ak::Layout,
+    seed: &ak::Layout,
+    corpora: &[(ng::NgramCorpus, f64)],
+    weights: &Weights,
+    settings: &SearchSettings,
+    locked: &[bool],
+    control: &Control,
+    callback: &mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
+) -> ak::Result<Snapshot> {
+    let settings = &settings.for_actions();
+    let worker_count = crate::search_worker_count(settings);
+    let profiling = std::env::var("AKLER_PROFILE")
+        .or_else(|_| std::env::var("LAYOUTER_PROFILE"))
+        .is_ok_and(|level| matches!(level.as_str(), "1" | "2"));
+    if worker_count <= 1 || profiling {
+        return run(
+            original, seed, corpora, weights, settings, locked, control, callback,
+        );
+    }
+
+    validate_search_settings(settings).map_err(|error| error.to_string())?;
+    let started = Instant::now();
+    let mut views: Vec<Option<ParallelView>> = (0..worker_count).map(|_| None).collect();
+    let mut results: Vec<Option<ak::Result<Snapshot>>> = (0..worker_count).map(|_| None).collect();
+    let mut panicked = vec![false; worker_count];
+    let (tx, rx) = mpsc::channel();
+
+    thread::scope(|scope| {
+        for worker in 0..worker_count {
+            let tx = tx.clone();
+            let mut worker_settings = settings.clone();
+            worker_settings.restarts = settings.restarts / worker_count
+                + usize::from(worker < settings.restarts % worker_count);
+            worker_settings.seed = crate::worker_seed(settings.seed, worker);
+            let restart_offset = worker * (settings.restarts / worker_count)
+                + worker.min(settings.restarts % worker_count);
+            scope.spawn(move || {
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut send_update = |snapshot, baseline, raw, totals| {
+                        let _ = tx.send(ParallelMessage::Update {
+                            worker,
+                            snapshot,
+                            baseline,
+                            raw,
+                            totals,
+                        });
+                    };
+                    run_profiled_at::<false, false>(
+                        original,
+                        seed,
+                        corpora,
+                        weights,
+                        &worker_settings,
+                        locked,
+                        control,
+                        &mut send_update,
+                        &mut Profile::default(),
+                        Some(started),
+                        restart_offset,
+                        None,
+                        true,
+                        &[],
+                    )
+                }));
+                let message = match outcome {
+                    Ok(result) => ParallelMessage::Done { worker, result },
+                    Err(_) => ParallelMessage::Panicked { worker },
+                };
+                let _ = tx.send(message);
+            });
+        }
+        drop(tx);
+
+        loop {
+            let message = match rx.recv() {
+                Ok(message) => message,
+                Err(_) => break,
+            };
+            match message {
+                ParallelMessage::Update {
+                    worker,
+                    snapshot,
+                    baseline,
+                    raw,
+                    totals,
+                } => {
+                    views[worker] = Some(ParallelView {
+                        snapshot,
+                        report: Some((baseline, raw, totals)),
+                    });
+                    if let Some((merged, winner)) =
+                        merge_parallel_views(seed, settings, &views, started, false)
+                    {
+                        if let Some((baseline, raw, totals)) =
+                            views[winner].as_ref().and_then(|view| view.report.clone())
+                        {
+                            callback(merged, baseline, raw, totals);
+                        }
+                    }
+                }
+                ParallelMessage::Done { worker, result } => {
+                    if let Ok(snapshot) = &result {
+                        if let Some(view) = &mut views[worker] {
+                            view.snapshot = snapshot.clone();
+                        } else {
+                            views[worker] = Some(ParallelView {
+                                snapshot: snapshot.clone(),
+                                report: None,
+                            });
+                        }
+                    } else {
+                        control.cancel.store(true, Ordering::Relaxed);
+                    }
+                    results[worker] = Some(result);
+                }
+                ParallelMessage::Panicked { worker } => {
+                    panicked[worker] = true;
+                    control.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+    });
+
+    if panicked.iter().any(|&value| value) {
+        return Err("action search worker panicked".into());
+    }
+    let mut cancelled = false;
+    let mut error = None;
+    for result in results.into_iter().flatten() {
+        if let Err(worker_error) = result {
+            if worker_error == "cancelled" {
+                cancelled = true;
+            } else if error.is_none() {
+                error = Some(worker_error);
+            }
+        }
+    }
+    if let Some(error) = error {
+        return Err(error);
+    }
+    let Some((mut snapshot, winner)) = merge_parallel_views(seed, settings, &views, started, true)
+    else {
+        return Err(if cancelled {
+            "cancelled".into()
+        } else {
+            "action search workers exited without a result".into()
+        });
+    };
+    if control.cancel.load(Ordering::Relaxed) {
+        snapshot.progress.phase = "stopped".into();
+    } else if settings.seconds > 0.0 && started.elapsed().as_secs_f64() >= settings.seconds {
+        snapshot.progress.phase = "time limit".into();
+    }
+    if let Some((baseline, raw, totals)) =
+        views[winner].as_ref().and_then(|view| view.report.clone())
+    {
+        callback(snapshot.clone(), baseline, raw, totals);
+    }
+    Ok(snapshot)
 }
 
 #[cfg(test)]
@@ -1016,6 +1720,105 @@ mod tests {
     }
 
     #[test]
+    fn parallel_restart_groups_merge_exact_scores_progress_and_locks() {
+        let seed = layout();
+        let weights = Weights::default();
+        let corpora = vec![(corpus("parallel.json", b"aa aq hr rh aqr qra! aa hr"), 1.0)];
+        let locked = locks(&seed);
+        let serial_settings = SearchSettings {
+            workers: 1,
+            restarts: 4,
+            ..settings()
+        };
+        let serial = run_parallel(
+            &seed,
+            &seed,
+            &corpora,
+            &weights,
+            &serial_settings,
+            &locked,
+            &Control::new(),
+            &mut quiet,
+        )
+        .unwrap();
+        assert!(serial.has_best);
+        assert_eq!(serial.progress.restart, serial_settings.restarts);
+        assert!(serial.progress.evaluations > 0);
+
+        let settings = SearchSettings {
+            workers: 2,
+            restarts: 4,
+            ..settings()
+        };
+        let mut reported = None;
+        let mut callback = |snapshot: Snapshot, _: Metrics, raw: Raw, totals: [f64; 4]| {
+            if snapshot.has_best {
+                assert_eq!(
+                    snapshot.best.score.to_bits(),
+                    objective(&metrics_totals(&raw, &totals), &weights, &settings).to_bits()
+                );
+            }
+            reported = Some(snapshot);
+        };
+        let result = run_parallel(
+            &seed,
+            &seed,
+            &corpora,
+            &weights,
+            &settings,
+            &locked,
+            &Control::new(),
+            &mut callback,
+        )
+        .unwrap();
+        assert!(result.has_best);
+        assert_eq!(result.progress.restart, settings.restarts);
+        assert!(result.progress.evaluations > 0);
+        let reported = reported.unwrap();
+        assert_eq!(reported.best.arr, result.best.arr);
+        assert_eq!(reported.best.score.to_bits(), result.best.score.to_bits());
+
+        let effort = LocalEffort::new(&seed, &weights);
+        let mut cache = ng::Incremental::new_with_policy(
+            &corpora[0].0,
+            &seed,
+            Geometry::with_rolls(physical_keys(&seed), weights.rolls()),
+            &AtomicBool::new(false),
+            weights.alts(),
+            weights.combo_policy(),
+            |a, b, key| effort.get(a, b, key),
+        )
+        .unwrap();
+        for candidate in std::iter::once(&result.best).chain(result.archive.iter()) {
+            cache
+                .restore(
+                    &candidate.arr,
+                    None,
+                    &AtomicBool::new(false),
+                    |a, b, key| effort.get(a, b, key),
+                )
+                .unwrap();
+            assert_eq!(
+                candidate.score.to_bits(),
+                objective(&cache.metrics(), &weights, &settings).to_bits()
+            );
+            for (slot, &is_locked) in locked.iter().enumerate() {
+                if is_locked {
+                    assert_eq!(candidate.arr[slot], slot);
+                }
+            }
+        }
+        assert!(result.archive.len() <= settings.archive);
+        for (i, candidate) in result.archive.iter().enumerate() {
+            assert!(!result.archive[..i].iter().any(|other| same_visible(
+                &seed,
+                &other.arr,
+                &candidate.arr
+            )));
+        }
+    }
+
+    #[test]
     fn configured_objectives_and_normalized_mixture_use_numeric_totals() {
         let seed = layout();
         let mut weights = Weights::default();
@@ -1027,10 +1830,9 @@ mod tests {
             (corpus("first.json", b"aa aq hr rh aqr qra"), 1.0),
             (corpus("second.json", b"hhh rrr ar ar qr"), 3.0),
         ];
-        weights.2 =
-            mana2_metrics::Weights::from_text("sfbw = [-11]\npinkyringcurl = [0]\n").unwrap();
+        weights.2 = mana2_metrics::Weights::from_text("sfb = -23\n").unwrap();
         let locked = vec![true; seed.slots.len()];
-        for mode in ["detailed", "mana2", "simple"] {
+        for mode in ["normal", "aklgg"] {
             let settings = SearchSettings {
                 mode: mode.into(),
                 ..settings()
@@ -1049,7 +1851,7 @@ mod tests {
                     .unwrap();
                     let score = if settings.uses_mana2_stats() {
                         cache.enable_mana2();
-                        cache.physical_score(&weights, mode)
+                        cache.physical_score(&weights)
                     } else {
                         objective(&cache.metrics(), &weights, &settings)
                     };
@@ -1146,6 +1948,22 @@ mod tests {
             &control,
             &mut quiet,
             &mut Profile::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error, "cancelled");
+
+        let mut parallel_settings = settings();
+        parallel_settings.workers = 2;
+        let error = run_parallel(
+            &seed,
+            &seed,
+            &corpora,
+            &weights,
+            &parallel_settings,
+            &locks(&seed),
+            &control,
+            &mut quiet,
         )
         .err()
         .unwrap();
@@ -1256,6 +2074,8 @@ mod tests {
                 effort,
                 caches: vec![cache],
                 proposals: vec![ng::Proposal::new()],
+                screening: false,
+                soft_caps: false,
             };
             let identity: Vec<_> = (0..seed.slots.len()).collect();
             let initial = problem.current(identity.clone());
@@ -1267,6 +2087,10 @@ mod tests {
                 &mut quiet,
                 &mut Profile::default(),
                 vec![identity.clone()],
+                Instant::now(),
+                0,
+                true,
+                &[],
             )
             .unwrap();
             assert!(result.archive.len() <= settings.archive);
@@ -1291,5 +2115,42 @@ mod tests {
         let mut altered = moved;
         altered.slots[0].finger = 3;
         assert!(permutation(&seed, &altered).is_none());
+    }
+
+    #[test]
+    fn letter_arrangements_see_through_refit_swaps_and_rules() {
+        let seed = ak::Layout::parse(
+            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\nswap h ar\n",
+            Path::new("inline-letter-arrangement.dat"),
+        )
+        .unwrap();
+        let slot = |layout: &ak::Layout, label: &str| {
+            layout
+                .slots
+                .iter()
+                .position(|slot| slot.label == label)
+                .unwrap()
+        };
+        let mut arr: Vec<_> = (0..seed.slots.len()).collect();
+        arr.swap(slot(&seed, "a"), slot(&seed, "e"));
+        arr.swap(slot(&seed, "@"), slot(&seed, "q"));
+        let moved = arrangement(&seed, &arr);
+        // A refit drops the swap for another and changes the magic rules: the
+        // keys type the same letters, so the arrangement is the same.
+        let (bare, _) = crate::swap_fit::split(&moved);
+        let swap = crate::swap_fit::Swap {
+            context: b't',
+            a: b'a',
+            b: b'e',
+        };
+        let mut refit = crate::swap_fit::install(&bare, &[swap]);
+        if let Some(ak::Action::Rules { rules, .. }) = refit.actions.get_mut("@") {
+            rules.insert(b"i".to_vec(), ak::Emission::Text(b"o".to_vec()));
+        }
+        assert!(permutation(&seed, &refit).is_none());
+        assert_eq!(letter_arrangement(&seed, &refit), Some(arr));
+        let mut altered = refit;
+        altered.slots[0].finger = 3;
+        assert!(letter_arrangement(&seed, &altered).is_none());
     }
 }
