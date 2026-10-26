@@ -3,7 +3,6 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::{Path, PathBuf},
-    process::Command,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc,
@@ -11,6 +10,10 @@ use std::{
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+// WASI hosts have no stty or process restart (`HostTerminal`).
+#[cfg(not(target_os = "wasi"))]
+use std::process::Command;
 
 include!("model.rs");
 
@@ -76,5 +79,13 @@ mod magic_rule_fit;
 include!("magic_ui.rs");
 
 include!("scissor_test.rs");
+
+// Threaded WebAssembly builds recycle small blocks per thread (`wasm_alloc`).
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+mod wasm_alloc;
+
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+#[global_allocator]
+static ALLOCATOR: wasm_alloc::Allocator = wasm_alloc::Allocator;
 
 mod magic_archive;

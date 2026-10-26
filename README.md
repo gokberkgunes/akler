@@ -18,6 +18,8 @@ A corpus is included. To add your own, put text in `corpus/raw/` and use
 **Corpora → Import text corpus**. Layouts live in `layouts/`; the format is
 detected from file contents. Settings live in [akler.conf](akler.conf).
 
+To run akler in a web browser, see [web/README.md](web/README.md).
+
 ## Documentation
 
 - [Usage, settings and corpora](doc/USAGE.md)

@@ -18,7 +18,7 @@ fn weakness_choose(term: &mut Terminal, data: &RankingData) -> AppResult<Option<
         .iter()
         .map(|&i| data.rows[i].name().to_owned())
         .collect::<Vec<_>>();
-    Ok(menu(term, "Weakness report: layout", &labels)?.map(|i| order[i]))
+    Ok(search_menu(term, "Weakness report: layout", &labels)?.map(|i| order[i]))
 }
 
 fn weakness_bound_action(

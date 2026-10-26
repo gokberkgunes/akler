@@ -218,6 +218,39 @@ fn scissor_pairs(layout: &action_keys::Layout) -> Vec<(usize, usize)> {
     pairs
 }
 
+/// A ready word list, most frequent first, one per line, used instead of raw
+/// text when present. Web builds ship it (`akler scissor-words`).
+const SCISSOR_WORD_LIST: &str = "corpus/scissor-words.txt";
+
+/// The word list or raw text words come from, and its words.
+fn scissor_source() -> AppResult<(PathBuf, Vec<Vec<u8>>)> {
+    let list = Path::new(SCISSOR_WORD_LIST);
+    if list.is_file() {
+        let text = fs::read(list).map_err(|error| format!("{}: {error}", list.display()))?;
+        let words = text
+            .split(|&byte| byte == b'\n')
+            .filter(|word| !word.is_empty())
+            .map(<[u8]>::to_vec)
+            .collect();
+        return Ok((list.to_owned(), words));
+    }
+    let path = scissor_text_path()?;
+    let words = scissor_vocabulary(&path)?;
+    Ok((path, words))
+}
+
+/// `akler scissor-words`: print the raw text's word list for `SCISSOR_WORD_LIST`.
+fn scissor_words_command() -> AppResult<()> {
+    let words = scissor_vocabulary(&scissor_text_path()?)?;
+    let mut out = BufWriter::new(io::stdout().lock());
+    for word in words {
+        out.write_all(&word)?;
+        out.write_all(b"\n")?;
+    }
+    out.flush()?;
+    Ok(())
+}
+
 /// The default corpus's raw text, or any raw text.
 fn scissor_text_path() -> AppResult<PathBuf> {
     let preferred = Path::new(RAW_CORPUS_DIR).join("reddit.txt");
@@ -297,7 +330,7 @@ fn scissor_words(
     vocabulary: &[Vec<u8>],
     pairs: &[(usize, usize)],
 ) -> Vec<Vec<String>> {
-    let threads = thread::available_parallelism().map_or(1, |threads| threads.get());
+    let threads = available_threads();
     let chunk = vocabulary.len().div_ceil(threads).max(1);
     // Each word's consecutive presses, in vocabulary order.
     let presses: Vec<Vec<(usize, usize)>> = thread::scope(|scope| {
@@ -680,7 +713,7 @@ fn scissor_trial(
 fn scissor_test(term: &mut Terminal) -> AppResult<()> {
     let paths = discover_layouts(Path::new(LAYOUT_DIR))?;
     let names: Vec<_> = paths.iter().map(|path| layout_file_label(path)).collect();
-    let Some(index) = menu(term, "Scissor test: layout you type on", &names)? else {
+    let Some(index) = search_menu(term, "Scissor test: layout you type on", &names)? else {
         return Ok(());
     };
     let path = &paths[index];
@@ -689,19 +722,13 @@ fn scissor_test(term: &mut Terminal) -> AppResult<()> {
         .file_stem()
         .map_or_else(|| "layout".into(), |stem| stem.to_string_lossy().into_owned());
 
-    let text_path = scissor_text_path()?;
     let mut canvas = Canvas::new(term.width(), term.size.1.max(12));
-    canvas.text(
-        2,
-        1,
-        &format!("Finding words for each key pair in {} …", text_path.display()),
-        MUTED,
-    );
+    canvas.text(2, 1, "Finding words for each key pair …", MUTED);
     term.present(&canvas, 0)?;
+    let (_, vocabulary) = scissor_source()?;
     let weights = load_weights(Path::new(WEIGHTS_FILE))?;
     let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
     let keys = scissor_pairs(&layout);
-    let vocabulary = scissor_vocabulary(&text_path)?;
     let words = scissor_words(&layout, &effort, &vocabulary, &keys);
     let mut pairs: Vec<ScissorPair> = keys
         .iter()

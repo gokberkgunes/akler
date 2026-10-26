@@ -496,6 +496,12 @@ fn home_items(tab: usize) -> &'static [(usize, &'static str, &'static str)] {
     }
 }
 
+// A browser page has nowhere to return to, so its home menu stays open.
+#[cfg(not(target_os = "wasi"))]
+const HOME_FOOTER: &str = "? Help   q Quit";
+#[cfg(target_os = "wasi")]
+const HOME_FOOTER: &str = "? Help";
+
 fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usize>> {
     loop {
         term.refresh_size()?;
@@ -559,7 +565,7 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
         }
 
         if height > 1 {
-            canvas.text(2, footer, "? Help   q Quit", MUTED);
+            canvas.text(2, footer, HOME_FOOTER, MUTED);
         }
         term.present(&canvas, 0)?;
 
@@ -595,11 +601,15 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
                     "h l / ← →\tSwitch section".into(),
                     "j k / ↑ ↓\tSelect".into(),
                     "Enter\tOpen".into(),
+                    #[cfg(not(target_os = "wasi"))]
                     "R\tReload program".into(),
+                    #[cfg(not(target_os = "wasi"))]
                     "q\tQuit".into(),
                 ],
             )?,
+            #[cfg(not(target_os = "wasi"))]
             Event::Char('R') => return Ok(Some(7)),
+            #[cfg(not(target_os = "wasi"))]
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
             _ => {}
         }
@@ -795,7 +805,7 @@ fn tui_mode(
             let paths = discover_layouts(Path::new(LAYOUT_DIR))?;
             let mut names: Vec<_> = paths.iter().map(|path| layout_file_label(path)).collect();
             names.push("Reload corpus snapshot".into());
-            match menu(term, "Layouts", &names)? {
+            match search_menu(term, "Layouts", &names)? {
                 Some(index) if index == paths.len() => {
                     session.invalidate();
                     continue;
@@ -893,6 +903,21 @@ fn restart_program(path: &Path, arguments: &[std::ffi::OsString]) -> AppResult<(
     Err(format!("cannot reload {}: {error}", path.display()).into())
 }
 
+#[cfg(not(unix))]
+fn restart_program(_: &Path, _: &[std::ffi::OsString]) -> AppResult<()> {
+    Err("reloading the program is not available on this platform".into())
+}
+
+/// Threads to use by default. WASI reports one, so web hosts pass their
+/// core count as `AKLER_THREADS`.
+fn available_threads() -> usize {
+    std::env::var("AKLER_THREADS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|&threads| threads > 0)
+        .unwrap_or_else(|| thread::available_parallelism().map_or(1, |threads| threads.get()))
+}
+
 fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
     let os_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let resume_ranker = if os_args
@@ -922,6 +947,7 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
                 return Ok(None);
             }
             "corpus" => return corpus_command(&args[1..]).map(|_| None),
+            "scissor-words" => return scissor_words_command().map(|_| None),
             "bench" => return crate::bench::command(&args[1..]).map(|_| None),
             "import" => {
                 let mut rest = vec!["add".to_string()];
@@ -1025,6 +1051,13 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
 }
 
 fn main() {
+    // Web hosts bundle the data directory under their own root.
+    if let Some(home) = std::env::var_os("AKLER_HOME") {
+        if let Err(error) = std::env::set_current_dir(&home) {
+            eprintln!("cannot enter AKLER_HOME {}: {error}", Path::new(&home).display());
+            std::process::exit(1);
+        }
+    }
     let resuming_ranker =
         std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--resume-ranker"));
     let action_outcome = if resuming_ranker {

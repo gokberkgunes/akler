@@ -312,6 +312,8 @@ enum Event {
     },
     Wheel(i32),
     Paste(String),
+    /// A host terminal's size, columns then rows (`CSI 8 ; rows ; cols t`).
+    Resize(usize, usize),
 }
 
 #[derive(Default)]
@@ -411,6 +413,15 @@ impl Decoder {
                 motion: cb & 32 != 0,
             });
         }
+        // WASI hosts report their size on start and on every resize.
+        if last == b't' && seq.starts_with(b"\x1b[8;") {
+            let text = std::str::from_utf8(&seq[4..seq.len() - 1]).ok()?;
+            let v: Vec<usize> = text.split(';').filter_map(|s| s.parse().ok()).collect();
+            return Some(match v[..] {
+                [rows, cols] if rows > 0 && cols > 0 => Event::Resize(cols, rows),
+                _ => Event::Tick,
+            });
+        }
         Some(match last {
             b'A' => Event::Up,
             b'B' => Event::Down,
@@ -430,11 +441,74 @@ impl Decoder {
     }
 }
 
+/// A WASI host's terminal, such as xterm.js in a browser: already raw, with
+/// keys on stdin and the screen on stdout. A thread reads stdin so that a
+/// quiet keyboard still yields ticks, as `stty time 1` does natively.
+#[cfg(target_os = "wasi")]
+struct HostTerminal {
+    keys: mpsc::Receiver<Vec<u8>>,
+    pending: Vec<u8>,
+}
+
+#[cfg(target_os = "wasi")]
+impl HostTerminal {
+    fn new() -> Self {
+        let (send, keys) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buf = [0; 4096];
+            while let Ok(n @ 1..) = io::stdin().read(&mut buf) {
+                if send.send(buf[..n].to_vec()).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            keys,
+            pending: Vec::new(),
+        }
+    }
+}
+
+#[cfg(target_os = "wasi")]
+impl Read for HostTerminal {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.pending.is_empty() {
+            match self.keys.recv_timeout(Duration::from_millis(100)) {
+                Ok(bytes) => self.pending = bytes,
+                Err(_) => return Ok(0),
+            }
+        }
+        let n = buf.len().min(self.pending.len());
+        buf[..n].copy_from_slice(&self.pending[..n]);
+        self.pending.drain(..n);
+        Ok(n)
+    }
+}
+
+#[cfg(target_os = "wasi")]
+impl Write for HostTerminal {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        io::stdout().write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
+
+#[cfg(not(target_os = "wasi"))]
+type TerminalIo = File;
+
+#[cfg(target_os = "wasi")]
+type TerminalIo = HostTerminal;
+
 struct Terminal {
-    tty: File,
+    tty: TerminalIo,
+    #[cfg_attr(target_os = "wasi", allow(dead_code))]
     saved: String,
     decoder: Decoder,
     size: (usize, usize),
+    #[cfg_attr(target_os = "wasi", allow(dead_code))]
     size_at: Instant,
     previous: Vec<Cell>,
     offset_x: usize,
@@ -450,7 +524,8 @@ struct Terminal {
 }
 
 impl Terminal {
-    fn open() -> AppResult<Self> {
+    #[cfg(not(target_os = "wasi"))]
+    fn open_io() -> AppResult<(TerminalIo, String)> {
         let tty = OpenOptions::new().read(true).write(true).open("/dev/tty")?;
         let out = Command::new("stty")
             .arg("-g")
@@ -460,7 +535,6 @@ impl Terminal {
             return Err("cannot read terminal state from /dev/tty".into());
         }
         let saved = String::from_utf8(out.stdout)?.trim().to_string();
-        let reports = crate::profile_output::TerminalReports::begin();
         let status = Command::new("stty")
             .args(["raw", "-echo", "min", "0", "time", "1"])
             .stdin(tty.try_clone()?)
@@ -468,11 +542,28 @@ impl Terminal {
         if !status.success() {
             return Err("cannot enter terminal raw mode".into());
         }
+        Ok((tty, saved))
+    }
+
+    #[cfg(target_os = "wasi")]
+    fn open_io() -> AppResult<(TerminalIo, String)> {
+        Ok((HostTerminal::new(), String::new()))
+    }
+
+    fn open() -> AppResult<Self> {
+        let reports = crate::profile_output::TerminalReports::begin();
+        let (tty, saved) = Self::open_io()?;
+        // Until a WASI host reports its size, take the conventional variables.
+        let variable = |name: &str| std::env::var(name).ok().and_then(|v| v.parse().ok());
+        let size = (
+            variable("COLUMNS").unwrap_or(80usize).clamp(1, 1000),
+            variable("LINES").unwrap_or(24usize).clamp(1, 500),
+        );
         let mut t = Self {
             tty,
             saved,
             decoder: Decoder::default(),
-            size: (80, 24),
+            size,
             size_at: Instant::now() - Duration::from_secs(2),
             previous: Vec::new(),
             offset_x: 0,
@@ -504,6 +595,13 @@ impl Terminal {
         }
     }
 
+    #[cfg(target_os = "wasi")]
+    fn refresh_size(&mut self) -> AppResult<()> {
+        // The host reports its size as input (`Event::Resize`).
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "wasi"))]
     fn refresh_size(&mut self) -> AppResult<()> {
         if self.size_at.elapsed() < Duration::from_millis(500) {
             return Ok(());
@@ -531,6 +629,9 @@ impl Terminal {
     }
 
     fn request_restart(&mut self) -> AppResult<()> {
+        if cfg!(target_os = "wasi") {
+            return Err("Reloading the program is not available here; reload the page instead.".into());
+        }
         restart_program_path()?;
         self.restart_arguments = if std::env::args_os().nth(1).as_deref()
             == Some(std::ffi::OsStr::new("--resume-ranker"))
@@ -593,6 +694,17 @@ impl Terminal {
     }
 
     fn visible_event(&mut self, e: Event) -> Event {
+        if let Event::Resize(columns, rows) = e {
+            let size = (columns.min(1000), rows.min(500));
+            if size != self.size {
+                self.previous.clear();
+                self.size = size;
+            }
+            return Event::Tick;
+        }
+        // In a browser Ctrl-C only backs out, since quitting ends the page.
+        #[cfg(target_os = "wasi")]
+        let e = if e == Event::Quit { Event::Escape } else { e };
         if e == Event::Quit {
             self.quitting = true;
         }
@@ -704,6 +816,7 @@ impl Drop for Terminal {
             b"\x1b[0m\x1b[?1002l\x1b[?1000l\x1b[?1006l\x1b[?2004l\x1b[?25h\x1b[?7h\x1b[?1049l",
         );
         let _ = self.tty.flush();
+        #[cfg(not(target_os = "wasi"))]
         if let Ok(f) = self.tty.try_clone() {
             let _ = Command::new("stty").arg(&self.saved).stdin(f).status();
         }
@@ -2526,7 +2639,71 @@ fn confirm_box(term: &mut Terminal, title: &str, subject: &str, verb: &str) -> A
     }
 }
 
+/// Scores `text` as a fuzzy match for `query`: every query character must
+/// appear in order. Runs and word starts score higher; returns the score and
+/// the matched character positions.
+fn fuzzy_match(query: &str, text: &str) -> Option<(i32, Vec<usize>)> {
+    let query: Vec<char> = query.to_lowercase().chars().filter(|c| *c != ' ').collect();
+    let text: Vec<char> = text.to_lowercase().chars().collect();
+    let Some(&first) = query.first() else {
+        return Some((0, Vec::new()));
+    };
+    let mut best: Option<(i32, Vec<usize>)> = None;
+    // Matching greedily from each place the first character occurs finds a
+    // later contiguous run that a single leftmost pass would miss.
+    for start in (0..text.len()).filter(|&i| text[i] == first) {
+        let mut positions = vec![start];
+        for &q in &query[1..] {
+            let from = positions[positions.len() - 1] + 1;
+            match text[from..].iter().position(|&c| c == q) {
+                Some(offset) => positions.push(from + offset),
+                None => break,
+            }
+        }
+        if positions.len() < query.len() {
+            break;
+        }
+        let score = positions
+            .iter()
+            .enumerate()
+            .map(|(n, &at)| {
+                let boundary = at == 0 || !text[at - 1].is_alphanumeric();
+                if n > 0 && positions[n - 1] + 1 == at {
+                    8
+                } else if boundary {
+                    6
+                } else {
+                    1
+                }
+            })
+            .sum::<i32>()
+            - (positions[positions.len() - 1] - start) as i32 / 4;
+        if best.as_ref().is_none_or(|(top, _)| score > *top) {
+            best = Some((score, positions));
+        }
+    }
+    best
+}
+
 fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<usize>> {
+    menu_with(term, title, items, false)
+}
+
+/// A menu that opens with a fuzzy search: typing filters at once.
+pub(crate) fn search_menu(
+    term: &mut Terminal,
+    title: &str,
+    items: &[String],
+) -> AppResult<Option<usize>> {
+    menu_with(term, title, items, true)
+}
+
+fn menu_with(
+    term: &mut Terminal,
+    title: &str,
+    items: &[String],
+    search: bool,
+) -> AppResult<Option<usize>> {
     if items.is_empty() {
         return Ok(None);
     }
@@ -2534,19 +2711,34 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
     let mut query = String::new();
     let mut scroll = 0usize;
     loop {
-        let filtered: Vec<usize> = items
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.to_ascii_lowercase().contains(&query.to_ascii_lowercase()))
-            .map(|(i, _)| i)
-            .collect();
+        let mut matches: Vec<(usize, i32, Vec<usize>)> = if search {
+            items
+                .iter()
+                .enumerate()
+                .filter_map(|(i, s)| fuzzy_match(&query, s).map(|(score, at)| (i, score, at)))
+                .collect()
+        } else {
+            items
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.to_ascii_lowercase().contains(&query.to_ascii_lowercase()))
+                .map(|(i, _)| (i, 0, Vec::new()))
+                .collect()
+        };
+        matches.sort_by_key(|&(i, score, _)| (-score, i));
+        let filtered: Vec<usize> = matches.iter().map(|(i, _, _)| *i).collect();
         if selected >= filtered.len() {
             selected = filtered.len().saturating_sub(1);
         }
-        let top = if query.is_empty() { 2 } else { 3 };
-        let mut c = Canvas::new(term.width(), filtered.len() + top + 1);
+        let top = if query.is_empty() && !search { 2 } else { 3 };
+        let mut c = Canvas::new(term.width(), filtered.len().max(1) + top + 1);
         c.text(0, 0, title, FG);
-        if !query.is_empty() {
+        if search {
+            c.text(0, 1, &short(&format!("> {query}▏"), c.w), BLUE);
+            if filtered.is_empty() {
+                c.text(3, top, "No matches", MUTED);
+            }
+        } else if !query.is_empty() {
             c.text(0, 1, &format!("/{}", query), BLUE);
         }
         for (row, &i) in filtered.iter().enumerate() {
@@ -2564,6 +2756,12 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
                 &short(&items[i], c.w.saturating_sub(4)),
                 if active { BLUE } else { FG },
             );
+            let width = c.w.saturating_sub(5);
+            for &at in matches[row].2.iter().filter(|&&at| at < width) {
+                if let Some(ch) = items[i].chars().nth(at) {
+                    c.text(3 + at, yy, &ch.to_string(), YELLOW);
+                }
+            }
             c.hit(
                 Rect {
                     x: 0,
@@ -2574,7 +2772,16 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
                 Action::Item(i),
             );
         }
-        c.text(0, filtered.len() + top, "? help", MUTED);
+        c.text(
+            0,
+            filtered.len().max(1) + top,
+            if search {
+                "Type to search · ↑↓ select · Enter open · Esc back"
+            } else {
+                "? help"
+            },
+            MUTED,
+        );
         term.present(&c, scroll)?;
         let e = term.event()?;
         if scroll_event(&e, &mut scroll, c.h, term.size.1) {
@@ -2582,6 +2789,26 @@ fn menu(term: &mut Terminal, title: &str, items: &[String]) -> AppResult<Option<
         }
         if let Some(Action::Item(i)) = action_press(term, &c, &e, scroll) {
             return Ok(Some(i));
+        }
+        if search {
+            let typed = match &e {
+                Event::Char(ch) => {
+                    query.push(*ch);
+                    true
+                }
+                Event::Paste(text) => {
+                    query.extend(text.chars().filter(|c| !c.is_control()).take(80));
+                    true
+                }
+                Event::Backspace => query.pop().is_some(),
+                Event::Clear => !std::mem::take(&mut query).is_empty(),
+                _ => false,
+            };
+            if typed {
+                selected = 0;
+                scroll = 0;
+                continue;
+            }
         }
         match e {
             Event::Enter => {
@@ -2650,7 +2877,7 @@ fn choose_path(
             }
         })
         .collect();
-    Ok(menu(term, title, &names)?.map(|i| paths[i].clone()))
+    Ok(menu_with(term, title, &names, dir == LAYOUT_DIR)?.map(|i| paths[i].clone()))
 }
 
 fn show_corpus_info(term: &mut Terminal, c: &Corpus) -> AppResult<()> {
@@ -5389,5 +5616,26 @@ fn workspace_tabs_at(canvas: &mut Canvas, y: usize, active: usize, labels: &[&st
             );
         }
         x += width;
+    }
+}
+
+#[cfg(test)]
+mod fuzzy_match_tests {
+    use super::fuzzy_match;
+
+    #[test]
+    fn matches_characters_in_order_and_ignores_case() {
+        assert_eq!(fuzzy_match("FNC", "finch").map(|m| m.1), Some(vec![0, 2, 3]));
+        assert!(fuzzy_match("cnf", "finch").is_none());
+        assert!(fuzzy_match("", "anything").is_some());
+    }
+
+    #[test]
+    fn ranks_runs_and_word_starts_above_scattered_letters() {
+        let score = |query, text| fuzzy_match(query, text).unwrap().0;
+        assert!(score("gr", "graphite") > score("gr", "magnetar"));
+        assert!(score("nt", "night") < score("nt", "ntx"));
+        // A later contiguous run beats the leftmost scattered match.
+        assert_eq!(fuzzy_match("ast", "a yeast").map(|m| m.1), Some(vec![4, 5, 6]));
     }
 }

@@ -79,7 +79,7 @@ fn search_worker_count(settings: &SearchSettings) -> usize {
         return 1;
     }
     let requested = if settings.workers == 0 {
-        thread::available_parallelism().map_or(1, |count| count.get())
+        available_threads()
     } else {
         settings.workers
     };

@@ -357,10 +357,7 @@ impl Default for CorpusConfig {
             separator: b' ',
             min_length: 1,
             order: DEFAULT_ORDER,
-            jobs: thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(1)
-                .min(4),
+            jobs: available_threads().min(4),
         }
     }
 }

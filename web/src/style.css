@@ -1,0 +1,144 @@
+@font-face {
+  font-family: "GohuFont";
+  src: url("fonts/GohuFont-14.woff2") format("woff2");
+  font-display: block;
+}
+
+@font-face {
+  font-family: "GohuFont";
+  src: url("fonts/GohuFont-14-Bold.woff2") format("woff2");
+  font-weight: bold;
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Serious Shanns";
+  src: url("fonts/SeriousShanns-Regular.otf") format("opentype");
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Comic Mono";
+  src: url("fonts/ComicMono.ttf") format("truetype");
+  font-display: block;
+}
+
+:root {
+  --bg: #121212;
+  --panel: #1c1c1c;
+  --fg: #d0d0d0;
+  --muted: #8a8a8a;
+  --accent: #5fafd7;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid #2a2a2a;
+}
+
+header .name {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+#status {
+  flex: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button,
+select {
+  background: #2a2a2a;
+  color: var(--fg);
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover,
+select:hover {
+  border-color: var(--accent);
+}
+
+#terminal {
+  flex: 1;
+  min-height: 0;
+  padding: 6px 0 0 8px;
+}
+
+dialog {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  min-width: min(480px, 90vw);
+  max-height: 80vh;
+}
+
+dialog h2 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+dialog p {
+  color: var(--muted);
+  margin: 0 0 12px;
+}
+
+#files-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 12px;
+  max-height: 55vh;
+  overflow: auto;
+}
+
+#files-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 0;
+}
+
+#files-list a {
+  color: var(--accent);
+}
+
+#files-list .size {
+  color: var(--muted);
+}
+
+@media (max-width: 640px) {
+  header {
+    padding: 6px 16px;
+    flex-wrap: wrap;
+  }
+}

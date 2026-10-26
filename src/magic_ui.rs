@@ -10,7 +10,7 @@ fn magic_designer_main(term: &mut Terminal) -> AppResult<()> {
         .iter()
         .map(|&i| data.rows[i].name().to_owned())
         .collect();
-    if let Some(index) = menu(term, "Magic designer: layout", &names)? {
+    if let Some(index) = search_menu(term, "Magic designer: layout", &names)? {
         magic_design_open(term, &data, order[index])?;
     }
     Ok(())
