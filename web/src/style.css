@@ -1,4 +1,17 @@
 @font-face {
+  font-family: "Monocraft";
+  src: url("fonts/Monocraft.otf") format("opentype");
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Monocraft";
+  src: url("fonts/Monocraft-Bold.otf") format("opentype");
+  font-weight: bold;
+  font-display: block;
+}
+
+@font-face {
   font-family: "GohuFont";
   src: url("fonts/GohuFont-14.woff2") format("woff2");
   font-display: block;

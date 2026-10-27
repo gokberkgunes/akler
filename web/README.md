@@ -48,8 +48,8 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
 - Changed settings, layouts, scissor results and optimizer output are saved in
   the browser (IndexedDB) and restored on the next visit. **Files** downloads
   them, **Upload layouts** adds layout files, **Reset** forgets them.
-- The font menu in the top bar switches between Serious Shanns (default), Gohu
-  and Comic Mono; the choice is remembered. Gohu is a bitmap font, converted
+- The font menu in the top bar switches between Monocraft (default), Serious
+  Shanns, Gohu and Comic Mono; the choice is remembered. Gohu is a bitmap font, converted
   from `src/fonts/gohufont-uni-14*.bdf` by `python3 bdf2font.py` (needs
   fontTools and brotli).
 - The sun/moon button switches between Dark (black, the default) and Light

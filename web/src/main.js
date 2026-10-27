@@ -100,14 +100,16 @@ document.documentElement.dataset.theme = themeName;
 
 // ---- Fonts --------------------------------------------------------------
 
-/** Terminal fonts, the first being the default. Gohu is a bitmap font, sized
- *  in `pixels` so each of its pixels covers whole screen pixels. */
+/** Terminal fonts, the first being the default. Pixel fonts give `pixels`,
+ *  their em in font pixels, and `scale`, screen pixels per font pixel at
+ *  100%; they are sized so each font pixel covers whole screen pixels. */
 const FONTS = {
+  monocraft: { label: "Monocraft", family: "Monocraft", pixels: 9, scale: 2 },
   serious: { label: "Serious Shanns", family: "Serious Shanns", size: 15 },
-  gohu: { label: "Gohu", family: "GohuFont", pixels: 14 },
+  gohu: { label: "Gohu", family: "GohuFont", pixels: 14, scale: 1 },
   comic: { label: "Comic Mono", family: "Comic Mono", size: 14 },
 };
-// Symbols a font lacks, such as ␣ in all three, come from these.
+// Symbols a font lacks, such as ␣ in all of them, come from these.
 const FALLBACK = '"JetBrains Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace';
 const FONT_KEY = "akler-font";
 
@@ -132,9 +134,9 @@ let zoom = (() => {
     return 0;
   }
 })();
-const fontSize = ({ size, pixels }) =>
+const fontSize = ({ size, pixels, scale }) =>
   pixels
-    ? (pixels * Math.max(1, Math.round(devicePixelRatio) + zoom)) / devicePixelRatio
+    ? (pixels * Math.max(1, Math.round(scale * devicePixelRatio) + zoom)) / devicePixelRatio
     : Math.max(8, size + zoom);
 
 // xterm.js measures its cells from the font, so it must be loaded first.
