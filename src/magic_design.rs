@@ -2387,6 +2387,38 @@ fn visit_effects_with_prepared(
     progress: &AtomicU64,
     mut visit: impl FnMut(RuleEffect, summary::Summary),
 ) -> ak::Result<()> {
+    visit_effects_screened(
+        layout,
+        root,
+        with_rules,
+        prepared,
+        weights,
+        stop,
+        progress,
+        None,
+        |effect, without| {
+            if let Some(without) = without {
+                visit(effect, without);
+            }
+        },
+    )
+}
+
+/// `visit_effects_with_prepared`, screening each removal first
+/// (`Prepared::screen`): where `skip` holds for the screened effect and
+/// summary, the exact evaluation is spared and `visit` gets None.
+#[allow(clippy::too_many_arguments)]
+fn visit_effects_screened(
+    layout: &ak::Layout,
+    root: usize,
+    with_rules: &summary::Summary,
+    prepared: &summary::Prepared<'_>,
+    weights: &Weights,
+    stop: &AtomicBool,
+    progress: &AtomicU64,
+    skip: Option<&dyn Fn(&RuleEffect, &summary::Summary) -> bool>,
+    mut visit: impl FnMut(RuleEffect, Option<summary::Summary>),
+) -> ak::Result<()> {
     let (rules, _) = original(layout, root).ok_or("Unsupported magic fallback.")?;
     let ak::Binding::Named(name) = &layout.slots[root].binding else {
         return Err("Magic root moved during rule analysis.".into());
@@ -2407,36 +2439,48 @@ fn visit_effects_with_prepared(
             return Err("Magic root action changed during rule analysis.".into());
         };
         rules.remove(&context);
-        let without = prepared.evaluate(&without_layout, stop, progress)?;
-        let without_breakdown = breakdown(&without.metrics, weights);
-        let pair = [context[0], output[0]];
-        let direct_with = prepared.pair_movement_costs(layout, pair, stop, progress)?;
-        let direct_without = prepared.pair_movement_costs(&without_layout, pair, stop, progress)?;
-        let direct_contribution_saved: [f64; N_METRICS] =
-            std::array::from_fn(|i| direct_without[i] - direct_with[i]);
-        let effect = RuleEffect {
-            rule: Rule {
-                skip: false,
-                context: context[0],
-                output: output[0],
-                frequency: 0.0,
-            },
-            direct_pair_saved: direct_contribution_saved.iter().sum(),
-            direct_contribution_saved,
-            metrics_without: without.metrics.v,
-            metrics_with: with_rules.metrics.v,
-            score_saved: without.score - with_rules.score,
-            // Mana/aklgg scores have no AKLER penalty split; use the net score.
-            penalty_saved: if prepared.physical_mode() {
-                without.score - with_rules.score
-            } else {
-                without_breakdown.penalty - with_breakdown.penalty
-            },
-            contribution_saved: std::array::from_fn(|metric| {
-                without_breakdown.contributions[metric] - with_breakdown.contributions[metric]
-            }),
+        let effect_of = |without: &summary::Summary| -> ak::Result<RuleEffect> {
+            let without_breakdown = breakdown(&without.metrics, weights);
+            let pair = [context[0], output[0]];
+            let direct_with = prepared.pair_movement_costs(layout, pair, stop, progress)?;
+            let direct_without =
+                prepared.pair_movement_costs(&without_layout, pair, stop, progress)?;
+            let direct_contribution_saved: [f64; N_METRICS] =
+                std::array::from_fn(|i| direct_without[i] - direct_with[i]);
+            Ok(RuleEffect {
+                rule: Rule {
+                    skip: false,
+                    context: context[0],
+                    output: output[0],
+                    frequency: 0.0,
+                },
+                direct_pair_saved: direct_contribution_saved.iter().sum(),
+                direct_contribution_saved,
+                metrics_without: without.metrics.v,
+                metrics_with: with_rules.metrics.v,
+                score_saved: without.score - with_rules.score,
+                // Mana/aklgg scores have no AKLER penalty split; use the net score.
+                penalty_saved: if prepared.physical_mode() {
+                    without.score - with_rules.score
+                } else {
+                    without_breakdown.penalty - with_breakdown.penalty
+                },
+                contribution_saved: std::array::from_fn(|metric| {
+                    without_breakdown.contributions[metric] - with_breakdown.contributions[metric]
+                }),
+            })
         };
-        visit(effect, without);
+        if let Some(skip) = skip {
+            if let Some(screened) = prepared.screen(&without_layout, stop, progress)? {
+                let effect = effect_of(&screened)?;
+                if skip(&effect, &screened) {
+                    visit(effect, None);
+                    continue;
+                }
+            }
+        }
+        let without = prepared.evaluate(&without_layout, stop, progress)?;
+        visit(effect_of(&without)?, Some(without));
     }
     Ok(())
 }
@@ -2545,7 +2589,28 @@ fn prune_rules_with_summary(
     loop {
         let mut selected: Option<(RuleEffect, summary::Summary)> = None;
         let ignored = evaluated.counts.ignored_characters;
-        visit_effects_with_prepared(
+        // A removal whose screened effect is clearly not removable needs no
+        // exact evaluation: screened sums differ from exact ones only in the
+        // last bits, and anything near a threshold is evaluated exactly.
+        let with_penalty = breakdown(&evaluated.metrics, weights).penalty;
+        let clearly_kept = |effect: &RuleEffect, screened: &summary::Summary| {
+            let margin = |a: f64, b: f64| 1e-9 * (1.0 + a.abs() + b.abs());
+            if screened.counts.ignored_characters > ignored + EPSILON + margin(ignored, 0.0) {
+                return true;
+            }
+            let (penalty, base_penalty) = if prepared.physical_mode() {
+                (screened.score, evaluated.score)
+            } else {
+                (breakdown(&screened.metrics, weights).penalty, with_penalty)
+            };
+            effect.direct_pair_saved.is_finite()
+                && effect.direct_pair_saved > EPSILON
+                && effect.score_saved.is_finite()
+                && effect.score_saved > EPSILON + margin(screened.score, evaluated.score)
+                && effect.penalty_saved.is_finite()
+                && effect.penalty_saved > EPSILON + margin(penalty, base_penalty)
+        };
+        visit_effects_screened(
             &pruned,
             root,
             &evaluated,
@@ -2553,8 +2618,13 @@ fn prune_rules_with_summary(
             weights,
             stop,
             progress,
+            Some(&clearly_kept),
             |effect, without| {
                 attempts += 1;
+                // Screened out: not removable, as an exact summary would show.
+                let Some(without) = without else {
+                    return;
+                };
                 // A rule that is the only way to type a character stays:
                 // untyped characters lower the score, but callers reject
                 // dictionaries that leave more characters untyped.

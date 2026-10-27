@@ -119,7 +119,7 @@ impl ChordPlan {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Program {
     combos: Vec<Combo>,
     slot_count: usize,

@@ -1562,6 +1562,9 @@ impl NgramCorpus {
                 let renamed: Vec<bool> = (0..layout.slots.len())
                     .map(|slot| named(&base.layout, slot) != named(layout, slot))
                     .collect();
+                // Rule and binding trials keep the base's combos, so a
+                // window's take-back and re-add share one chord plan.
+                let same_plans = base.combos == combos;
                 let (presses, counted) = base.counted(&source.windows);
                 // The recorded counted presses, where windows keep their keys.
                 let mut pressed = record.then(|| presses.clone());
@@ -1607,17 +1610,21 @@ impl NgramCorpus {
                     if stop.load(Ordering::Relaxed) {
                         return Err("cancelled".into());
                     }
-                    let plan = plan_for(base.combos.as_ref(), window);
+                    let base_plan = plan_for(base.combos.as_ref(), window);
                     accumulators.add_window(
                         &base.layout,
                         window,
                         decode_keys(base.keys[index]),
-                        plan.as_ref(),
+                        base_plan.as_ref(),
                         alts.as_ref(),
                         &default_fingers,
                         -window.weight,
                     );
-                    let plan = plan_for(combos.as_ref(), window);
+                    let plan = if same_plans {
+                        base_plan
+                    } else {
+                        plan_for(combos.as_ref(), window)
+                    };
                     let mapped = map_window(window.text(), plan.as_ref())?;
                     accumulators.add_window(
                         layout,

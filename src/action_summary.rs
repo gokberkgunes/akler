@@ -21,6 +21,11 @@ type MappedPairKey = ([u8; 2], Vec<[u8; 5]>, (bool, bool, bool));
 const MAPPED_PAIR_COSTS: usize = 1 << 16;
 
 /// A layout's compiled numeric mapper, for mapping pair corpora.
+/// Compiled layouts `mapped_pair_key` keeps (`Prepared::pair_programs`).
+const PAIR_PROGRAMS: usize = 4;
+/// One-pair corpora `pair_corpus` keeps: all 95 × 95 printable pairs.
+const PAIR_CORPORA: usize = 95 * 95;
+
 struct PairProgram {
     bindings: Vec<ak::Binding>,
     actions: BTreeMap<String, ak::Action>,
@@ -244,8 +249,10 @@ pub(crate) struct Prepared<'a> {
     /// Physical modes: local objective slopes per Mana2 stat, taken from the
     /// first layout whose pair costs are requested.
     pair_slopes: std::sync::OnceLock<[f64; mana2_metrics::N_STATS]>,
-    /// The layout `mapped_pair_key` last compiled.
-    pair_program: std::sync::Mutex<Option<Arc<PairProgram>>>,
+    /// The layouts `mapped_pair_key` last compiled, most recent first. Rule
+    /// screening alternates the current dictionary with one-rule variants,
+    /// so the current one stays compiled.
+    pair_programs: std::sync::Mutex<std::collections::VecDeque<Arc<PairProgram>>>,
     /// `mappings`' raw counters, totals and counts, for `screen`.
     screen_base: std::sync::OnceLock<Option<(Raw, [f64; 4], ng::Counts)>>,
 }
@@ -290,7 +297,7 @@ impl<'a> Prepared<'a> {
             #[cfg(test)]
             rule_work: std::sync::Mutex::new(None),
             pair_slopes: std::sync::OnceLock::new(),
-            pair_program: std::sync::Mutex::new(None),
+            pair_programs: std::sync::Mutex::new(std::collections::VecDeque::new()),
             screen_base: std::sync::OnceLock::new(),
         })
     }
@@ -748,8 +755,8 @@ impl<'a> Prepared<'a> {
         }
         self.validate(layout, stop, binding_variation)?;
         let corpus = self.pair_corpus(pair)?;
-        let mut compiled = self.pair_program.lock().unwrap();
-        let current = compiled.as_ref().is_some_and(|program| {
+        let mut compiled = self.pair_programs.lock().unwrap();
+        let found = compiled.iter().position(|program| {
             program.actions == layout.actions
                 && program
                     .bindings
@@ -757,23 +764,32 @@ impl<'a> Prepared<'a> {
                     .zip(&layout.slots)
                     .all(|(binding, slot)| *binding == slot.binding)
         });
-        if !current {
-            let Ok(program) = crate::action_fast::Program::new(layout, corpus.order()) else {
-                return Ok(None);
-            };
-            let state = crate::action_fast::KeyState::new(&program);
-            *compiled = Some(Arc::new(PairProgram {
-                bindings: layout
-                    .slots
-                    .iter()
-                    .map(|slot| slot.binding.clone())
-                    .collect(),
-                actions: layout.actions.clone(),
-                program,
-                state,
-            }));
-        }
-        let program = Arc::clone(compiled.as_ref().unwrap());
+        let program = match found {
+            Some(index) => {
+                let program = compiled.remove(index).unwrap();
+                compiled.push_front(Arc::clone(&program));
+                program
+            }
+            None => {
+                let Ok(program) = crate::action_fast::Program::new(layout, corpus.order()) else {
+                    return Ok(None);
+                };
+                let state = crate::action_fast::KeyState::new(&program);
+                let program = Arc::new(PairProgram {
+                    bindings: layout
+                        .slots
+                        .iter()
+                        .map(|slot| slot.binding.clone())
+                        .collect(),
+                    actions: layout.actions.clone(),
+                    program,
+                    state,
+                });
+                compiled.truncate(PAIR_PROGRAMS - 1);
+                compiled.push_front(Arc::clone(&program));
+                program
+            }
+        };
         drop(compiled);
         let keys = corpus.plain_window_keys(
             &program.program,
@@ -808,8 +824,10 @@ impl<'a> Prepared<'a> {
                     Path::new("magic-direct-pair.json"),
                 )?;
                 let corpus = Arc::new(corpus);
-                // Bound search memory even for arbitrary source bytes.
-                if corpora.len() == 256 {
+                // Bound search memory even for arbitrary source bytes. Hold
+                // every printable pair: screening walks pairs in order, so a
+                // smaller map would evict each new pair before its reuse.
+                if corpora.len() == PAIR_CORPORA {
                     corpora.pop_first();
                 }
                 corpora.insert(pair, Arc::clone(&corpus));
