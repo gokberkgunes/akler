@@ -49,7 +49,8 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
   the browser (IndexedDB) and restored on the next visit. **Files** downloads
   them, **Upload layouts** adds layout files, **Reset** forgets them.
 - The font menu in the top bar switches between Monocraft (default), Serious
-  Shanns, Gohu and Comic Mono; the choice is remembered. Gohu is a bitmap font, converted
+  Shanns, Gohu and Comic Mono; the choice is remembered. Monocraft's box
+  drawing comes from `src/fonts/MonocraftBox.woff2` (`python3 boxfont.py`). Gohu is a bitmap font, converted
   from `src/fonts/gohufont-uni-14*.bdf` by `python3 bdf2font.py` (needs
   fontTools and brotli).
 - The sun/moon button switches between Dark (black, the default) and Light

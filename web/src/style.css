@@ -11,6 +11,20 @@
   font-display: block;
 }
 
+/* Box drawing on Monocraft's grid, which lacks it (boxfont.py). */
+@font-face {
+  font-family: "Monocraft Box";
+  src: url("fonts/MonocraftBox.woff2") format("woff2");
+  font-display: block;
+}
+
+@font-face {
+  font-family: "Monocraft Box";
+  src: url("fonts/MonocraftBox.woff2") format("woff2");
+  font-weight: bold;
+  font-display: block;
+}
+
 @font-face {
   font-family: "GohuFont";
   src: url("fonts/GohuFont-14.woff2") format("woff2");

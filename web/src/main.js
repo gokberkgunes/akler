@@ -104,7 +104,8 @@ document.documentElement.dataset.theme = themeName;
  *  their em in font pixels, and `scale`, screen pixels per font pixel at
  *  100%; they are sized so each font pixel covers whole screen pixels. */
 const FONTS = {
-  monocraft: { label: "Monocraft", family: "Monocraft", pixels: 9, scale: 2 },
+  // Monocraft has no box drawing; "Monocraft Box" supplies it on its grid.
+  monocraft: { label: "Monocraft", family: "Monocraft", extra: "Monocraft Box", pixels: 9, scale: 2 },
   serious: { label: "Serious Shanns", family: "Serious Shanns", size: 15 },
   gohu: { label: "Gohu", family: "GohuFont", pixels: 14, scale: 1 },
   comic: { label: "Comic Mono", family: "Comic Mono", size: 14 },
@@ -140,16 +141,19 @@ const fontSize = ({ size, pixels, scale }) =>
     : Math.max(8, size + zoom);
 
 // xterm.js measures its cells from the font, so it must be loaded first.
+const families = (font) => [font.family, font.extra].filter(Boolean);
+/** The terminal's font-family list: the font, its companion, then fallbacks. */
+const fontFamily = (font) => `${families(font).map((family) => `"${family}"`).join(", ")}, ${FALLBACK}`;
 const loadFont = (font) =>
   Promise.all(
-    ["", "bold "].map((weight) =>
-      document.fonts.load(`${weight}${fontSize(font)}px "${font.family}"`),
+    families(font).flatMap((family) =>
+      ["", "bold "].map((weight) => document.fonts.load(`${weight}${fontSize(font)}px "${family}"`)),
     ),
   ).catch((error) => console.warn(error));
 await loadFont(FONTS[fontName]);
 
 const terminal = new Terminal({
-  fontFamily: `"${FONTS[fontName].family}", ${FALLBACK}`,
+  fontFamily: fontFamily(FONTS[fontName]),
   fontSize: fontSize(FONTS[fontName]),
   // A command's plain output ends lines with \n alone; the TUI positions its cursor.
   convertEol: commandArgs.length > 0,
@@ -223,7 +227,7 @@ fontPicker.value = fontName;
 async function applyFont() {
   const font = FONTS[fontName];
   await loadFont(font);
-  terminal.options.fontFamily = `"${font.family}", ${FALLBACK}`;
+  terminal.options.fontFamily = fontFamily(font);
   terminal.options.fontSize = fontSize(font);
   // The new cell size changes the grid; akler hears of it through onResize.
   fit.fit();
