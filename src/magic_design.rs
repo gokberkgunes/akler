@@ -1944,22 +1944,39 @@ fn refit_rules_from_seed(
         // evaluations on the rules with the largest direct weighted movement fix.
         let mut screened = Vec::new();
         let mut scratch = current.clone();
+        scratch.actions.insert(
+            action_name.clone(),
+            ak::Action::Rules {
+                basis: ak::Basis::Text,
+                rules: current_rules,
+                fallback: current_fallback,
+            },
+        );
         prepared.prepare_pair_costs(current, stop, progress)?;
         let nonnegative = prepared.pair_movement_costs_nonnegative();
+        // Each proposal edits the scratch dictionary in place, without its
+        // context and then with the rule, and puts back what it replaced.
+        fn rules_of<'a>(
+            scratch: &'a mut ak::Layout,
+            name: &str,
+        ) -> &'a mut BTreeMap<Vec<u8>, ak::Emission> {
+            match scratch.actions.get_mut(name) {
+                Some(ak::Action::Rules { rules, .. }) => rules,
+                _ => unreachable!("the scratch action was installed above"),
+            }
+        }
         for rule in proposals {
             if stop.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
-            let mut without_rules = current_rules.clone();
-            without_rules.remove(&vec![rule.context]);
-            scratch.actions.insert(
-                action_name.clone(),
-                ak::Action::Rules {
-                    basis: ak::Basis::Text,
-                    rules: without_rules.clone(),
-                    fallback: current_fallback.clone(),
-                },
-            );
+            let context = vec![rule.context];
+            let previous = rules_of(&mut scratch, &action_name).remove(&context);
+            let restore = |scratch: &mut ak::Layout, previous: Option<ak::Emission>| {
+                match previous {
+                    Some(emission) => rules_of(scratch, &action_name).insert(context.clone(), emission),
+                    None => rules_of(scratch, &action_name).remove(&context),
+                };
+            };
             let pair = [rule.context, rule.output];
             let without_cost: f64 = prepared
                 .pair_movement_costs(&scratch, pair, stop, progress)?
@@ -1967,21 +1984,16 @@ fn refit_rules_from_seed(
                 .sum();
             // Most pairs carry no movement penalty; a rule cannot improve them.
             if nonnegative && without_cost <= 1e-9 {
+                restore(&mut scratch, previous);
                 continue;
             }
-            without_rules.insert(vec![rule.context], ak::Emission::Text(vec![rule.output]));
-            scratch.actions.insert(
-                action_name.clone(),
-                ak::Action::Rules {
-                    basis: ak::Basis::Text,
-                    rules: without_rules,
-                    fallback: current_fallback.clone(),
-                },
-            );
+            rules_of(&mut scratch, &action_name)
+                .insert(context.clone(), ak::Emission::Text(vec![rule.output]));
             let with_cost: f64 = prepared
                 .pair_movement_costs(&scratch, pair, stop, progress)?
                 .into_iter()
                 .sum();
+            restore(&mut scratch, previous);
             let gain = without_cost - with_cost;
             if gain.is_finite() && gain > 1e-9 {
                 screened.push((gain * rule.frequency, gain, rule.clone()));

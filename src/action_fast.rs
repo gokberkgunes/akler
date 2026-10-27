@@ -290,6 +290,7 @@ impl Program {
                         }
                         Basis::Text | Basis::Press | Basis::SkipPress => {
                             let mut table = Vec::with_capacity(layout.slots.len() + 1);
+                            let mut prefixed = Vec::new();
                             for context in layout
                                 .slots
                                 .iter()
@@ -299,7 +300,7 @@ impl Program {
                                 })
                                 .chain(std::iter::once(b"".as_slice()))
                             {
-                                let mut prefixed = Vec::with_capacity(context.len() + 1);
+                                prefixed.clear();
                                 prefixed.push(b'@');
                                 prefixed.extend_from_slice(context);
                                 let selected = rules

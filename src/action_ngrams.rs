@@ -271,7 +271,6 @@ pub(crate) type FingerTable = BTreeMap<FingerPattern, f64>;
 // zero-weight occurrence still produces a report entry.
 const DENSE_COUNT_SLOTS: usize = 64;
 
-#[derive(Clone)]
 enum PhysicalHistogram {
     Dense {
         slots: usize,
@@ -283,47 +282,70 @@ enum PhysicalHistogram {
 }
 
 /// Zeroed dense bins. Evaluations run thousands of times per search, so the
-/// buffers are recycled per thread instead of allocated and cleared whole;
-/// `into_table` resets only the bins it touched before returning them.
+/// buffers are recycled instead of allocated and cleared whole; `into_table`
+/// resets only the bins it touched before returning them.
 #[derive(Default)]
 struct DenseBins {
     values: Vec<f64>,
     seen: Vec<bool>,
 }
 
-thread_local! {
-    static DENSE_BINS: std::cell::RefCell<Vec<DenseBins>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+/// The recycled buffers, shared by all threads: fitters evaluate on
+/// short-lived worker threads, whose own pools would always start empty.
+static DENSE_BINS: std::sync::Mutex<Vec<DenseBins>> = std::sync::Mutex::new(Vec::new());
+/// Buffers the pool keeps; each evaluation in flight holds four.
+const DENSE_BINS_KEPT: usize = 256;
 
 impl DenseBins {
     /// A zeroed buffer of `len` bins. Pooled buffers are reused only at their
     /// own size: growing a smaller one would zero the new bins every time.
     fn take(len: usize) -> Self {
-        DENSE_BINS
-            .with(|pool| {
-                let mut pool = pool.borrow_mut();
-                let index = pool.iter().position(|bins| bins.values.len() == len)?;
-                Some(pool.swap_remove(index))
-            })
-            .unwrap_or_else(|| Self {
-                values: vec![0.0; len],
-                seen: vec![false; len],
-            })
+        let reused = {
+            let mut pool = DENSE_BINS.lock().unwrap();
+            pool.iter()
+                .position(|bins| bins.values.len() == len)
+                .map(|index| pool.swap_remove(index))
+        };
+        reused.unwrap_or_else(|| Self {
+            values: vec![0.0; len],
+            seen: vec![false; len],
+        })
     }
 
     fn give_back(self) {
-        DENSE_BINS.with(|pool| pool.borrow_mut().push(self));
+        let mut pool = DENSE_BINS.lock().unwrap();
+        if pool.len() < DENSE_BINS_KEPT {
+            pool.push(self);
+        }
     }
 }
 
 // Copies come from the pool too, so `into_table` returning them keeps it
-// bounded.
-impl Clone for DenseBins {
+// bounded. Pooled buffers are zeroed, so only the touched bins are copied.
+impl Clone for PhysicalHistogram {
     fn clone(&self) -> Self {
-        let mut bins = Self::take(self.values.len());
-        bins.values.copy_from_slice(&self.values);
-        bins.seen.copy_from_slice(&self.seen);
-        bins
+        match self {
+            Self::Dense {
+                slots,
+                width,
+                bins,
+                touched,
+            } => {
+                let mut copy = DenseBins::take(bins.values.len());
+                for &bin in touched {
+                    let bin = bin as usize;
+                    copy.values[bin] = bins.values[bin];
+                    copy.seen[bin] = true;
+                }
+                Self::Dense {
+                    slots: *slots,
+                    width: *width,
+                    bins: copy,
+                    touched: touched.clone(),
+                }
+            }
+            Self::Sparse(table) => Self::Sparse(table.clone()),
+        }
     }
 }
 
