@@ -264,7 +264,32 @@ fn corpus_command(args: &[String]) -> AppResult<()> {
                 println!("{}\t{count}", json_quote(&gram));
             }
         }
-        _ => return Err("corpus: list, add, build, info or top".into()),
+        "prepare" => {
+            // Loading writes each corpus's pre-parsed cache for the current
+            // [ngrams] settings (`NgramCorpus::from_text_progress_with_limits`).
+            let wanted = args.get(1).map(|name| {
+                let name = name.strip_suffix(".json").unwrap_or(name);
+                name.strip_prefix("corpus-").unwrap_or(name).to_ascii_lowercase()
+            });
+            let mut paths: Vec<_> = fs::read_dir(PROCESSED_CORPUS_DIR)?
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                .filter(|path| {
+                    wanted
+                        .as_ref()
+                        .is_none_or(|name| corpus_name(path).eq_ignore_ascii_case(name))
+                })
+                .collect();
+            paths.sort();
+            if paths.is_empty() {
+                return Err("no processed corpus to prepare; build it first".into());
+            }
+            for path in paths {
+                crate::action_ngrams::NgramCorpus::load(&path)?;
+                println!("{}", path.display());
+            }
+        }
+        _ => return Err("corpus: list, add, build, info, top or prepare".into()),
     }
     Ok(())
 }
@@ -904,7 +929,7 @@ fn run() -> AppResult<()> {
                 return Ok(());
             }
             "--help" | "-h" | "help" => {
-                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\nakler corpus prepare [NAME]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(());
             }
             "corpus" => return corpus_command(&args[1..]),

@@ -869,6 +869,208 @@ impl WindowIndex {
 
 type Postings = Arc<std::sync::OnceLock<WindowIndex>>;
 
+/// Pre-parsed corpora: a corpus JSON's contexts after its `[ngrams]` limits,
+/// with its chord contexts, saved next to it as `NAME.KEY.ngrams`. The key
+/// covers the JSON's contents, the limits, this format and the build, so any
+/// change misses and rewrites it.
+const CACHE_MAGIC: &[u8; 8] = b"AKLERNG1";
+const CACHE_VERSION: u32 = 1;
+
+fn cache_key(text: &str, limits: NgramLimits) -> u64 {
+    // A fast word hash; the contents only select a cache, which is also
+    // checked for its key.
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    let mut mix = |word: u64| hash = (hash.rotate_left(5) ^ word).wrapping_mul(0x517c_c1b7_2722_0a95);
+    let bytes = text.as_bytes();
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        mix(u64::from_le_bytes(chunk.try_into().unwrap()));
+    }
+    let mut last = [0u8; 8];
+    last[..chunks.remainder().len()].copy_from_slice(chunks.remainder());
+    mix(u64::from_le_bytes(last));
+    mix(bytes.len() as u64);
+    for limit in [limits.trigrams, limits.tetragrams, limits.pentagrams] {
+        mix(limit.map_or(u64::MAX, |limit| limit as u64));
+    }
+    mix(u64::from(limits.include_spacegrams));
+    mix(u64::from(CACHE_VERSION));
+    // A new build may prepare contexts differently: it writes its own cache.
+    for chunk in crate::BUILD.as_bytes().chunks(8) {
+        let mut word = [0u8; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        mix(u64::from_le_bytes(word));
+    }
+    hash
+}
+
+fn cache_path(path: &Path, key: u64) -> PathBuf {
+    path.with_extension(format!("{key:016x}.ngrams"))
+}
+
+fn write_windows(out: &mut Vec<u8>, windows: &[Window]) {
+    out.extend_from_slice(&(windows.len() as u32).to_le_bytes());
+    for window in windows {
+        out.extend_from_slice(&window.bytes);
+        out.extend_from_slice(&[window.len, window.target, u8::from(window.left_open)]);
+        out.extend_from_slice(&window.weight.to_le_bytes());
+    }
+}
+
+fn write_text(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+}
+
+/// Save `corpus` as its pre-parsed cache, replacing older caches of the same
+/// JSON. A failure only costs the next load its speed.
+fn write_cache(corpus: &NgramCorpus, cache: &Path, key: u64) {
+    let mut out = Vec::new();
+    out.extend_from_slice(CACHE_MAGIC);
+    out.extend_from_slice(&CACHE_VERSION.to_le_bytes());
+    out.extend_from_slice(&key.to_le_bytes());
+    out.extend_from_slice(&(corpus.order as u32).to_le_bytes());
+    for population in corpus.speed_populations {
+        out.extend_from_slice(&population.to_le_bytes());
+    }
+    out.extend_from_slice(&(corpus.warnings.len() as u32).to_le_bytes());
+    for warning in &corpus.warnings {
+        write_text(&mut out, warning);
+    }
+    write_windows(&mut out, &corpus.windows);
+    match corpus.chord_windows.get() {
+        None => out.push(0),
+        Some(Ok((windows, _, _))) => {
+            out.push(1);
+            write_windows(&mut out, windows);
+        }
+        Some(Err(error)) => {
+            out.push(2);
+            write_text(&mut out, error);
+        }
+    }
+    let Some(stem) = corpus.path.file_stem().map(|stem| stem.to_string_lossy().into_owned()) else {
+        return;
+    };
+    if let Some(directory) = cache.parent() {
+        if let Ok(entries) = fs::read_dir(directory) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let stale = name
+                    .strip_prefix(&stem)
+                    .and_then(|rest| rest.strip_prefix('.'))
+                    .and_then(|rest| rest.strip_suffix(".ngrams"))
+                    .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+                if stale {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    let temporary = cache.with_extension(format!("{}.tmp", crate::process_tag()));
+    if fs::write(&temporary, &out).is_err() || fs::rename(&temporary, cache).is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+}
+
+struct CacheReader<'a> {
+    bytes: &'a [u8],
+}
+
+impl CacheReader<'_> {
+    fn take(&mut self, n: usize) -> Option<&[u8]> {
+        if self.bytes.len() < n {
+            return None;
+        }
+        let (head, rest) = self.bytes.split_at(n);
+        self.bytes = rest;
+        Some(head)
+    }
+
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+
+    fn f64(&mut self) -> Option<f64> {
+        self.u64().map(f64::from_bits)
+    }
+
+    fn text(&mut self) -> Option<String> {
+        let len = self.u32()? as usize;
+        String::from_utf8(self.take(len)?.to_vec()).ok()
+    }
+
+    fn windows(&mut self) -> Option<Arc<[Window]>> {
+        let count = self.u32()? as usize;
+        let mut windows = Vec::with_capacity(count.min(self.bytes.len() / 16));
+        for _ in 0..count {
+            let raw = self.take(16)?;
+            let window = Window {
+                bytes: raw[..5].try_into().ok()?,
+                len: raw[5],
+                target: raw[6],
+                left_open: raw[7] != 0,
+                weight: f64::from_le_bytes(raw[8..16].try_into().ok()?),
+            };
+            if window.len == 0 || window.len > 5 || window.target >= window.len {
+                return None;
+            }
+            windows.push(window);
+        }
+        Some(windows.into())
+    }
+}
+
+/// The corpus a cache written for `key` holds, or None for a missing,
+/// stale or damaged one.
+fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Option<NgramCorpus> {
+    let bytes = fs::read(cache).ok()?;
+    let mut reader = CacheReader { bytes: &bytes };
+    if reader.take(8)? != CACHE_MAGIC || reader.u32()? != CACHE_VERSION || reader.u64()? != key {
+        return None;
+    }
+    let order = reader.u32()? as usize;
+    let speed_populations = [reader.f64()?, reader.f64()?];
+    let warnings = (0..reader.u32()?)
+        .map(|_| reader.text())
+        .collect::<Option<Vec<_>>>()?;
+    let windows = reader.windows()?;
+    let chord_windows = std::sync::OnceLock::new();
+    match reader.take(1)?[0] {
+        0 => {}
+        1 => {
+            let chords = reader.windows()?;
+            let _ = chord_windows.set(Ok((chords.clone(), exact_sums_of(&chords), Postings::default())));
+        }
+        2 => {
+            let _ = chord_windows.set(Err(reader.text()?));
+        }
+        _ => return None,
+    }
+    if !reader.bytes.is_empty() || !(1..=5).contains(&order) || windows.is_empty() {
+        return None;
+    }
+    Some(NgramCorpus {
+        name: corpus_name(path),
+        path: path.to_owned(),
+        include_spacegrams: limits.include_spacegrams,
+        order,
+        warnings,
+        exact_sums: exact_sums_of(&windows),
+        windows,
+        postings: Postings::default(),
+        // The chord contexts it was only kept for are in the cache.
+        chord_source: None,
+        chord_windows: Arc::new(chord_windows),
+        rule_candidates: Arc::default(),
+        speed_populations,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct NgramCorpus {
     pub name: String,
@@ -958,22 +1160,19 @@ impl NgramCorpus {
         if self.order < 4 {
             return Err("Combo chord analysis requires cached n-grams through order 4; rebuild the corpus through order 4 or disable combos.".into());
         }
-        let windows = self
-            .chord_windows
-            .get_or_init(|| {
-                self.build_chord_windows().map(|windows| {
-                    (
-                        windows.clone(),
-                        exact_sums_of(&windows),
-                        Postings::default(),
-                    )
-                })
-            })
-            .clone()?;
+        let windows = self.chord_windows().clone()?;
         let mut result = self.clone();
         (result.windows, result.exact_sums, result.postings) = windows;
         result.rule_candidates = Arc::default();
         Ok(result)
+    }
+
+    /// The chord windows, built on first use.
+    fn chord_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
+        self.chord_windows.get_or_init(|| {
+            self.build_chord_windows()
+                .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
+        })
     }
 
     fn context_tables(&self) -> [TableBytes; 5] {
@@ -1141,7 +1340,7 @@ impl NgramCorpus {
         let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
         timing.mark("Corpus read");
         let limits = load_app_config().map_err(|e| e.to_string())?.ngrams;
-        let result = Self::parse(&text, path, stop, progress, limits).map_err(|e| e.to_string());
+        let result = Self::from_text_progress_with_limits(&text, path, limits, stop, progress);
         timing.mark("Corpus parse/preparation (nested report)");
         result
     }
@@ -1161,6 +1360,9 @@ impl NgramCorpus {
         .map_err(|e| e.to_string())
     }
 
+    /// `text`, the contents of the corpus file at `path`, under `limits`:
+    /// from its pre-parsed cache when one matches, otherwise parsed, and the
+    /// cache written for next time. Text not read from a file is just parsed.
     pub(crate) fn from_text_progress_with_limits(
         text: &str,
         path: &Path,
@@ -1168,7 +1370,25 @@ impl NgramCorpus {
         stop: &AtomicBool,
         progress: &AtomicU64,
     ) -> ak::Result<Self> {
-        Self::parse(text, path, stop, progress, limits).map_err(|e| e.to_string())
+        if !path.is_file() {
+            return Self::parse(text, path, stop, progress, limits).map_err(|e| e.to_string());
+        }
+        let mut timing = crate::load_profile::LoadProfile::new("pre-parsed corpus");
+        let key = cache_key(text, limits);
+        let cache = cache_path(path, key);
+        if let Some(corpus) = read_cache(&cache, key, path, limits) {
+            progress.store(100, Ordering::Relaxed);
+            timing.mark("Read pre-parsed corpus");
+            return Ok(corpus);
+        }
+        let corpus = Self::parse(text, path, stop, progress, limits).map_err(|e| e.to_string())?;
+        // The cache holds the chord contexts too, so build them now.
+        if corpus.order >= 4 {
+            corpus.chord_windows();
+        }
+        write_cache(&corpus, &cache, key);
+        timing.mark("Parse corpus and write its pre-parsed cache");
+        Ok(corpus)
     }
 
     fn parse(

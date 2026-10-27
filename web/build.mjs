@@ -54,7 +54,7 @@ const skip = (name) =>
 // Only layouts git tracks: local files and optimizer output stay private.
 const tracked = execFileSync("git", ["ls-files", "-z", "layouts"], { cwd: root, encoding: "utf8" })
   .split("\0")
-  .filter((path) => path && !path.split("/").some(skip));
+  .filter((path) => path && !path.split("/").some(skip) && existsSync(join(root, path)));
 for (const path of tracked) {
   mkdirSync(dirname(join(data, path)), { recursive: true });
   cpSync(join(root, path), join(data, path));
@@ -69,6 +69,14 @@ const words = execFileSync(join(root, "target/release/akler"), ["scissor-words"]
 writeFileSync(join(data, "corpus/scissor-words.txt"), words);
 const config = readFileSync(join(root, "akler.conf"), "utf8").replace(/^workers = \d+$/m, "workers = 0");
 writeFileSync(join(data, "akler.conf"), config);
+// Pre-parsed corpora for the page's settings and this build, so the browser
+// skips parsing the JSON. The native and WebAssembly builds share the key.
+for (const name of CORPORA) {
+  execFileSync(join(root, "target/release/akler"), ["corpus", "prepare", name.replace(/\.json$/, "")], {
+    cwd: data,
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+}
 
 const manifest = [];
 const list = (directory) => {

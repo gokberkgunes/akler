@@ -5,6 +5,7 @@ Cargo.lock
 
 # Local corpus text and generated n-gram caches
 /corpus/raw/*.txt
+/corpus/processed/*.ngrams
 
 # Local keyboard-layout reference document
 /doc/keyboard-layouts-doc-3rd-edition.txt

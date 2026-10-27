@@ -115,11 +115,14 @@ akler corpus add NAME /path/to/text
 akler corpus build NAME --order 5 --jobs 4
 akler corpus info NAME
 akler corpus top NAME 3 20
+akler corpus prepare [NAME]
 ```
 
 Raw text goes in `corpus/raw/` (any extension); the cache is written to
 `corpus/processed/corpus-NAME.json`. Corpus names must be unique ignoring
-extension. An optional `corpus/raw/NAME.config.json` can set:
+extension. The first load under each `[ngrams]` setting also saves a
+pre-parsed copy next to it (`corpus-NAME.KEY.ngrams`), which later loads
+read in milliseconds; `corpus prepare` writes it ahead of time. An optional `corpus/raw/NAME.config.json` can set:
 
 | Property | Meaning / default |
 |---|---|
