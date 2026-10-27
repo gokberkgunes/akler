@@ -47,6 +47,8 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
   and Comic Mono; the choice is remembered. Gohu is a bitmap font, converted
   from `src/fonts/gohufont-uni-14*.bdf` by `python3 bdf2font.py` (needs
   fontTools and brotli).
+- The theme menu switches between Dark (black, the default) and Light (a
+  lighter dark grey). Ctrl+L goes to the browser, not to akler.
 - `?args=...` runs a command instead of the menu, for example
   `?args=bench layouts/night.jsonc corpus-reddit --seeds 2`.
 - The home menu has no quit; `q`, Esc and Ctrl-C only go back.

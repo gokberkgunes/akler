@@ -496,6 +496,10 @@ fn home_items(tab: usize) -> &'static [(usize, &'static str, &'static str)] {
     }
 }
 
+/// The package version and the git commit this binary was built from, with
+/// "+modified" when src/ differed from it (see build.rs).
+pub(crate) const BUILD: &str = env!("AKLER_BUILD");
+
 // A browser page has nowhere to return to, so its home menu stays open.
 #[cfg(not(target_os = "wasi"))]
 const HOME_FOOTER: &str = "? Help   q Quit";
@@ -566,8 +570,16 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
 
         if height > 1 {
             canvas.text(2, footer, HOME_FOOTER, MUTED);
+            let build = format!("akler {BUILD}");
+            let x = canvas.w.saturating_sub(build.chars().count() + 2);
+            if x > HOME_FOOTER.len() + 4 {
+                canvas.text(x, footer, &build, MUTED);
+            }
         }
+        // Home is the top level: nothing to go back to.
+        term.show_back = false;
         term.present(&canvas, 0)?;
+        term.show_back = true;
 
         let mut event = term.event()?;
         if let Some(action) = action_press(term, &canvas, &event, 0) {
@@ -942,8 +954,12 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
     };
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
+            "--version" | "-V" | "version" => {
+                println!("akler {BUILD}");
+                return Ok(None);
+            }
             "--help" | "-h" | "help" => {
-                println!("akler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(None);
             }
             "corpus" => return corpus_command(&args[1..]).map(|_| None),

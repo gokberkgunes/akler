@@ -23,12 +23,25 @@
   font-display: block;
 }
 
-:root {
-  --bg: #121212;
-  --panel: #1c1c1c;
-  --fg: #d0d0d0;
-  --muted: #8a8a8a;
-  --accent: #5fafd7;
+:root,
+:root[data-theme="dark"] {
+  --bg: #000000;
+  --panel: #111111;
+  --fg: #ffffff;
+  --muted: #a8a8a8;
+  --accent: #5fafff;
+  --control: #222222;
+  --border: #3a3a3a;
+}
+
+:root[data-theme="light"] {
+  --bg: #1e1e1e;
+  --panel: #2a2a2a;
+  --fg: #e4e4e4;
+  --muted: #9a9a9a;
+  --accent: #6cb6ff;
+  --control: #353535;
+  --border: #474747;
 }
 
 html,
@@ -51,7 +64,7 @@ header {
   gap: 16px;
   padding: 6px 16px;
   background: var(--panel);
-  border-bottom: 1px solid #2a2a2a;
+  border-bottom: 1px solid var(--border);
 }
 
 header .name {
@@ -74,9 +87,9 @@ header .name {
 
 button,
 select {
-  background: #2a2a2a;
+  background: var(--control);
   color: var(--fg);
-  border: 1px solid #3a3a3a;
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 3px 10px;
   font: inherit;
@@ -97,7 +110,7 @@ select:hover {
 dialog {
   background: var(--panel);
   color: var(--fg);
-  border: 1px solid #3a3a3a;
+  border: 1px solid var(--border);
   border-radius: 6px;
   min-width: min(480px, 90vw);
   max-height: 80vh;

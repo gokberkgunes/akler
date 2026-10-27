@@ -1,6 +1,7 @@
 // Compact, cell-based terminal UI. Rendering and mouse hitboxes share the
 // same rectangles; wheel scrolling and resizing cannot desynchronize them.
 const PANEL_WIDTH: usize = 108;
+const BACK_LABEL: &str = " ← Back ";
 
 const DISPLAY_DECIMALS: usize = 2;
 
@@ -520,6 +521,10 @@ struct Terminal {
     quitting: bool,
     restart_requested: bool,
     restart_arguments: Option<Vec<std::ffi::OsString>>,
+    /// Whether present draws the Back button; the home menu turns it off.
+    show_back: bool,
+    /// The Back button's columns on the top row, as last drawn.
+    back: Option<(usize, usize)>,
     _reports: crate::profile_output::TerminalReports,
 }
 
@@ -574,6 +579,8 @@ impl Terminal {
             quitting: false,
             restart_requested: false,
             restart_arguments: None,
+            show_back: true,
+            back: None,
             _reports: reports,
         };
         // Alternate screen, SGR drag events, bracketed paste, cursor off, wrap off.
@@ -694,6 +701,18 @@ impl Terminal {
     }
 
     fn visible_event(&mut self, e: Event) -> Event {
+        if let Event::Mouse {
+            x,
+            y: 0,
+            button: 0,
+            release: false,
+            motion: false,
+        } = e
+        {
+            if self.back.is_some_and(|(start, end)| (start..end).contains(&x)) {
+                return Event::Escape;
+            }
+        }
         if let Event::Resize(columns, rows) = e {
             let size = (columns.min(1000), rows.min(500));
             if size != self.size {
@@ -738,6 +757,22 @@ impl Terminal {
             for x in 0..c.w.min(w) {
                 view[y * w + x + self.offset_x] = c.cells[(y + scroll) * c.w + x];
             }
+        }
+        // A Back button at the top right, where the screen leaves room; a
+        // click on it is read as Esc.
+        self.back = None;
+        let right = c.w.min(w);
+        let x = right.saturating_sub(BACK_LABEL.chars().count());
+        if self.show_back && x > 0 && view[x..right].iter().all(|cell| cell.ch == ' ') {
+            for (i, ch) in BACK_LABEL.chars().enumerate() {
+                view[x + i] = Cell {
+                    ch,
+                    color: FG,
+                    background: Some((60, 60, 60)),
+                    bold: false,
+                };
+            }
+            self.back = Some((x, right));
         }
         if w < 64 || h < 12 {
             view.fill(Cell {

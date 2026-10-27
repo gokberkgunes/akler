@@ -17,6 +17,69 @@ const commandArgs = (new URLSearchParams(location.search).get("args") ?? "").spl
 const status = document.getElementById("status");
 const setStatus = (text) => (status.textContent = text);
 
+// ---- Themes -------------------------------------------------------------
+
+/** Colour themes, the first being the default. akler draws its main text in
+ *  the terminal palette, so these set its colours too. */
+const THEMES = {
+  dark: {
+    label: "Dark",
+    terminal: {
+      background: "#000000",
+      foreground: "#ffffff",
+      black: "#000000",
+      red: "#ff5f5f",
+      green: "#5fd75f",
+      yellow: "#ffd75f",
+      blue: "#5fafff",
+      magenta: "#d787ff",
+      cyan: "#00d7d7",
+      white: "#ffffff",
+      brightBlack: "#a8a8a8",
+      brightRed: "#ff8787",
+      brightGreen: "#87ff87",
+      brightYellow: "#ffff87",
+      brightBlue: "#87d7ff",
+      brightMagenta: "#ffafff",
+      brightCyan: "#5fffff",
+      brightWhite: "#ffffff",
+    },
+  },
+  light: {
+    label: "Light",
+    terminal: {
+      background: "#1e1e1e",
+      foreground: "#e4e4e4",
+      black: "#1e1e1e",
+      red: "#f07178",
+      green: "#a6d189",
+      yellow: "#f0c674",
+      blue: "#6cb6ff",
+      magenta: "#d2a8ff",
+      cyan: "#66d9e8",
+      white: "#e4e4e4",
+      brightBlack: "#9a9a9a",
+      brightRed: "#ff8b92",
+      brightGreen: "#c0e8a0",
+      brightYellow: "#ffd98e",
+      brightBlue: "#8fcaff",
+      brightMagenta: "#e2c2ff",
+      brightCyan: "#8de8f2",
+      brightWhite: "#ffffff",
+    },
+  },
+};
+const THEME_KEY = "akler-theme";
+let themeName = (() => {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return saved in THEMES ? saved : Object.keys(THEMES)[0];
+  } catch {
+    return Object.keys(THEMES)[0];
+  }
+})();
+document.documentElement.dataset.theme = themeName;
+
 // ---- Fonts --------------------------------------------------------------
 
 /** Terminal fonts, the first being the default. Gohu is a bitmap font, sized
@@ -61,26 +124,7 @@ const terminal = new Terminal({
   scrollback: commandArgs.length > 0 ? 5000 : 0,
   cursorBlink: false,
   allowProposedApi: true,
-  theme: {
-    background: "#121212",
-    foreground: "#d0d0d0",
-    black: "#121212",
-    red: "#e06c75",
-    green: "#98c379",
-    yellow: "#e5c07b",
-    blue: "#61afef",
-    magenta: "#c678dd",
-    cyan: "#56b6c2",
-    white: "#d0d0d0",
-    brightBlack: "#7a7a7a",
-    brightRed: "#ff7b86",
-    brightGreen: "#b5e890",
-    brightYellow: "#ffd68a",
-    brightBlue: "#82c4ff",
-    brightMagenta: "#e19bff",
-    brightCyan: "#7fd8e2",
-    brightWhite: "#ffffff",
-  },
+  theme: THEMES[themeName].terminal,
 });
 // Exposed for scripted checks of what the terminal shows.
 globalThis.aklerTerminal = terminal;
@@ -97,6 +141,25 @@ try {
 }
 fit.fit();
 window.addEventListener("resize", () => fit.fit());
+// Ctrl+L belongs to the browser (the address bar), not to akler.
+terminal.attachCustomKeyEventHandler(
+  (event) => !(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "l"),
+);
+
+const themePicker = document.getElementById("theme");
+for (const [name, { label }] of Object.entries(THEMES)) {
+  themePicker.add(new Option(`${label} theme`, name));
+}
+themePicker.value = themeName;
+themePicker.addEventListener("change", () => {
+  themeName = themePicker.value;
+  document.documentElement.dataset.theme = themeName;
+  terminal.options.theme = THEMES[themeName].terminal;
+  terminal.focus();
+  try {
+    localStorage.setItem(THEME_KEY, themeName);
+  } catch {}
+});
 
 const fontPicker = document.getElementById("font");
 for (const [name, { label }] of Object.entries(FONTS)) fontPicker.add(new Option(label, name));
