@@ -517,53 +517,49 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
         let mut canvas = Canvas::new(term.width(), height);
         let tabs: Vec<String> = HOME_TABS.iter().map(|label| label.to_string()).collect();
         tab_boxes(&mut canvas, 0, 0, state.tab, &tabs);
-        // The items as one box of rows: name, then description.
         let first_row = 4;
         let footer = height.saturating_sub(1);
-        let capacity = footer.saturating_sub(first_row + 1).div_ceil(2).max(1);
+        let capacity = footer.saturating_sub(first_row).max(1);
         let start = state.selected[state.tab].saturating_sub(capacity - 1);
-        let shown: Vec<_> = items.iter().skip(start).take(capacity).collect();
-        let name_w = shown.iter().map(|item| item.1.chars().count()).max().unwrap_or(0) + 2;
-        let text_w = shown
-            .iter()
-            .map(|item| item.2.chars().count())
-            .max()
-            .unwrap_or(0)
-            .min(canvas.w.saturating_sub(name_w + 5))
-            + 2;
-        let rule = |left: &str, middle: &str, right: &str| {
-            format!("{left}{}{middle}{}{right}", "─".repeat(name_w), "─".repeat(text_w))
-        };
-        for (row, (action, name, description)) in shown.iter().enumerate() {
-            let y = first_row + 2 * row;
-            if y + 2 > footer {
+        for (row, (action, name, description)) in items.iter().skip(start).take(capacity).enumerate() {
+            let y = first_row + row;
+            if y >= footer {
                 break;
             }
-            let edge = if row == 0 { rule("┌", "┬", "┐") } else { rule("├", "┼", "┤") };
-            canvas.text(0, y, &edge, BORDER);
             let selected = row + start == state.selected[state.tab];
-            canvas.text(0, y + 1, "│", BORDER);
-            canvas.text(2, y + 1, name, if selected { FG } else { MUTED });
-            canvas.text(name_w + 1, y + 1, "│", BORDER);
-            canvas.text(name_w + 3, y + 1, &short(description, text_w - 2), MUTED);
-            canvas.text(name_w + text_w + 2, y + 1, "│", BORDER);
             if selected {
-                let row = Rect { x: 1, y: y + 1, w: name_w, h: 1 };
-                canvas.row_style(row, Some((58, 58, 58)), true);
-                canvas.row_style(Rect { x: name_w + 2, w: text_w, ..row }, Some((58, 58, 58)), false);
+                canvas.row_style(
+                    Rect {
+                        x: 1,
+                        y,
+                        w: canvas.w.saturating_sub(2),
+                        h: 1,
+                    },
+                    Some((38, 38, 38)),
+                    false,
+                );
+            }
+            let marker = if selected { ">" } else { " " };
+            canvas.text(2, y, marker, CYAN);
+            canvas.text(4, y, &short(name, canvas.w.saturating_sub(5)), if selected { FG } else { MUTED });
+            let description_x = 24;
+            if canvas.w >= 48 {
+                canvas.text(
+                    description_x,
+                    y,
+                    &short(description, canvas.w.saturating_sub(description_x)),
+                    MUTED,
+                );
             }
             canvas.hit(
                 Rect {
-                    x: 0,
+                    x: 1,
                     y,
-                    w: name_w + text_w + 3,
-                    h: 2,
+                    w: canvas.w.saturating_sub(2),
+                    h: 1,
                 },
                 Action::Item(*action),
             );
-            if row + 1 == shown.len() || y + 4 > footer {
-                canvas.text(0, y + 2, &rule("└", "┴", "┘"), BORDER);
-            }
         }
 
         if height > 1 {
