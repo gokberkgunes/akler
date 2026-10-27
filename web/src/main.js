@@ -122,8 +122,20 @@ let fontName = remembered in FONTS ? remembered : Object.keys(FONTS)[0];
 
 /** The CSS size: a bitmap font scales by whole screen pixels, 1× up to 125%
  *  display scaling and 2× from 150%. */
+/** Zoom steps from Ctrl+Up / Ctrl+Down: a pixel each for outline fonts, a
+ *  whole multiple of the pixel size for bitmap fonts. */
+const ZOOM_KEY = "akler-zoom";
+let zoom = (() => {
+  try {
+    return Number.parseInt(localStorage.getItem(ZOOM_KEY) ?? "0", 10) || 0;
+  } catch {
+    return 0;
+  }
+})();
 const fontSize = ({ size, pixels }) =>
-  pixels ? (pixels * Math.max(1, Math.round(devicePixelRatio))) / devicePixelRatio : size;
+  pixels
+    ? (pixels * Math.max(1, Math.round(devicePixelRatio) + zoom)) / devicePixelRatio
+    : Math.max(8, size + zoom);
 
 // xterm.js measures its cells from the font, so it must be loaded first.
 const loadFont = (font) =>
@@ -160,9 +172,22 @@ try {
 fit.fit();
 window.addEventListener("resize", () => fit.fit());
 // Ctrl+L belongs to the browser (the address bar), not to akler.
-terminal.attachCustomKeyEventHandler(
-  (event) => !(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "l"),
-);
+// Ctrl+R goes to the browser too; Ctrl+Up / Ctrl+Down zoom the terminal.
+terminal.attachCustomKeyEventHandler((event) => {
+  if (!event.ctrlKey || event.altKey || event.metaKey) return true;
+  const key = event.key.toLowerCase();
+  if (key === "l" || key === "r") return false;
+  if (key !== "arrowup" && key !== "arrowdown") return true;
+  if (event.type === "keydown") {
+    zoom = Math.min(12, Math.max(-6, zoom + (key === "arrowup" ? 1 : -1)));
+    applyFont();
+    try {
+      localStorage.setItem(ZOOM_KEY, String(zoom));
+    } catch {}
+  }
+  event.preventDefault();
+  return false;
+});
 
 // The theme button shows the current theme: a moon for dark, a sun for light.
 const ICONS = {

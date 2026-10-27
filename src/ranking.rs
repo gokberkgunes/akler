@@ -12,9 +12,9 @@ const RANK_MANA_START: usize = BASE_RANK_COUNT;
 
 const RANK_COUNT: usize = BASE_RANK_COUNT + mana2_metrics::N_STATS;
 
-const RANK_Y: usize = 4;
+const RANK_Y: usize = 3;
 
-const RANK_DATA: usize = 7;
+const RANK_DATA: usize = RANK_Y + 3;
 
 // The ordinary ranker only exposes AKLER's own metrics. Mana2 has a separate
 // catalog and entry point below so its statistics cannot leak into the normal
@@ -663,9 +663,6 @@ fn load_ranking_tui_for_settings(
     let owned = prepare_corpus_path_tui(term, path)?;
     action_ui::ngram_job(
         term,
-        "Ranking layouts (overall progress)",
-        &corpus_name(path),
-        "",
         move |stop, progress| {
             load_ranking_progress_for_mode(&owned, stop, progress, mana2, typing, spacegrams)
                 .map_err(|error| error.to_string())
@@ -1107,9 +1104,8 @@ fn choose_rank_settings(
         };
         match active {
             RankTab::Layouts => {
-                canvas.text(0, 0, "Ranker settings", FG);
-                draw_rank_tabs(&mut canvas, active, 1);
-                canvas.text(0, 2, &short("Space toggle · / search · ? help · 1/q apply · Esc cancel", canvas.w), MUTED);
+                draw_rank_tabs(&mut canvas, active, 0);
+                canvas.text(0, 1, &short("Space toggle · / search · ? help · 1/q apply · Esc cancel", canvas.w), MUTED);
                 let magic = format!(
                     "[m Magic hidden: {}]",
                     if draft.filters.hide_magic {
@@ -1202,9 +1198,8 @@ fn choose_rank_settings(
                 }
             }
             RankTab::Columns | RankTab::Rankings => {
-                canvas.text(0, 0, "Ranker settings", FG);
-                draw_rank_tabs(&mut canvas, active, 1);
-                canvas.text(0, 2, &short("Space toggle · d compact · a all · 1/q apply · Esc cancel", canvas.w), MUTED);
+                draw_rank_tabs(&mut canvas, active, 0);
+                canvas.text(0, 1, &short("Space toggle · d compact · a all · 1/q apply · Esc cancel", canvas.w), MUTED);
                 for index in column_scroll..(column_scroll + column_capacity).min(order.len()) {
                     let metric = order[index];
                     canvas.text(
@@ -1821,39 +1816,19 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         }
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
-        // Title and corpus, the tabs, then one line of options.
-        let title = if data.mana2 { "Mana2 ranker" } else { "Ranker" };
-        c.text(0, 0, title, FG);
-        let corpus_x = title.chars().count() + 2;
-        c.text(corpus_x, 0, &data.name, CYAN);
-        c.hit(
-            Rect {
-                x: corpus_x,
-                y: 0,
-                w: data
-                    .name
-                    .chars()
-                    .count()
-                    .min(width.saturating_sub(corpus_x)),
-                h: 1,
-            },
-            Action::Command('C'),
-        );
-        draw_rank_tabs(&mut c, RankTab::Rankings, 1);
+        // The tabs, then one line of options.
+        draw_rank_tabs(&mut c, RankTab::Rankings, 0);
         let on_off = |on: bool| (if on { "on" } else { "off" }.to_string(), if on { GREEN } else { MUTED });
-        let mut options = Vec::new();
-        if !data.mana2 {
-            options.push(('s', "Weights", (data.scoring.to_string(), CYAN)));
-        }
-        let alt_fingers = data.weights.alt_fingers_label();
-        options.extend([
-            ('f', "Alt fingers", (alt_fingers.to_string(), if alt_fingers == "disabled" { MUTED } else { GREEN })),
-            ('F', "Combos", on_off(data.weights.4)),
-            ('z', "Spacegrams", on_off(data.spacegrams)),
-            ('m', "Hide magic", on_off(data.filters.hide_magic)),
-            ('t', "Hide no-thumb", on_off(data.filters.hide_non_thumb)),
-        ]);
-        draw_option_line(&mut c, 2, &options);
+        let mode = if data.mana2 { "mana2" } else { data.scoring.as_str() };
+        let options = [
+            ('s', "Mode:", (mode.to_string(), CYAN)),
+            ('f', "Alts:", on_off(data.weights.3)),
+            ('F', "Combos:", on_off(data.weights.4)),
+            ('z', "Spacegrams:", on_off(data.spacegrams)),
+            ('m', "Hide magic:", on_off(data.filters.hide_magic)),
+            ('t', "Hide no-thumb:", on_off(data.filters.hide_non_thumb)),
+        ];
+        draw_option_line(&mut c, 1, &options);
         let bottom = draw_rank_table(
             &mut c,
             &grid,
@@ -1982,13 +1957,6 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     Err(error) => status = format!("Weights unchanged: {error}"),
                 }
             }
-            Event::Char('R') => {
-                let restart = term.request_ranker_restart(&data.path);
-                match restart {
-                    Ok(()) => return Ok(()),
-                    Err(error) => status = error.to_string(),
-                }
-            }
             Event::Enter => {
                 if let Some(&i) = order.get(selected) {
                     if data.physical_catalog() {
@@ -2012,11 +1980,11 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             Event::Tab => columns.first = columns.first.saturating_add(grid.capacity),
             Event::Home => columns.first = 0,
             Event::End => columns.first = grid.total,
-            Event::Char('u' | 'H') | Event::Redo => {
+            Event::Char('u' | 'U' | 'H') => {
                 let hidden = columns.hidden;
                 let rows_changed = match e {
                     Event::Char('u') => columns.undo(grid.capacity),
-                    Event::Redo => columns.redo(),
+                    Event::Char('U') => columns.redo(),
                     _ => columns.restore(),
                 };
                 status.clear();
@@ -2371,7 +2339,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     "/\tFilter layouts".into(),
                     ".\tChange decimal precision".into(),
                     "u\tUndo hiding".into(),
-                    "Ctrl+R\tRedo hiding".into(),
+                    "U\tRedo hiding".into(),
                     "H\tRestore manually hidden rows and columns".into(),
                     "1/2/3\tRankings / Layouts / Columns".into(),
                     "m\tToggle hiding magic".into(),
@@ -2383,7 +2351,6 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     "w\tWeakness report".into(),
                     "c\tChoose corpus".into(),
                     "r\tReload files".into(),
-                    "R\tRestart rebuilt program".into(),
                     "e\tView layout errors".into(),
                     "i\tView corpus notes".into(),
                     "q\tBack".into(),

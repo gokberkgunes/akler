@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-// WASI hosts have no stty or process restart (`HostTerminal`).
+// WASI hosts have no stty (`HostTerminal`).
 #[cfg(not(target_os = "wasi"))]
 use std::process::Command;
 

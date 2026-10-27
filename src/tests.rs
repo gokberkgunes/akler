@@ -2020,7 +2020,7 @@ fn numeric_metric_panel_matches_corpus_panel() {
 fn mouse_decoder_distinguishes_middle_press_release() {
     let mut d = Decoder::default();
     d.push(b"\x12");
-    assert_eq!(d.next(false), Some(Event::Redo));
+    assert_eq!(d.next(false), Some(Event::Tick));
     d.push(b"\x1b[<1;12;9M\x1b[<1;12;9m");
     assert_eq!(
         d.next(false),

@@ -128,7 +128,7 @@ fn temporary_file(path: &Path, suffix: &str) -> io::Result<(PathBuf, File)> {
         let serial = SAVE_SERIAL.fetch_add(1, Ordering::Relaxed);
         let name = format!(
             ".akler-{}-{}-{serial}.{suffix}",
-            std::process::id(),
+            crate::process_tag(),
             crate::timestamp()
         );
         let candidate = path.with_file_name(name);
@@ -1374,7 +1374,7 @@ mod tests {
     fn test_directory() -> PathBuf {
         let path = std::env::temp_dir().join(format!(
             "akler-pair-test-{}-{}",
-            std::process::id(),
+            crate::process_tag(),
             crate::timestamp()
         ));
         fs::create_dir(&path).unwrap();

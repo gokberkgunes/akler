@@ -962,7 +962,7 @@ mod scissor_tests {
             &format!("{:.4}", mana2_metrics::scissor(keys[first], keys[second]))
         );
 
-        let directory = std::env::temp_dir().join(format!("akler-scissors-{}", std::process::id()));
+        let directory = std::env::temp_dir().join(format!("akler-scissors-{}", crate::process_tag()));
         let mut log = ScissorLog::load(directory.join("qwerty.csv")).unwrap();
         log.lines.push(((first, second), line.clone()));
         log.lines.push(((first, second), line));

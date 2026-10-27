@@ -340,7 +340,7 @@ mod tests {
         };
         let parent = std::env::temp_dir().join(format!(
             "akler-magic-archive-test-{}-{}",
-            std::process::id(),
+            crate::process_tag(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()

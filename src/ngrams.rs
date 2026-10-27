@@ -998,7 +998,7 @@ fn rebuild_corpus_control(
         return Err("corpus contains no accepted text".into());
     }
     let path = cached_path(raw);
-    let tmp = path.with_extension(format!("{}.{}.tmp", std::process::id(), timestamp()));
+    let tmp = path.with_extension(format!("{}.{}.tmp", crate::process_tag(), timestamp()));
     let result = (|| -> AppResult<()> {
         let f = OpenOptions::new().create_new(true).write(true).open(&tmp)?;
         let mut w = BufWriter::with_capacity(1 << 20, f);
@@ -1393,7 +1393,7 @@ mod corpus_path_tests {
     fn temporary_directory(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "akler-{name}-{}-{}",
-            std::process::id(),
+            crate::process_tag(),
             timestamp()
         ))
     }

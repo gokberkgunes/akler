@@ -468,7 +468,7 @@ struct HomeState {
     selected: [usize; 3],
 }
 
-const HOME_TABS: [&str; 3] = [" [1] Workbench ", " [2] Analysis ", " [3] Data "];
+const HOME_TABS: [&str; 3] = ["1 Workbench", "2 Analysis", "3 Data"];
 
 const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
     &[
@@ -483,9 +483,8 @@ const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
     ],
 ];
 
-const HOME_DATA_ITEMS: [(usize, &str, &str); 2] = [
+const HOME_DATA_ITEMS: [(usize, &str, &str); 1] = [
     (3, "Corpora", "Inspect, import, and rebuild corpora"),
-    (7, "Reload program", "Restart into the rebuilt executable"),
 ];
 
 fn home_items(tab: usize) -> &'static [(usize, &'static str, &'static str)] {
@@ -513,24 +512,22 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
         let items = home_items(state.tab);
         state.selected[state.tab] = state.selected[state.tab].min(items.len() - 1);
 
-        let height = term.size.1.max(1);
+        // Home has no top bar, so it gets the whole screen.
+        let height = term.screen.1.max(1);
         let mut canvas = Canvas::new(term.width(), height);
-        workspace_tabs(&mut canvas, state.tab, &HOME_TABS);
+        boxed_tabs(&mut canvas, state.tab, &HOME_TABS);
         let section = match state.tab {
             0 => "Build and compare keyboard layouts",
             1 => "Inspect patterns and design changes",
             _ => "Manage application data",
         };
-        if height >= 10 {
-            canvas.text(2, 2, section, MUTED);
-        }
-        let first_row = if height >= 10 { 4 } else { 1 };
-        let stride = if height >= 10 { 2 } else { 1 };
+        canvas.text(2, 4, section, MUTED);
+        let first_row = 6;
         let footer = height.saturating_sub(1);
-        let capacity = footer.saturating_sub(first_row).div_ceil(stride).max(1);
+        let capacity = footer.saturating_sub(first_row).max(1);
         let start = state.selected[state.tab].saturating_sub(capacity - 1);
         for (row, (action, name, description)) in items.iter().skip(start).take(capacity).enumerate() {
-            let y = first_row + row * stride;
+            let y = first_row + row;
             if y >= footer { break; }
             let selected = row + start == state.selected[state.tab];
             if selected {
@@ -614,13 +611,9 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
                     "j k / ↑ ↓\tSelect".into(),
                     "Enter\tOpen".into(),
                     #[cfg(not(target_os = "wasi"))]
-                    "R\tReload program".into(),
-                    #[cfg(not(target_os = "wasi"))]
                     "q\tQuit".into(),
                 ],
             )?,
-            #[cfg(not(target_os = "wasi"))]
-            Event::Char('R') => return Ok(Some(7)),
             #[cfg(not(target_os = "wasi"))]
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
             _ => {}
@@ -863,61 +856,13 @@ fn tui_mode(
     }
 }
 
-pub(crate) fn restart_program_path() -> AppResult<PathBuf> {
-    let launched = std::env::args_os()
-        .next()
-        .ok_or("cannot determine the program used to launch akler")?;
-    let launched = PathBuf::from(launched);
-    if launched.is_absolute() || launched.components().count() > 1 {
-        let path = if launched.is_absolute() {
-            launched.clone()
-        } else {
-            std::env::current_dir()?.join(&launched)
-        };
-        if path.is_file() {
-            return Ok(path);
-        }
-    } else if let Some(search) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&search) {
-            let path = directory.join(&launched);
-            if path.is_file() {
-                return Ok(path);
-            }
-        }
-    }
-
-    let current = std::env::current_exe()?;
-    if current.is_file() {
-        return Ok(current);
-    }
-    // Linux marks /proc/self/exe this way after Cargo replaces a running
-    // binary. The unsuffixed path is the newly built executable.
-    if let Some(text) = current.to_str() {
-        if let Some(text) = text.strip_suffix(" (deleted)") {
-            let rebuilt = PathBuf::from(text);
-            if rebuilt.is_file() {
-                return Ok(rebuilt);
-            }
-        }
-    }
-    Err(format!(
-        "cannot find a current akler executable to reload (launched as {})",
-        launched.display()
-    )
-    .into())
-}
-
-#[cfg(unix)]
-fn restart_program(path: &Path, arguments: &[std::ffi::OsString]) -> AppResult<()> {
-    use std::os::unix::process::CommandExt;
-
-    let error = Command::new(path).args(arguments).exec();
-    Err(format!("cannot reload {}: {error}", path.display()).into())
-}
-
-#[cfg(not(unix))]
-fn restart_program(_: &Path, _: &[std::ffi::OsString]) -> AppResult<()> {
-    Err("reloading the program is not available on this platform".into())
+/// The process id, for temporary file names. WASI has no process ids and
+/// panics when asked, so the browser build uses 0; it runs alone anyway.
+pub(crate) fn process_tag() -> u32 {
+    #[cfg(target_os = "wasi")]
+    return 0;
+    #[cfg(not(target_os = "wasi"))]
+    std::process::id()
 }
 
 /// Threads to use by default. WASI reports one, so web hosts pass their
@@ -930,45 +875,25 @@ fn available_threads() -> usize {
         .unwrap_or_else(|| thread::available_parallelism().map_or(1, |threads| threads.get()))
 }
 
-fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
-    let os_args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let resume_ranker = if os_args
-        .first()
-        .is_some_and(|arg| arg == std::ffi::OsStr::new("--resume-ranker"))
-    {
-        if os_args.len() != 2 {
-            return Err("internal --resume-ranker requires one corpus path".into());
-        }
-        let path = PathBuf::from(&os_args[1]);
-        if !path.is_file() {
-            return Err(format!("corpus {} not found", path.display()).into());
-        }
-        Some(path)
-    } else {
-        None
-    };
-    let args: Vec<String> = if resume_ranker.is_none() {
-        std::env::args().skip(1).collect()
-    } else {
-        Vec::new()
-    };
+fn run() -> AppResult<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(cmd) = args.first() {
         match cmd.as_str() {
             "--version" | "-V" | "version" => {
                 println!("akler {BUILD}");
-                return Ok(None);
+                return Ok(());
             }
             "--help" | "-h" | "help" => {
                 println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
-                return Ok(None);
+                return Ok(());
             }
-            "corpus" => return corpus_command(&args[1..]).map(|_| None),
-            "scissor-words" => return scissor_words_command().map(|_| None),
-            "bench" => return crate::bench::command(&args[1..]).map(|_| None),
+            "corpus" => return corpus_command(&args[1..]),
+            "scissor-words" => return scissor_words_command(),
+            "bench" => return crate::bench::command(&args[1..]),
             "import" => {
                 let mut rest = vec!["add".to_string()];
                 rest.extend_from_slice(&args[1..]);
-                return corpus_command(&rest).map(|_| None);
+                return corpus_command(&rest);
             }
             "eval" => {
                 if args.len() < 2 || args.len() > 3 {
@@ -980,8 +905,7 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
                     default_corpus_path()?
                         .ok_or("corpus-reddit.json not found; provide a corpus path")?
                 };
-                return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?)
-                    .map(|_| None);
+                return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?);
             }
             "editor" | "edit" | "optimizer" | "optimize" | "ranker" | "rank" => {
                 let mode = match cmd.as_str() {
@@ -1004,30 +928,13 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
                         args.get(2).map(String::as_str),
                     )
                 };
-                let restart = if term.restart_requested {
-                    Some(
-                        term.restart_arguments
-                            .take()
-                            .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
-                    )
-                } else {
-                    None
-                };
                 drop(term);
-                result?;
-                return Ok(restart);
+                return result;
             }
             _ => return Err(format!("unknown mode {cmd}; use akler --help").into()),
         }
     }
     let mut term = Terminal::open()?;
-    if let Some(path) = resume_ranker {
-        if let Err(error) = ranking(&mut term, &path) {
-            if !term.quitting {
-                info_page(&mut term, "Error", &[error.to_string()])?;
-            }
-        }
-    }
     let mut home = HomeState::default();
     while !term.quitting {
         let choice = match home_menu(&mut term, &mut home)? {
@@ -1039,7 +946,6 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
             5 => weakness_open(&mut term),
             6 => magic_designer_main(&mut term),
             8 => scissor_test(&mut term),
-            7 => term.request_restart(),
             _ => tui_mode(
                 &mut term,
                 ["editor", "ranker", "optimizer"][choice],
@@ -1053,17 +959,8 @@ fn run() -> AppResult<Option<Vec<std::ffi::OsString>>> {
             }
         }
     }
-    let restart = if term.restart_requested {
-        Some(
-            term.restart_arguments
-                .take()
-                .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
-        )
-    } else {
-        None
-    };
     drop(term);
-    Ok(restart)
+    Ok(())
 }
 
 fn main() {
@@ -1074,35 +971,16 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let resuming_ranker =
-        std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new("--resume-ranker"));
-    let action_outcome = if resuming_ranker {
-        None
-    } else {
-        crate::action_ui::dispatch(&std::env::args().skip(1).collect::<Vec<_>>())
-    };
-    if let Some(outcome) = action_outcome {
+    if let Some(outcome) = crate::action_ui::dispatch(&std::env::args().skip(1).collect::<Vec<_>>()) {
         if let Err(error) = outcome {
             eprintln!("{error}");
             std::process::exit(1);
         }
         return;
     }
-    match run() {
-        Ok(Some(arguments)) => {
-            match restart_program_path().and_then(|path| restart_program(&path, &arguments)) {
-                Ok(()) => unreachable!(),
-                Err(error) => {
-                    eprintln!("{error}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("{error}");
-            std::process::exit(1);
-        }
+    if let Err(error) = run() {
+        eprintln!("{error}");
+        std::process::exit(1);
     }
 }
 
@@ -1274,7 +1152,7 @@ mod layout_dispatch_tests {
             .unwrap()
             .as_nanos();
         let directory = LayoutDirectory(
-            std::env::temp_dir().join(format!("akler-discovery-{}-{unique}", std::process::id(),)),
+            std::env::temp_dir().join(format!("akler-discovery-{}-{unique}", crate::process_tag(),)),
         );
         fs::create_dir(&directory.0).unwrap();
         let dat = action_keys::Layout::parse(PLAIN_JSON, Path::new("inline"))

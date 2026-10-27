@@ -16,7 +16,8 @@ akler corpus list|info|add|build|top ...
 
 The home menu has three tabs: **Workbench** (editor, ranker, optimizer),
 **Analysis** (weakness report, magic designer, scissor test) and **Data**
-(corpora, reload program). Press `?` on any screen for its controls.
+(corpora). Every other screen has a Back button at the top left. Press `?`
+on any screen for its controls.
 
 The scissor test asks for the layout you type on, shows words that press
 each same-hand, cross-row pair of fingers (or a drill like `ab ab ab`), and
@@ -44,7 +45,7 @@ Entries are `name = value`; `#` starts a comment; missing entries use
 defaults. Unknown sections or keys are errors. Saving from the TUI (`s` in
 optimizer setup, `q` in the ranker's column chooser, the `f`/`F`/`z` toggles)
 updates only the affected settings and keeps comments. Hiding a ranker column
-by clicking it also saves `columns`; `u`, Ctrl+R and `H` undo, redo and
+by clicking it also saves `columns`; `u`, `U` and `H` undo, redo and
 restore hides made in the grid.
 
 ### Spacegrams
@@ -93,7 +94,7 @@ by stat.
 - **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns. `s` switches the
   scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
   without a thumb letter, `u` restores the last hidden row or column, `H`
-  restores everything, `r` reloads, `R` restarts the rebuilt binary. Hidden
+  restores everything, `r` reloads. Hidden
   layouts are stored in `ranker-hidden.json`. Enter opens a layout in the
   editor.
 - **Editor:** click a metric to see its contributors. `m` switches between

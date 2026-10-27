@@ -17,6 +17,9 @@ const MUTED: u8 = 8;
 
 const BORDER: u8 = 9;
 
+/// The dimmed screen behind a popup: a dark grey no theme recolours.
+const DIM: u8 = 10;
+
 const BLUE: u8 = 4;
 
 const CYAN: u8 = 6;
@@ -111,6 +114,7 @@ fn ansi_color(color: u8) -> String {
         5 => "\x1b[35m",
         6 => "\x1b[36m",
         MUTED | BORDER => "\x1b[90m",
+        DIM => "\x1b[38;5;240m",
         _ => "\x1b[39m",
     }
     .into()
@@ -323,7 +327,6 @@ enum Event {
     Quit,
     Backspace,
     Clear,
-    Redo,
     Tab,
     Up,
     Down,
@@ -389,7 +392,6 @@ impl Decoder {
                 13 | 10 => Event::Enter,
                 127 | 8 => Event::Backspace,
                 21 => Event::Clear,
-                18 => Event::Redo,
                 9 => Event::Tab,
                 32..=126 => Event::Char(b as char),
                 _ => Event::Tick,
@@ -551,12 +553,12 @@ struct Terminal {
     /// The optimizer's [4] Score tab.
     optimizer_score: bool,
     quitting: bool,
-    restart_requested: bool,
-    restart_arguments: Option<Vec<std::ffi::OsString>>,
     /// Whether the top bar has the Back button; the home menu turns it off.
     show_back: bool,
     /// The Back button's columns in the top bar, as last drawn.
     back: Option<(usize, usize)>,
+    /// Rows of the top bar in the last frame: TOP_BAR, or 0 on home.
+    bar: usize,
     _reports: crate::profile_output::TerminalReports,
 }
 
@@ -610,10 +612,9 @@ impl Terminal {
             optimizer_weights: false,
             optimizer_score: false,
             quitting: false,
-            restart_requested: false,
-            restart_arguments: None,
             show_back: true,
             back: None,
+            bar: 0,
             _reports: reports,
         };
         // Alternate screen, SGR drag events, bracketed paste, cursor off, wrap off.
@@ -664,38 +665,6 @@ impl Terminal {
         Ok(())
     }
 
-    fn request_restart(&mut self) -> AppResult<()> {
-        if cfg!(target_os = "wasi") {
-            return Err("Reloading the program is not available here; reload the page instead.".into());
-        }
-        restart_program_path()?;
-        self.restart_arguments = if std::env::args_os().nth(1).as_deref()
-            == Some(std::ffi::OsStr::new("--resume-ranker"))
-        {
-            Some(Vec::new())
-        } else {
-            None
-        };
-        self.restart_requested = true;
-        self.quitting = true;
-        Ok(())
-    }
-
-    fn request_ranker_restart(&mut self, corpus: &Path) -> AppResult<()> {
-        self.request_restart()?;
-        let from_menu = match std::env::args_os().nth(1) {
-            None => true,
-            Some(argument) => argument == "--resume-ranker",
-        };
-        let mode = if from_menu {
-            "--resume-ranker"
-        } else {
-            "ranker"
-        };
-        self.restart_arguments = Some(vec![mode.into(), corpus.as_os_str().to_owned()]);
-        Ok(())
-    }
-
     fn width(&self) -> usize {
         self.size.0.clamp(64, PANEL_WIDTH)
     }
@@ -741,7 +710,7 @@ impl Terminal {
         // Screens see coordinates below the top bar; a click on its Back
         // button is read as Esc.
         let e = match e {
-            Event::Mouse { x, y, button, release, motion } if y < TOP_BAR => {
+            Event::Mouse { x, y, button, release, motion } if y < self.bar => {
                 let back = self.back.is_some_and(|(start, end)| (start..end).contains(&x));
                 return if back && button == 0 && !release && !motion {
                     Event::Escape
@@ -751,7 +720,7 @@ impl Terminal {
             }
             Event::Mouse { x, y, button, release, motion } => Event::Mouse {
                 x,
-                y: y - TOP_BAR,
+                y: y - self.bar,
                 button,
                 release,
                 motion,
@@ -779,7 +748,7 @@ impl Terminal {
 
     fn present(&mut self, c: &Canvas, scroll: usize) -> AppResult<()> {
         self.refresh_size()?;
-        let (w, h) = self.size;
+        let (w, h) = if self.show_back { self.size } else { self.screen };
         let scroll = scroll.min(c.h.saturating_sub(h));
         self.offset_x = 0;
         let mut view = vec![
@@ -819,16 +788,18 @@ impl Terminal {
                 };
             }
         }
-        // The top bar: a boxed Back button at the left, or the program's
-        // name on the home menu.
-        let blank = Cell {
-            ch: ' ',
-            color: FG,
-            background: None,
-            bold: false,
-        };
-        let mut frame = vec![blank; w * TOP_BAR];
+        // The top bar with the boxed Back button; the home menu has none.
         self.back = None;
+        self.bar = if self.show_back { TOP_BAR } else { 0 };
+        let mut frame = vec![
+            Cell {
+                ch: ' ',
+                color: FG,
+                background: None,
+                bold: false,
+            };
+            w * self.bar
+        ];
         if self.show_back {
             for (row, line) in BACK_BUTTON.iter().enumerate() {
                 for (x, ch) in line.chars().take(w).enumerate() {
@@ -841,18 +812,9 @@ impl Terminal {
                 }
             }
             self.back = Some((0, BACK_BUTTON[0].chars().count()));
-        } else {
-            for (x, ch) in "akler".chars().take(w.saturating_sub(2)).enumerate() {
-                frame[w + 2 + x] = Cell {
-                    ch,
-                    color: FG,
-                    background: None,
-                    bold: true,
-                };
-            }
         }
         frame.extend(view);
-        let (view, h) = (frame, h + TOP_BAR);
+        let (view, h) = (frame, h + self.bar);
         let mut out = String::new();
         if self.previous.len() != view.len() {
             out.push_str("\x1b[2J");
@@ -2486,7 +2448,8 @@ fn help_popup_frame(
     for y in 0..h.min(base.h) {
         for x in 0..w.min(base.w) {
             let mut cell = base.cells[y * base.w + x];
-            cell.color = MUTED;
+            cell.color = DIM;
+            cell.background = None;
             cell.bold = false;
             c.cells[y * w + x] = cell;
         }
@@ -2560,8 +2523,10 @@ fn help_popup_frame(
     for (index, (line, bold)) in lines.iter().skip(*scroll).take(capacity).enumerate() {
         let y = r.y + 2 + index;
         c.text(r.x + 2, y, &short(line, content_width), FG);
+        // Keys in yellow, like the ranker's options.
         for x in (r.x + 2)..(r.x + 2 + (*bold).min(content_width)) {
             c.cells[y * w + x].bold = true;
+            c.cells[y * w + x].color = YELLOW;
         }
     }
     if height >= 4 {
@@ -2601,12 +2566,14 @@ pub(crate) fn help_popup(
         lines
     };
     let mut scroll = 0usize;
-    // Use the visible frame, including the caller's scrolling, as the backdrop.
-    let snapshot = if term.previous.len() == term.size.0 * term.size.1 {
+    // Use the visible frame below the top bar, including the caller's
+    // scrolling, as the backdrop.
+    let (w, h) = term.size;
+    let snapshot = if term.bar == TOP_BAR && term.previous.len() == w * (h + TOP_BAR) {
         Some(Canvas {
-            w: term.size.0,
-            h: term.size.1,
-            cells: term.previous.clone(),
+            w,
+            h,
+            cells: term.previous[w * TOP_BAR..].to_vec(),
             hits: Vec::new(),
         })
     } else {
@@ -2911,19 +2878,12 @@ fn menu_with(
                 }
             }
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(None),
-            Event::Char('R') if title == "akler" => match term.request_restart() {
-                Ok(()) => return Ok(None),
-                Err(error) => help_popup(term, &c, "Reload program", &[error.to_string()])?,
-            },
             Event::Char('?') => {
-                let mut lines = vec![
+                let lines = [
                     "j/k or ↑/↓: select; Enter or click: open.".into(),
                     "/: filter; mouse wheel / PgUp / PgDn: scroll.".into(),
                     "q or Esc: back.".into(),
                 ];
-                if title == "akler" {
-                    lines.push("R or Reload program: restart into the rebuilt executable.".into());
-                }
                 help_popup(term, &c, title, &lines)?;
             }
             Event::Up | Event::Char('k') => selected = selected.saturating_sub(1),
@@ -4485,9 +4445,6 @@ fn optimizer_actions(
     limits.include_spacegrams = source.include_spacegrams;
     let Some(corpus) = action_ui::ngram_job(
         term,
-        "Load action optimizer corpus",
-        &source.name,
-        &layout.name,
         move |stop, progress| {
             let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
             action_ngrams::NgramCorpus::from_text_progress_with_limits(
@@ -5411,7 +5368,6 @@ fn rebuild_source_tui(
 ) -> AppResult<PathBuf> {
     let raw = raw.to_owned();
     let total = fs::metadata(&raw)?.len();
-    let name = corpus_name(&raw);
     let progress = Arc::new(AtomicU64::new(0));
     let worker_progress = progress.clone();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -5439,12 +5395,7 @@ fn rebuild_source_tui(
             }
             let mut c = Canvas::new(term.width(), 4);
             let n = progress.load(Ordering::Relaxed);
-            c.text(
-                0,
-                1,
-                &format!("{name}  {:.0}%", pct(n as f64, total as f64)),
-                CYAN,
-            );
+            progress_bar(&mut c, 1, pct(n as f64, total as f64));
             term.present(&c, 0)?;
             if matches!(
                 term.event()?,
@@ -5640,6 +5591,36 @@ mod saved_layout_identity_tests {
             .map(|cell| cell.ch)
             .collect::<String>();
         assert!(tabs.contains("Scoring: aklgg [t]"));
+    }
+}
+
+/// A loading bar with its percentage, nothing else.
+pub(crate) fn progress_bar(c: &mut Canvas, y: usize, percent: f64) {
+    let width = c.w.saturating_sub(10).min(60);
+    let filled = ((percent.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    c.text(2, y, &"━".repeat(filled), CYAN);
+    c.text(2 + filled, y, &"─".repeat(width - filled), BORDER);
+    c.text(3 + width, y, &format!("{percent:.0}%"), FG);
+}
+
+/// Tabs as boxes on rows 0–2, the active one in white; a click on a box
+/// presses its number.
+fn boxed_tabs(canvas: &mut Canvas, active: usize, labels: &[&str]) {
+    let mut x = 0;
+    for (index, label) in labels.iter().enumerate() {
+        let w = label.chars().count() + 4;
+        if x + w > canvas.w {
+            break;
+        }
+        let (border, text) = if index == active { (FG, FG) } else { (BORDER, MUTED) };
+        let line = "─".repeat(w - 2);
+        canvas.text(x, 0, &format!("┌{line}┐"), border);
+        canvas.text(x, 1, "│", border);
+        canvas.text(x + 2, 1, label, text);
+        canvas.text(x + w - 1, 1, "│", border);
+        canvas.text(x, 2, &format!("└{line}┘"), border);
+        canvas.hit(Rect { x, y: 0, w, h: 3 }, Action::Command(char::from(b'1' + index as u8)));
+        x += w + 1;
     }
 }
 

@@ -143,16 +143,8 @@ impl CorpusSession {
         } else {
             None
         };
-        let name = corpus_name(&path);
         let Some(snapshot) = crate::action_ui::ngram_job(
             term,
-            if action {
-                "Preparing action n-grams"
-            } else {
-                "Preparing ordinary n-grams"
-            },
-            &name,
-            "",
             move |stop, progress| {
                 let mut timing =
                     crate::load_profile::LoadProfile::new("prepare requested corpus engine");

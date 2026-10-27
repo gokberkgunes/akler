@@ -1559,7 +1559,7 @@ fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
         ));
         fs::copy(path, old)?;
     }
-    let tmp = path.with_file_name(format!(".akler-{}-{}.tmp", std::process::id(), timestamp()));
+    let tmp = path.with_file_name(format!(".akler-{}-{}.tmp", crate::process_tag(), timestamp()));
     let result = (|| -> AppResult<()> {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         if let Ok(metadata) = fs::metadata(path) {

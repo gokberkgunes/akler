@@ -260,9 +260,6 @@ pub(crate) fn evaluate_ranked(
 // Keep terminal input live while loading or evaluating cached contexts.
 pub(crate) fn ngram_job<T, F>(
     term: &mut Terminal,
-    title: &str,
-    corpus_name: &str,
-    layout_name: &str,
     job: F,
 ) -> AppResult<Option<T>>
 where
@@ -284,20 +281,8 @@ where
                 Err(mpsc::TryRecvError::Disconnected) => return Err("n-gram worker stopped".into()),
                 Err(mpsc::TryRecvError::Empty) => {}
             }
-            let mut canvas = Canvas::new(term.width(), 8);
-            header(
-                &mut canvas,
-                title,
-                corpus_name,
-                layout_name,
-                "Esc / q / Ctrl+C cancel",
-            );
-            canvas.text(
-                2,
-                4,
-                &format!("{}%", progress.load(Ordering::Relaxed)),
-                CYAN,
-            );
+            let mut canvas = Canvas::new(term.width(), 4);
+            progress_bar(&mut canvas, 1, progress.load(Ordering::Relaxed) as f64);
             term.present(&canvas, 0)?;
             if matches!(
                 term.event()?,
@@ -341,9 +326,6 @@ fn evaluate_tui_shared(
     let weights = w.clone();
     ngram_job(
         term,
-        &format!("{}-gram magic estimate", c.order),
-        &c.name,
-        &l.name,
         move |stop, progress| {
             evaluate_progress(&layout, &corpus, &weights, stop, progress).map(Arc::new)
         },
@@ -1632,9 +1614,6 @@ fn toggle_editor_spacegrams(
     let raw = fs::read_to_string(&path)?;
     let Some(next) = ngram_job(
         term,
-        "Reload spacegrams",
-        &corpus.name,
-        &layout.name,
         move |stop, progress| {
             ng::NgramCorpus::from_text_progress_with_limits(&raw, &path, limits, stop, progress)
         },
@@ -3658,22 +3637,7 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
         if command == "ranker" {
             let path = corpus_arg(args, 1)?;
             let mut term = Terminal::open()?;
-            let result = ranking(&mut term, &path);
-            let restart = if term.restart_requested {
-                Some(
-                    term.restart_arguments
-                        .take()
-                        .unwrap_or_else(|| std::env::args_os().skip(1).collect()),
-                )
-            } else {
-                None
-            };
-            drop(term);
-            result?;
-            if let Some(arguments) = restart {
-                restart_program(&restart_program_path()?, &arguments)?;
-            }
-            return Ok(());
+            return ranking(&mut term, &path);
         }
         let path = if let Some(p) = args.get(1) {
             PathBuf::from(p)

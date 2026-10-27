@@ -54,9 +54,6 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
             let limits = data.ngrams;
             let Some(corpus) = action_ui::ngram_job(
                 term,
-                "Load magic design corpus",
-                &data.name,
-                &original.name,
                 move |stop, progress| {
                     let raw = fs::read_to_string(&path).map_err(|error| error.to_string())?;
                     action_ngrams::NgramCorpus::from_text_progress_with_limits(
@@ -709,9 +706,6 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                         let corpus = Arc::clone(&corpus);
                         let Some(effects) = action_ui::ngram_job(
                             term,
-                            "Check magic rules",
-                            &data.name,
-                            &original.name,
                             move |stop, progress| {
                                 crate::magic_design::rule_effects(
                                     &layout, root, &corpus, &weights, stop, progress,
@@ -828,12 +822,8 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                 let mut run_settings = settings.clone();
                 run_settings.placement = PlacementMode::Existing;
 
-                let name = original.name.clone();
                 let Some(mut next) = action_ui::ngram_job(
                     term,
-                    "Iterative magic design",
-                    &data.name,
-                    &name,
                     move |stop, progress| {
                         crate::magic_design::iterative_refine(
                             &seed,
@@ -957,14 +947,10 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                             };
                             let mut recovery_settings = settings.clone();
                             recovery_settings.rule_settings.roots = recovered_allowed;
-                            let recovery_name = base.name.clone();
                             let weights = data.weights.clone();
                             let corpus = Arc::clone(&corpus);
                             if let Some(loaded) = action_ui::ngram_job(
                                 term,
-                                "Rescore saved candidates",
-                                &data.name,
-                                &recovery_name,
                                 move |stop, progress| {
                                     let before = action_summary::evaluate(
                                         &base, &corpus, &weights, stop, progress,
