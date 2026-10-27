@@ -1563,10 +1563,10 @@ fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
     let result = (|| -> AppResult<()> {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         if let Ok(metadata) = fs::metadata(path) {
-            f.set_permissions(metadata.permissions())?;
+            crate::copy_permissions(&f, metadata.permissions())?;
         }
         f.write_all(text.as_bytes())?;
-        f.sync_all()?;
+        crate::sync_file(&f)?;
         fs::rename(&tmp, path)?;
         Ok(())
     })();

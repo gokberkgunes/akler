@@ -993,14 +993,13 @@ fn draw_option_line(c: &mut Canvas, y: usize, options: &[(char, &str, (String, u
     }
 }
 
-fn draw_rank_tabs(canvas: &mut Canvas, active: RankTab, y: usize) {
+fn draw_rank_tabs(canvas: &mut Canvas, active: RankTab) {
     let index = match active {
         RankTab::Rankings => 0,
         RankTab::Layouts => 1,
         RankTab::Columns => 2,
     };
-    workspace_tabs_at(canvas, y, index,
-        &[" [1] Rankings ", " [2] Layouts ", " [3] Columns "]);
+    workspace_tabs_at(canvas, index, &[" [1] Rankings ", " [2] Layouts ", " [3] Columns "]);
 }
 
 #[derive(Clone)]
@@ -1104,7 +1103,7 @@ fn choose_rank_settings(
         };
         match active {
             RankTab::Layouts => {
-                draw_rank_tabs(&mut canvas, active, 0);
+                draw_rank_tabs(&mut canvas, active);
                 canvas.text(0, 1, &short("Space toggle · / search · ? help · 1/q apply · Esc cancel", canvas.w), MUTED);
                 let magic = format!(
                     "[m Magic hidden: {}]",
@@ -1198,7 +1197,7 @@ fn choose_rank_settings(
                 }
             }
             RankTab::Columns | RankTab::Rankings => {
-                draw_rank_tabs(&mut canvas, active, 0);
+                draw_rank_tabs(&mut canvas, active);
                 canvas.text(0, 1, &short("Space toggle · d compact · a all · 1/q apply · Esc cancel", canvas.w), MUTED);
                 for index in column_scroll..(column_scroll + column_capacity).min(order.len()) {
                     let metric = order[index];
@@ -1817,7 +1816,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
         // The tabs, then one line of options.
-        draw_rank_tabs(&mut c, RankTab::Rankings, 0);
+        draw_rank_tabs(&mut c, RankTab::Rankings);
         let on_off = |on: bool| (if on { "on" } else { "off" }.to_string(), if on { GREEN } else { MUTED });
         let mode = if data.mana2 { "mana2" } else { data.scoring.as_str() };
         let options = [

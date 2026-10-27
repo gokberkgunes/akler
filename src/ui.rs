@@ -190,6 +190,9 @@ struct Canvas {
     h: usize,
     cells: Vec<Cell>,
     hits: Vec<(Rect, Action)>,
+    /// Tabs for the top bar (active index, labels); row 0 is then theirs
+    /// and is not shown.
+    tabs: Option<(usize, Vec<String>)>,
 }
 
 impl Canvas {
@@ -208,6 +211,7 @@ impl Canvas {
                 w * h
             ],
             hits: Vec::new(),
+            tabs: None,
         }
     }
 
@@ -229,6 +233,7 @@ impl Canvas {
                 w * h
             ],
             hits: Vec::new(),
+            tabs: None,
         }
     }
 
@@ -555,10 +560,12 @@ struct Terminal {
     quitting: bool,
     /// Whether the top bar has the Back button; the home menu turns it off.
     show_back: bool,
-    /// The Back button's columns in the top bar, as last drawn.
-    back: Option<(usize, usize)>,
+    /// Click targets in the top bar, as last drawn: the Back button and tabs.
+    bar_hits: Vec<(Rect, Action)>,
     /// Rows of the top bar in the last frame: TOP_BAR, or 0 on home.
     bar: usize,
+    /// Canvas rows hidden above the screen: 1 when the tabs moved to the bar.
+    skip: usize,
     _reports: crate::profile_output::TerminalReports,
 }
 
@@ -613,8 +620,9 @@ impl Terminal {
             optimizer_score: false,
             quitting: false,
             show_back: true,
-            back: None,
+            bar_hits: Vec::new(),
             bar: 0,
+            skip: 0,
             _reports: reports,
         };
         // Alternate screen, SGR drag events, bracketed paste, cursor off, wrap off.
@@ -707,20 +715,22 @@ impl Terminal {
     }
 
     fn visible_event(&mut self, e: Event) -> Event {
-        // Screens see coordinates below the top bar; a click on its Back
-        // button is read as Esc.
+        // Screens see coordinates below the top bar. A click on its Back
+        // button is read as Esc, and on a tab as that tab's number.
         let e = match e {
             Event::Mouse { x, y, button, release, motion } if y < self.bar => {
-                let back = self.back.is_some_and(|(start, end)| (start..end).contains(&x));
-                return if back && button == 0 && !release && !motion {
-                    Event::Escape
-                } else {
-                    Event::Tick
+                let pressed = (button == 0 && !release && !motion)
+                    .then(|| self.bar_hits.iter().find(|(r, _)| r.contains(x, y)))
+                    .flatten();
+                return match pressed {
+                    Some((_, Action::Command('\u{1b}'))) => Event::Escape,
+                    Some((_, Action::Command(key))) => Event::Char(*key),
+                    _ => Event::Tick,
                 };
             }
             Event::Mouse { x, y, button, release, motion } => Event::Mouse {
                 x,
-                y: y - self.bar,
+                y: y - self.bar + self.skip,
                 button,
                 release,
                 motion,
@@ -760,12 +770,16 @@ impl Terminal {
             };
             w * h
         ];
+        // With tabs in the top bar, the canvas row that held them is skipped.
+        let skip = if self.show_back { usize::from(c.tabs.is_some()) } else { 0 };
+        // Some screens set h after drawing; never read past the cells.
+        let rows = c.h.min(c.cells.len() / c.w.max(1));
         for y in 0..h {
-            if y + scroll >= c.h {
+            if y + scroll + skip >= rows {
                 break;
             }
             for x in 0..c.w.min(w) {
-                view[y * w + x + self.offset_x] = c.cells[(y + scroll) * c.w + x];
+                view[y * w + x + self.offset_x] = c.cells[(y + scroll + skip) * c.w + x];
             }
         }
         if w < 64 || h < 12 {
@@ -788,30 +802,37 @@ impl Terminal {
                 };
             }
         }
-        // The top bar with the boxed Back button; the home menu has none.
-        self.back = None;
+        // The top bar: the boxed Back button, then the screen's tabs as
+        // connected boxes. The home menu has no bar.
         self.bar = if self.show_back { TOP_BAR } else { 0 };
-        let mut frame = vec![
-            Cell {
-                ch: ' ',
-                color: FG,
-                background: None,
-                bold: false,
-            };
-            w * self.bar
-        ];
+        self.skip = skip;
+        let mut bar = Canvas::new(w, self.bar);
         if self.show_back {
             for (row, line) in BACK_BUTTON.iter().enumerate() {
-                for (x, ch) in line.chars().take(w).enumerate() {
-                    frame[row * w + x] = Cell {
-                        ch,
-                        color: FG,
-                        background: None,
-                        bold: row == 1,
-                    };
-                }
+                bar.text(0, row, line, FG);
             }
-            self.back = Some((0, BACK_BUTTON[0].chars().count()));
+            let back = BACK_BUTTON[0].chars().count();
+            for x in 0..back.min(bar.w) {
+                bar.cells[bar.w + x].bold = true;
+            }
+            bar.hit(Rect { x: 0, y: 0, w: back, h: TOP_BAR }, Action::Command('\u{1b}'));
+            if let Some((active, labels)) = &c.tabs {
+                tab_boxes(&mut bar, back + 1, 0, *active, labels);
+            }
+        }
+        self.bar_hits = std::mem::take(&mut bar.hits);
+        let mut frame = Vec::with_capacity(w * (h + self.bar));
+        for y in 0..self.bar {
+            frame.extend_from_slice(&bar.cells[y * bar.w..(y + 1) * bar.w]);
+            frame.resize(
+                (y + 1) * w,
+                Cell {
+                    ch: ' ',
+                    color: FG,
+                    background: None,
+                    bold: false,
+                },
+            );
         }
         frame.extend(view);
         let (view, h) = (frame, h + self.bar);
@@ -2575,6 +2596,7 @@ pub(crate) fn help_popup(
             h,
             cells: term.previous[w * TOP_BAR..].to_vec(),
             hits: Vec::new(),
+            tabs: None,
         })
     } else {
         None
@@ -4404,7 +4426,7 @@ const OPTIMIZER_TABS: [&str; 4] =
     [" [1] Overview ", " [2] Settings ", " [3] Weights ", " [4] Score "];
 
 pub(crate) fn optimizer_tabs(canvas: &mut Canvas, active: usize, corpus: &str, layout: &str, mode: &str) {
-    workspace_tabs_at(canvas, 0, active, &OPTIMIZER_TABS);
+    workspace_tabs_at(canvas, active, &OPTIMIZER_TABS);
     for x in 0..canvas.w {
         canvas.put(x, 1, ' ', MUTED);
     }
@@ -5192,7 +5214,7 @@ fn save_batch(p: &Problem, res: &Snapshot, start: &[usize], locks: &[bool]) -> A
         match OpenOptions::new().create_new(true).write(true).open(&path) {
             Ok(mut f) => {
                 f.write_all(out.as_bytes())?;
-                f.sync_all()?;
+                crate::sync_file(&f)?;
                 return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
@@ -5603,95 +5625,62 @@ pub(crate) fn progress_bar(c: &mut Canvas, y: usize, percent: f64) {
     c.text(3 + width, y, &format!("{percent:.0}%"), FG);
 }
 
-/// Tabs as boxes on rows 0–2, the active one in white; a click on a box
-/// presses its number.
-fn boxed_tabs(canvas: &mut Canvas, active: usize, labels: &[&str]) {
-    let mut x = 0;
-    for (index, label) in labels.iter().enumerate() {
-        let w = label.chars().count() + 4;
-        if x + w > canvas.w {
-            break;
-        }
-        let (border, text) = if index == active { (FG, FG) } else { (BORDER, MUTED) };
-        let line = "─".repeat(w - 2);
-        canvas.text(x, 0, &format!("┌{line}┐"), border);
-        canvas.text(x, 1, "│", border);
-        canvas.text(x + 2, 1, label, text);
-        canvas.text(x + w - 1, 1, "│", border);
-        canvas.text(x, 2, &format!("└{line}┘"), border);
-        canvas.hit(Rect { x, y: 0, w, h: 3 }, Action::Command(char::from(b'1' + index as u8)));
-        x += w + 1;
-    }
-}
-
-fn workspace_tabs(canvas: &mut Canvas, active: usize, labels: &[&str]) {
-    workspace_tabs_at(canvas, 0, active, labels);
-}
-
-/// Shared tab appearance and mouse targets across workspaces. Compact evenly
-/// when the terminal cannot fit the full labels, keeping every tab reachable.
-fn workspace_tabs_at(canvas: &mut Canvas, y: usize, active: usize, labels: &[&str]) {
-    if labels.is_empty() || y >= canvas.h {
+/// Tabs as connected boxes on rows y..y+3 from column x, the active one
+/// highlighted; a click on a box presses its number.
+fn tab_boxes(c: &mut Canvas, x: usize, y: usize, active: usize, labels: &[String]) {
+    if labels.is_empty() || x >= c.w {
         return;
     }
-    canvas.row_style(
-        Rect {
-            x: 0,
-            y,
-            w: canvas.w,
-            h: 1,
-        },
-        Some((22, 22, 22)),
-        false,
-    );
-    for x in 0..canvas.w {
-        canvas.put(x, y, ' ', MUTED);
-    }
+    // Shorten the labels evenly when the boxes do not fit.
+    let room = c.w.saturating_sub(x + 1 + 3 * labels.len());
     let natural: usize = labels.iter().map(|label| label.chars().count()).sum();
-    let compact = natural > canvas.w;
-    let mut x = 0;
-    for (index, label) in labels.iter().enumerate() {
-        let width = if compact {
-            canvas.w / labels.len() + usize::from(index < canvas.w % labels.len())
-        } else {
-            label.chars().count()
-        };
-        if width == 0 {
-            continue;
+    let widths: Vec<usize> = labels
+        .iter()
+        .map(|label| {
+            let n = label.chars().count();
+            if natural <= room { n } else { (room / labels.len()).max(1).min(n) }
+        })
+        .collect();
+    let mut left = x;
+    for (index, (label, width)) in labels.iter().zip(&widths).enumerate() {
+        let inner = width + 2;
+        let first = index == 0;
+        let last = index + 1 == labels.len();
+        let line = "─".repeat(inner);
+        c.text(left, y, &format!("{}{line}{}", if first { "┌" } else { "┬" }, if last { "┐" } else { "" }), BORDER);
+        c.text(left, y + 1, "│", BORDER);
+        let selected = index == active;
+        c.text(left + 2, y + 1, &short(label, *width), if selected { FG } else { MUTED });
+        if selected {
+            c.row_style(Rect { x: left + 1, y: y + 1, w: inner, h: 1 }, Some((58, 58, 58)), true);
         }
-        canvas.text(
-            x,
-            y,
-            &short(label, width),
-            if index == active { FG } else { MUTED },
-        );
-        canvas.row_style(
-            Rect {
-                x,
-                y,
-                w: width,
-                h: 1,
-            },
-            Some(if index == active {
-                (58, 58, 58)
-            } else {
-                (22, 22, 22)
-            }),
-            false,
-        );
+        if last {
+            c.text(left + inner + 1, y + 1, "│", BORDER);
+        }
+        c.text(left, y + 2, &format!("{}{line}{}", if first { "└" } else { "┴" }, if last { "┘" } else { "" }), BORDER);
         if index < 9 {
-            canvas.hit(
-                Rect {
-                    x,
-                    y,
-                    w: width,
-                    h: 1,
-                },
+            c.hit(
+                Rect { x: left, y, w: inner + 2, h: 3 },
                 Action::Command(char::from(b'1' + index as u8)),
             );
         }
-        x += width;
+        left += inner + 1;
     }
+}
+
+/// "[1] Rankings" as "1 Rankings".
+fn tab_label(label: &str) -> String {
+    label.trim().replace(['[', ']'], "")
+}
+
+fn workspace_tabs(canvas: &mut Canvas, active: usize, labels: &[&str]) {
+    workspace_tabs_at(canvas, active, labels);
+}
+
+/// Shared tabs across workspaces: they are drawn as boxes in the top bar,
+/// and row 0 of the canvas, which used to hold them, is not shown.
+fn workspace_tabs_at(canvas: &mut Canvas, active: usize, labels: &[&str]) {
+    canvas.tabs = Some((active, labels.iter().map(|label| tab_label(label)).collect()));
 }
 
 #[cfg(test)]

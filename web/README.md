@@ -12,7 +12,12 @@ cd web
 npm install                               # once
 npm run build                             # writes web/dist
 npm run serve                             # http://localhost:8080/
+npm run check                             # native and wasm give the same output
 ```
+
+`npm run check` runs every served layout's evaluation and two short
+fixed-seed benches natively and under the Wasmer CLI (`~/.wasmer/bin/wasmer`,
+or `$WASMER`), and lists any output that differs; timings are ignored.
 
 `npm run build` compiles `akler.wasm`, copies the page and its runtime into
 `web/dist`, and bundles the data: layouts, the reddit corpus (`CORPORA` in

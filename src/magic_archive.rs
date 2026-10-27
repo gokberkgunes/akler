@@ -26,7 +26,7 @@ fn write_new(path: &Path, text: &str) -> Result<()> {
         .open(path)
         .map_err(|e| format!("{}: {e}", path.display()))?;
     file.write_all(text.as_bytes())
-        .and_then(|_| file.sync_all())
+        .and_then(|_| crate::sync_file(&file))
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 

@@ -5,7 +5,8 @@
   "scripts": {
     "build": "node build.mjs",
     "serve": "node serve.mjs",
-    "deploy": "node deploy.mjs"
+    "deploy": "node deploy.mjs",
+    "check": "node check.mjs"
   },
   "dependencies": {
     "@wasmer/sdk": "^0.19.1",

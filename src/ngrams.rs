@@ -1034,7 +1034,7 @@ fn rebuild_corpus_control(
                 .any(|b| b.is_ascii_uppercase())
         )?;
         w.flush()?;
-        w.get_ref().sync_all()?;
+        crate::sync_file(&w.get_ref())?;
         if cancel.map(|c| c.load(Ordering::Relaxed)).unwrap_or(false) {
             return Err("corpus build cancelled".into());
         }
@@ -1179,7 +1179,7 @@ fn import_corpus_text(name: &str, input: &Path, config: Option<&Path>) -> AppRes
         .open(&path)?;
     let result = (|| -> AppResult<()> {
         io::copy(&mut File::open(input)?, &mut dst)?;
-        dst.sync_all()?;
+        crate::sync_file(&dst)?;
         Ok(())
     })();
     if result.is_err() {
@@ -1201,7 +1201,7 @@ fn import_corpus_text(name: &str, input: &Path, config: Option<&Path>) -> AppRes
         };
         let result = (|| -> AppResult<()> {
             f.write_all(&bytes)?;
-            f.sync_all()?;
+            crate::sync_file(&f)?;
             Ok(())
         })();
         if let Err(error) = result {

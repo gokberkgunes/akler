@@ -59,7 +59,7 @@ fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBu
         };
         let result = file
             .write_all(text.as_bytes())
-            .and_then(|_| file.sync_all());
+            .and_then(|_| crate::sync_file(&file));
         drop(file);
         if let Err(error) = result {
             let _ = fs::remove_file(&path);
@@ -109,8 +109,8 @@ pub(crate) fn save_pair(dat_path: &Path, dat: &str, jsonc: &str) -> io::Result<(
     let result = (|| {
         dat_file.write_all(dat.as_bytes())?;
         jsonc_file.write_all(jsonc.as_bytes())?;
-        dat_file.sync_all()?;
-        jsonc_file.sync_all()
+        crate::sync_file(&dat_file)?;
+        crate::sync_file(&jsonc_file)
     })();
     drop(dat_file);
     drop(jsonc_file);
@@ -158,10 +158,10 @@ fn staged_file(path: &Path, text: &str) -> io::Result<PathBuf> {
                     "save target is not a file",
                 ));
             }
-            file.set_permissions(metadata.permissions())?;
+            crate::copy_permissions(&file, metadata.permissions())?;
         }
         file.write_all(text.as_bytes())?;
-        file.sync_all()
+        crate::sync_file(&file)
     })();
     drop(file);
     if let Err(error) = result {
@@ -187,8 +187,8 @@ fn backup_file(path: &Path) -> io::Result<Option<PathBuf>> {
     let result = (|| {
         let mut source = File::open(path)?;
         io::copy(&mut source, &mut file)?;
-        file.set_permissions(source.metadata()?.permissions())?;
-        file.sync_all()
+        crate::copy_permissions(&file, source.metadata()?.permissions())?;
+        crate::sync_file(&file)
     })();
     drop(file);
     if let Err(error) = result {
