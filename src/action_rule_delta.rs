@@ -474,7 +474,7 @@ fn safe_actions(layout: &ak::Layout) -> bool {
     })
 }
 
-fn same_json_slice(left: &[Json], right: &[Json]) -> bool {
+pub(crate) fn same_json_slice(left: &[Json], right: &[Json]) -> bool {
     left.len() == right.len() && left.iter().zip(right).all(|(a, b)| same_json(a, b))
 }
 

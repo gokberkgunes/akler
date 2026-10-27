@@ -4020,6 +4020,17 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
     }
 }
 
+/// Numbers a screened score reads from one unit of a tail: the weighted
+/// counters per score group, the SRAF, roll and rhythm denominators, the four
+/// totals, then the capped metrics' counters (`PROJECTED_CAPS`).
+#[derive(Clone, Copy)]
+struct TailProjection([f64; PROJECTED]);
+
+const PROJECTED: usize = SCORE_GROUPS + 3 + 4 + 4;
+
+/// The capped metrics, in `Proposal::screened`'s order.
+const PROJECTED_CAPS: [usize; 4] = [SFB, SFS, TRAVEL, SFTRAVEL];
+
 // Reused across candidates. Only these numeric totals and tail patches are
 // needed to accept a swap. No report, histogram or textual representation.
 pub(crate) struct Proposal {
@@ -4066,6 +4077,15 @@ pub(crate) struct Proposal {
     /// Screened `chord_direct` contexts whose grams the move relabels,
     /// ascending; a replay adds them to the changes (`expand_chord_relabels`).
     chord_relabels: Vec<u32>,
+    /// Projected tails (`TailProjection`) by tail key, for the geometry they
+    /// were computed with.
+    projections: HashMap<u64, TailProjection, FastHash>,
+    projection_geometry: Arc<Geometry>,
+    /// The net tails a screened trial drained, before projecting them.
+    drained: Vec<(u64, f64)>,
+    /// A projected trial's screened score and capped metrics (SFB, SFS,
+    /// TRAVEL, SFTRAVEL); its raw counters are then the current layout's.
+    screened: Option<(f64, [f64; 4])>,
 }
 
 impl Proposal {
@@ -4094,6 +4114,10 @@ impl Proposal {
             net: NetTable::default(),
             contextual: HashMap::new(),
             contextual_geometry: Arc::new(Geometry::new(Vec::new())),
+            projections: HashMap::default(),
+            projection_geometry: Arc::new(Geometry::new(Vec::new())),
+            drained: Vec::new(),
+            screened: None,
             group_changes: Vec::new(),
             group_marks: Vec::new(),
             context_marks: Vec::new(),
@@ -4116,6 +4140,12 @@ impl Proposal {
     }
     pub(crate) fn metrics(&self) -> Metrics {
         metrics_totals(&self.raw, &self.totals)
+    }
+
+    /// A projected screened trial's score and capped metrics (SFB, SFS,
+    /// TRAVEL, SFTRAVEL); None when its raw counters hold its sums instead.
+    pub(crate) fn screened(&self) -> Option<(f64, [f64; 4])> {
+        self.screened
     }
 
     pub(crate) fn physical_score(&self, weights: &Weights) -> f64 {
@@ -4283,6 +4313,10 @@ pub(crate) struct Incremental {
     finite_effort: bool,
     /// Trials screen by net tail frequencies (`enable_aggregation`).
     aggregate: bool,
+    /// Screening's score as terms (`score_terms`): with them, screened trials
+    /// sum each net tail's projection (`TailProjection`) instead of its raw
+    /// counters.
+    score_terms: Option<Arc<[(usize, usize, f64)]>>,
     active_mana2: Option<mana2_metrics::ActiveStats>,
     projection_mass: f64,
     projection_min_frequency: f64,
@@ -4672,6 +4706,7 @@ impl Incremental {
             combos,
             finite_effort: false,
             aggregate: false,
+            score_terms: None,
             active_mana2: None,
             projection_mass: 0.0,
             projection_min_frequency: 0.0,
@@ -5299,6 +5334,7 @@ impl Incremental {
         proposal.raw.clone_from(&self.raw);
         proposal.totals = self.totals;
         proposal.speed_populations = self.corpus.speed_populations;
+        proposal.screened = None;
         let active = self.active_mana2.filter(|_| {
             self.contributions
                 .mana2
@@ -6059,10 +6095,20 @@ impl Incremental {
             }
             if aggregate {
                 let contribution_start = clock::<DETAIL>();
-                for (key, weight) in proposal.net.drain() {
-                    if weight == 0.0 {
-                        continue;
-                    }
+                let mut drained = std::mem::take(&mut proposal.drained);
+                drained.clear();
+                drained.extend(proposal.net.drain().filter(|&(_, weight)| weight != 0.0));
+                // Plain tails need only their projections for the score.
+                let projectable = self.score_terms.is_some()
+                    && proposal.raw.1.is_none()
+                    && drained.iter().all(|&(key, _)| {
+                        let (_, fingers, usage) = unpack_key(key);
+                        fingers.is_none() && !usage
+                    });
+                if projectable {
+                    self.project(proposal, &drained);
+                }
+                for &(key, weight) in drained.iter().filter(|_| !projectable) {
                     let (tail, fingers, usage) = unpack_key(key);
                     if usage {
                         self.contributions.apply_combo_usage(
@@ -6110,6 +6156,7 @@ impl Incremental {
                         );
                     }
                 }
+                proposal.drained = drained;
                 proposal.aggregated = true;
                 if DETAIL {
                     profile.contributions += elapsed::<DETAIL>(contribution_start);
@@ -6247,6 +6294,12 @@ impl Incremental {
             })
         });
         pack_key(tail, contextual.unwrap_or([GAP; 3]), false)
+    }
+
+    /// Score screened trials from `terms` (`score_terms` of the search's
+    /// weights): `Proposal::screened` then holds the score and capped metrics.
+    pub(crate) fn enable_score_projection(&mut self, terms: Vec<(usize, usize, f64)>) {
+        self.score_terms = Some(terms.into());
     }
 
     /// Screen trials by each distinct tail's net frequency instead of every
@@ -6453,6 +6506,81 @@ impl Incremental {
         }
     }
 
+    /// A screened trial's score and capped metrics from its net tails'
+    /// projections (`Proposal::screened`): the current counters' weighted
+    /// group sums plus each tail's, over the groups' denominators. Sums differ
+    /// from the counters' in the last bits, as screened sums do.
+    fn project(&self, proposal: &mut Proposal, drained: &[(u64, f64)]) {
+        let terms = self.score_terms.as_deref().unwrap();
+        if !Arc::ptr_eq(&proposal.projection_geometry, &self.geometry) {
+            proposal.projections.clear();
+            proposal.projection_geometry = Arc::clone(&self.geometry);
+        }
+        let mut sum = [0.0; PROJECTED];
+        for &(key, weight) in drained {
+            let projection = proposal
+                .projections
+                .entry(key)
+                .or_insert_with(|| self.tail_projection(unpack_key(key).0, terms));
+            for (total, value) in sum.iter_mut().zip(projection.0) {
+                *total += weight * value;
+            }
+        }
+        let raw = &proposal.raw;
+        let mut numerators = [0.0; SCORE_GROUPS];
+        for &(counter, group, weight) in terms {
+            numerators[group] += weight * raw.0[counter].max(0.0);
+        }
+        for (numerator, added) in numerators.iter_mut().zip(&sum[..SCORE_GROUPS]) {
+            *numerator += added;
+        }
+        for (total, added) in proposal.totals.iter_mut().zip(&sum[9..13]) {
+            *total += added;
+        }
+        let totals = proposal.totals;
+        let denominators = [
+            totals[0],
+            totals[1],
+            totals[2],
+            (raw.0[SRAF_DEN] + sum[6]).max(0.0),
+            (raw.0[ROLL_DEN] + sum[7]).max(0.0),
+            (raw.0[RHYTHM_DEN] + sum[8]).max(0.0),
+        ];
+        let score = numerators
+            .iter()
+            .zip(&denominators)
+            .map(|(&numerator, &denominator)| pct(numerator, denominator))
+            .sum();
+        let capped = std::array::from_fn(|k| {
+            let metric = PROJECTED_CAPS[k];
+            pct(
+                (raw.0[metric] + sum[13 + k]).max(0.0),
+                denominators[score_group(metric)],
+            )
+        });
+        proposal.screened = Some((score, capped));
+    }
+
+    /// One unit of `tail`'s contribution, as `TailContributions::apply` adds
+    /// it, reduced to what the score and caps read.
+    fn tail_projection(&self, tail: Tail, terms: &[(usize, usize, f64)]) -> TailProjection {
+        let mut raw = Raw::default();
+        let mut totals = [0.0; 4];
+        self.contributions.apply(&mut raw, &mut totals, tail, 1.0, &self.geometry);
+        let mut projection = [0.0; PROJECTED];
+        for &(counter, group, weight) in terms {
+            projection[group] += weight * raw.0[counter];
+        }
+        projection[6] = raw.0[SRAF_DEN];
+        projection[7] = raw.0[ROLL_DEN];
+        projection[8] = raw.0[RHYTHM_DEN];
+        projection[9..13].copy_from_slice(&totals);
+        for (k, &metric) in PROJECTED_CAPS.iter().enumerate() {
+            projection[13 + k] = raw.0[metric];
+        }
+        TailProjection(projection)
+    }
+
     fn materialize(&self, proposal: &mut Proposal) {
         assert!(
             !proposal.omitted_changes,
@@ -6461,6 +6589,7 @@ impl Incremental {
         if proposal.aggregated {
             self.expand_chord_relabels(proposal);
             self.expand_group_changes(proposal);
+            proposal.screened = None;
             proposal.raw.clone_from(&self.raw);
             proposal.totals = self.totals;
             proposal.speed_populations = self.corpus.speed_populations;

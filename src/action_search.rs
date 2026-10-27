@@ -191,6 +191,25 @@ fn diverse(
     out
 }
 
+/// What a trial's score and cap checks read: a projected screened trial
+/// carries only its capped metrics (`ng::Proposal::screened`).
+fn scoring_metrics(proposal: &ng::Proposal) -> Metrics {
+    match proposal.screened() {
+        Some((_, capped)) => {
+            let mut v = [0.0; N_METRICS];
+            for (metric, value) in [SFB, SFS, TRAVEL, SFTRAVEL].into_iter().zip(capped) {
+                v[metric] = value;
+            }
+            Metrics {
+                v,
+                usage: [0.0; 10],
+                off: [0.0; 8],
+            }
+        }
+        None => proposal.metrics(),
+    }
+}
+
 fn objective(metrics: &Metrics, weights: &Weights, _settings: &SearchSettings) -> f64 {
     breakdown(metrics, weights).net
 }
@@ -464,7 +483,7 @@ impl Problem<'_> {
             if self.shares[i] == 0.0 {
                 return false;
             }
-            let metrics = proposal.metrics();
+            let metrics = scoring_metrics(proposal);
             limits.iter().any(|&(metric, limit)| {
                 limit.is_some_and(|increase| {
                     near(
@@ -490,8 +509,10 @@ impl Problem<'_> {
         let mut excess = 0.0;
         for (i, proposal) in self.proposals.iter().enumerate() {
             let score_start = clock::<PROFILE>();
-            let metrics = proposal.metrics();
-            let value = if self.settings.uses_mana2_stats() {
+            let metrics = scoring_metrics(proposal);
+            let value = if let Some((score, _)) = proposal.screened() {
+                score
+            } else if self.settings.uses_mana2_stats() {
                 proposal.physical_score(self.weights)
             } else {
                 objective(&metrics, self.weights, self.settings)
@@ -1100,6 +1121,8 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
         }
         if settings.uses_mana2_stats() {
             cache.enable_mana2();
+        } else if screening {
+            cache.enable_score_projection(score_terms(weights));
         }
         if let Some(metrics) = external_baseline {
             baseline.push(metrics[corpus_index].clone());

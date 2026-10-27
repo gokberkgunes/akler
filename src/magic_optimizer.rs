@@ -304,6 +304,65 @@ fn exact_candidate_reusing(
     }))
 }
 
+/// Fits one worker has made, by input layout. A fit's result depends only on
+/// the layout it starts from (the scorer's starting mappings only speed it
+/// up), so a chunk ending where an earlier one did reuses the earlier fits.
+#[derive(Default)]
+struct FitMemo {
+    combos: Vec<(ak::Layout, Option<(ak::Layout, Option<JointResult>)>)>,
+    swaps: Vec<(ak::Layout, Option<(ak::Layout, Option<JointResult>)>)>,
+    /// The candidates `fitted_candidates` reported, in order.
+    candidates: Vec<(ak::Layout, Vec<JointResult>)>,
+}
+
+/// Fits each kind keeps; the oldest goes first.
+const FIT_MEMO: usize = 32;
+
+fn same_layout(a: &ak::Layout, b: &ak::Layout) -> bool {
+    a.name == b.name
+        && a.slots == b.slots
+        && a.actions == b.actions
+        && a.left_outer == b.left_outer
+        && a.right_outer == b.right_outer
+        && a.row_stagger == b.row_stagger
+        && a.action_mode == b.action_mode
+        && a.alt_fingers == b.alt_fingers
+        && a.alt_spots == b.alt_spots
+        && crate::action_rule_delta::same_json_slice(&a.combos, &b.combos)
+}
+
+impl FitMemo {
+    fn find<'a, T>(entries: &'a [(ak::Layout, T)], layout: &ak::Layout) -> Option<&'a T> {
+        entries
+            .iter()
+            .find(|(input, _)| same_layout(input, layout))
+            .map(|(_, value)| value)
+    }
+
+    fn keep<T>(entries: &mut Vec<(ak::Layout, T)>, layout: &ak::Layout, value: T) {
+        if entries.len() == FIT_MEMO {
+            entries.remove(0);
+        }
+        entries.push((layout.clone(), value));
+    }
+}
+
+/// A remembered fit with the progress a fresh fit would carry now.
+fn refreshed(
+    fit: &Option<(ak::Layout, Option<JointResult>)>,
+    progress: &Progress,
+) -> Option<(ak::Layout, Option<JointResult>)> {
+    fit.clone().map(|(layout, candidate)| {
+        (
+            layout,
+            candidate.map(|mut candidate| {
+                candidate.snapshot.progress = progress.clone();
+                candidate
+            }),
+        )
+    })
+}
+
 /// Refit `layout`'s combos on the primary corpus, aiming within the caps,
 /// then score the result on the whole training mixture: the refit layout, and
 /// its candidate when within the caps. None when combo fitting is off.
@@ -835,6 +894,7 @@ fn run_restart_chain(
     parents: &[Candidate],
     thresholds: Option<&[f64]>,
     tx: &mpsc::Sender<JointMessage>,
+    memo: &mut FitMemo,
 ) -> ak::Result<(Option<JointResult>, Vec<f64>)> {
     let chunks = chunk_sizes(settings.anneal_steps, settings.hybrid);
     // The chain's best score after each chunk (`RoundPool::thresholds`).
@@ -985,25 +1045,40 @@ fn run_restart_chain(
             }
         };
         if let Some(action_name) = action_name {
-            fitted_candidates(
-                &current,
-                action_name,
-                locks,
-                corpora,
-                shares,
-                fitters,
-                weights,
-                settings,
-                baselines,
-                control,
-                1,
-                // Repair seeds pay off only on the injected start: at every
-                // checkpoint they matched or lost to no repairs given equal time.
-                false,
-                &progress,
-                deadline,
-                &mut update,
-            )?;
+            if let Some(known) = FitMemo::find(&memo.candidates, &current) {
+                for candidate in known {
+                    let mut candidate = candidate.clone();
+                    candidate.snapshot.progress = progress.clone();
+                    update(FitUpdate::Candidate(candidate));
+                }
+            } else {
+                let mut reported = Vec::new();
+                fitted_candidates(
+                    &current,
+                    action_name,
+                    locks,
+                    corpora,
+                    shares,
+                    fitters,
+                    weights,
+                    settings,
+                    baselines,
+                    control,
+                    1,
+                    // Repair seeds pay off only on the injected start: at every
+                    // checkpoint they matched or lost to no repairs given equal time.
+                    false,
+                    &progress,
+                    deadline,
+                    &mut |fit| {
+                        if let FitUpdate::Candidate(candidate) = &fit {
+                            reported.push(candidate.clone());
+                        }
+                        update(fit);
+                    },
+                )?;
+                FitMemo::keep(&mut memo.candidates, &current, reported);
+            }
         }
         // Refit combos on the best layout so far, rules included. The next
         // chunk's rule refit then sees these combos in place.
@@ -1019,23 +1094,33 @@ fn run_restart_chain(
             };
             let mut fitting = progress.clone();
             fitting.phase = "fitting combos".into();
-            if let Some((fitted, candidate)) = fitted_combos(
-                start
-                    .as_ref()
-                    .or(best.as_ref().map(|best| &best.layout))
-                    .unwrap_or(&current),
-                corpora,
-                shares,
-                weights,
-                fit_physical,
-                combos,
-                baselines,
-                settings,
-                &control.cancel,
-                fitting,
-                1,
-                scorer.as_mut(),
-            )? {
+            let input = start
+                .as_ref()
+                .or(best.as_ref().map(|best| &best.layout))
+                .unwrap_or(&current)
+                .clone();
+            let fit = match FitMemo::find(&memo.combos, &input) {
+                Some(known) => refreshed(known, &fitting),
+                None => {
+                    let fit = fitted_combos(
+                        &input,
+                        corpora,
+                        shares,
+                        weights,
+                        fit_physical,
+                        combos,
+                        baselines,
+                        settings,
+                        &control.cancel,
+                        fitting,
+                        1,
+                        scorer.as_mut(),
+                    )?;
+                    FitMemo::keep(&mut memo.combos, &input, fit.clone());
+                    fit
+                }
+            };
+            if let Some((fitted, candidate)) = fit {
                 if let Some(candidate) = candidate {
                     if improves(&candidate, &best) {
                         best = Some(candidate.clone());
@@ -1048,23 +1133,33 @@ fn run_restart_chain(
             }
             let mut fitting = progress.clone();
             fitting.phase = "fitting swaps".into();
-            if let Some((_, Some(candidate))) = fitted_swaps(
-                start
-                    .as_ref()
-                    .or(best.as_ref().map(|best| &best.layout))
-                    .unwrap_or(&current),
-                corpora,
-                shares,
-                weights,
-                fit_physical,
-                swaps,
-                baselines,
-                settings,
-                &control.cancel,
-                fitting,
-                1,
-                scorer.as_mut(),
-            )? {
+            let input = start
+                .as_ref()
+                .or(best.as_ref().map(|best| &best.layout))
+                .unwrap_or(&current)
+                .clone();
+            let fit = match FitMemo::find(&memo.swaps, &input) {
+                Some(known) => refreshed(known, &fitting),
+                None => {
+                    let fit = fitted_swaps(
+                        &input,
+                        corpora,
+                        shares,
+                        weights,
+                        fit_physical,
+                        swaps,
+                        baselines,
+                        settings,
+                        &control.cancel,
+                        fitting,
+                        1,
+                        scorer.as_mut(),
+                    )?;
+                    FitMemo::keep(&mut memo.swaps, &input, fit.clone());
+                    fit
+                }
+            };
+            if let Some((_, Some(candidate))) = fit {
                 if improves(&candidate, &best) {
                     best = Some(candidate.clone());
                 }
@@ -1425,6 +1520,7 @@ pub(crate) fn run_controlled(
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let mut local: Option<JointResult> = None;
                     let (mut thresholds, mut fetched) = (None, false);
+                    let mut memo = FitMemo::default();
                     for restart in first..end {
                         if control.cancel.load(Ordering::Relaxed) || expired(deadline) {
                             break;
@@ -1458,6 +1554,7 @@ pub(crate) fn run_controlled(
                             &parents,
                             thresholds.as_deref(),
                             &tx,
+                            &mut memo,
                         )?;
                         // Parents are letter arrangements of the start: a
                         // result's rules, combos and swaps are refit.

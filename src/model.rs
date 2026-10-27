@@ -2251,19 +2251,60 @@ fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
 }
 
 fn denominator_totals(m: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
+    group_denominator(score_group(m), raw, totals)
+}
+
+/// Groups of metrics sharing a denominator: the first three corpus totals,
+/// then the SRAF, roll and rhythm counters (`group_denominator`).
+const SCORE_GROUPS: usize = 6;
+
+fn score_group(m: usize) -> usize {
     if matches!(m, TRAVEL | VTRAVEL | LTRAVEL) {
-        totals[0]
+        0
     } else if matches!(m, SRAF | INSRAF | OUTSRAF) {
-        raw.0[SRAF_DEN].max(0.0)
+        3
     } else if roll_metric(m) {
-        raw.0[ROLL_DEN].max(0.0)
+        4
     } else if is_rhythm(m) {
-        raw.0[RHYTHM_DEN].max(0.0)
+        5
     } else if is_skip(m) {
-        totals[2]
+        2
     } else {
-        totals[1]
+        1
     }
+}
+
+fn group_denominator(group: usize, raw: &Raw, totals: &[f64; 4]) -> f64 {
+    match group {
+        0..=2 => totals[group],
+        3 => raw.0[SRAF_DEN].max(0.0),
+        4 => raw.0[ROLL_DEN].max(0.0),
+        _ => raw.0[RHYTHM_DEN].max(0.0),
+    }
+}
+
+/// `breakdown(&metrics_totals(raw, totals), w).net` as terms (raw counter,
+/// group, weight): the score is the sum over groups of `pct` of the group's
+/// weighted counters over its denominator. Usage and off-home share the
+/// first total.
+fn score_terms(w: &Weights) -> Vec<(usize, usize, f64)> {
+    let mut terms = Vec::new();
+    for m in 0..N_METRICS {
+        if !aggregate(m) && w.0[m] != 0.0 {
+            let sign = if higher_better(m) { -1.0 } else { 1.0 };
+            terms.push((m, score_group(m), w.0[m] * sign));
+        }
+    }
+    for j in 0..8 {
+        let mirrored = j.min(7 - j);
+        if w.0[USAGE_WEIGHT + mirrored] != 0.0 {
+            terms.push((USAGE + j, 0, w.0[USAGE_WEIGHT + mirrored]));
+        }
+        if w.0[N_METRICS + mirrored] != 0.0 {
+            terms.push((OFF + j, 0, w.0[N_METRICS + mirrored]));
+        }
+    }
+    terms
 }
 
 fn metrics(raw: &Raw, c: &Corpus) -> Metrics {
