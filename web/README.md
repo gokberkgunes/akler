@@ -48,11 +48,12 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
 - Changed settings, layouts, scissor results and optimizer output are saved in
   the browser (IndexedDB) and restored on the next visit. **Files** downloads
   them, **Upload layouts** adds layout files, **Reset** forgets them.
-- The font menu in the top bar switches between Monocraft (default), Serious
-  Shanns, Gohu and Comic Mono; the choice is remembered. Monocraft's box
-  drawing comes from `src/fonts/MonocraftBox.woff2` (`python3 boxfont.py`). Gohu is a bitmap font, converted
-  from `src/fonts/gohufont-uni-14*.bdf` by `python3 bdf2font.py` (needs
-  fontTools and brotli).
+- The font menu in the top bar switches between Gohu (default), Monocraft,
+  Serious Shanns and Comic Mono; the choice is remembered. Gohu is a bitmap
+  font, converted from the gohufont release's `gohufont-uni-14.bdf` and
+  `gohufont-uni-14b.bdf` by `python3 bdf2font.py` (needs fontTools and
+  brotli). Monocraft's box drawing comes from `src/fonts/MonocraftBox.woff2`
+  (`python3 boxfont.py`).
 - The sun/moon button switches between Dark (black, the default) and Light
   (a slightly lighter grey), both with white text. Ctrl+Up / Ctrl+Down
   zoom the terminal; Ctrl+L and Ctrl+R go to the browser, not to akler.

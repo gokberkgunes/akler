@@ -26,10 +26,10 @@ cpSync(join(root, "target/wasm32-wasip1-threads/release/akler.wasm"), join(dist,
 for (const file of ["index.html", "main.js", "style.css"]) {
   cpSync(join(web, "src", file), join(dist, file));
 }
-// The .bdf files are bdf2font.py's sources; browsers load the converted fonts.
+// Only font files, so nothing else dropped in the folder is published.
 cpSync(join(web, "src/fonts"), join(dist, "fonts"), {
   recursive: true,
-  filter: (path) => !path.endsWith(".bdf"),
+  filter: (path) => statSync(path).isDirectory() || /\.(otf|ttf|woff2?)$/.test(path),
 });
 cpSync(join(modules, "coi-serviceworker/coi-serviceworker.min.js"), join(dist, "coi-serviceworker.js"));
 

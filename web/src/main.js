@@ -104,10 +104,10 @@ document.documentElement.dataset.theme = themeName;
  *  their em in font pixels, and `scale`, screen pixels per font pixel at
  *  100%; they are sized so each font pixel covers whole screen pixels. */
 const FONTS = {
+  gohu: { label: "Gohu", family: "GohuFont", pixels: 14, scale: 1 },
   // Monocraft has no box drawing; "Monocraft Box" supplies it on its grid.
   monocraft: { label: "Monocraft", family: "Monocraft", extra: "Monocraft Box", pixels: 9, scale: 2 },
   serious: { label: "Serious Shanns", family: "Serious Shanns", size: 15 },
-  gohu: { label: "Gohu", family: "GohuFont", pixels: 14, scale: 1 },
   comic: { label: "Comic Mono", family: "Comic Mono", size: 14 },
 };
 // Symbols a font lacks, such as ␣ in all of them, come from these.
