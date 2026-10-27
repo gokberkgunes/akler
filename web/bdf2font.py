@@ -9,6 +9,8 @@ import sys
 
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen
+from fontTools.ttLib import newTable
+from fontTools.ttLib.tables import ttProgram
 
 PIXEL = 100  # font units per bitmap pixel
 
@@ -57,11 +59,11 @@ def main(source, target, family, style):
     empty = TTGlyphPen(None).glyph()
     names = [".notdef"] + [f"uni{code:04X}" for code, *_ in glyphs]
     outlines = {".notdef": empty}
-    metrics = {".notdef": (glyphs[0][1] * PIXEL, 0)}
+    metrics = {".notdef": glyphs[0][1] * PIXEL}
     cmap = {}
     for (code, width, x, y, h, bits), name in zip(glyphs, names[1:]):
         outlines[name] = outline(x, y, h, bits)
-        metrics[name] = (width * PIXEL, x * PIXEL)
+        metrics[name] = width * PIXEL
         cmap[code] = name
 
     bold = style.lower() == "bold"
@@ -69,7 +71,12 @@ def main(source, target, family, style):
     builder.setupGlyphOrder(names)
     builder.setupCharacterMap(cmap)
     builder.setupGlyf(outlines)
-    builder.setupHorizontalMetrics(metrics)
+    # The left side bearing must be the outline's left edge: browsers place
+    # the glyph by it, so any other value shifts the pixels sideways.
+    glyf = builder.font["glyf"]
+    builder.setupHorizontalMetrics(
+        {name: (advance, getattr(glyf[name], "xMin", 0)) for name, advance in metrics.items()}
+    )
     builder.setupHorizontalHeader(ascent=ascent * PIXEL, descent=-descent * PIXEL)
     builder.setupNameTable({"familyName": family, "styleName": style})
     builder.setupOS2(
@@ -84,6 +91,13 @@ def main(source, target, family, style):
     )
     builder.font["OS/2"].panose.bProportion = 9  # monospaced
     builder.setupPost(isFixedPitch=1)
+    # The outlines already sit on the pixel grid. A font without hinting code
+    # gets FreeType's automatic hinter, which stretches some glyphs by a
+    # pixel; a do-nothing control program keeps the outlines as drawn.
+    prep = newTable("prep")
+    prep.program = ttProgram.Program()
+    prep.program.fromAssembly(["PUSHB[ ]", "0", "POP[ ]"])
+    builder.font["prep"] = prep
     builder.font["head"].macStyle = 1 if bold else 0
     builder.font.flavor = "woff2"
     builder.save(target)

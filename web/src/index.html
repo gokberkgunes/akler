@@ -3,6 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The page has its own dark themes; extensions such as Dark Reader
+         would otherwise recolour the terminal's text. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="darkreader-lock" />
     <title>akler</title>
     <!-- Hosts that cannot send COOP/COEP headers (GitHub Pages) get them from
          this service worker; it does nothing where the headers already arrive. -->
@@ -27,7 +31,7 @@
       <span id="status">Loading…</span>
       <span class="actions">
         <select id="font" title="Terminal font" aria-label="Terminal font"></select>
-        <select id="theme" title="Colour theme" aria-label="Colour theme"></select>
+        <button id="theme" class="icon" type="button"></button>
         <button id="upload" type="button" title="Add layout files to layouts/">Upload layouts</button>
         <button id="files" type="button" title="Download saved files">Files</button>
         <button id="reset" type="button" title="Forget everything saved in this browser">Reset</button>

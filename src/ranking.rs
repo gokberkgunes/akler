@@ -1654,11 +1654,11 @@ fn draw_rank_table(
         }
         // Keep the four-row stripe pattern stable while scrolling.
         let background = if r == selected {
-            Some((36, 36, 36))
+            Some(ROW_SELECTED)
         } else {
             match r % 4 {
-                1 => Some((30, 30, 30)),
-                3 => Some((18, 18, 18)),
+                1 => Some(STRIPE_LIGHT),
+                3 => Some(STRIPE_DARK),
                 _ => None,
             }
         };

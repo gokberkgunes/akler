@@ -19,6 +19,16 @@ const setStatus = (text) => (status.textContent = text);
 
 // ---- Themes -------------------------------------------------------------
 
+/** xterm's default colours 16–255 (6×6×6 cube, then greys). */
+const hex = (r, g, b) => `#${[r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")}`;
+const LEVELS = [0, 95, 135, 175, 215, 255];
+const EXTENDED = Array.from({ length: 240 }, (_, n) => {
+  if (n >= 216) return hex(...Array(3).fill(8 + 10 * (n - 216)));
+  return hex(LEVELS[Math.floor(n / 36)], LEVELS[Math.floor(n / 6) % 6], LEVELS[n % 6]);
+});
+/** The 256-colour palette with some entries replaced, keyed by colour index. */
+const extended = (overrides) => EXTENDED.map((color, n) => overrides[n + 16] ?? color);
+
 /** Colour themes, the first being the default. akler draws its main text in
  *  the terminal palette, so these set its colours too. */
 const THEMES = {
@@ -34,8 +44,11 @@ const THEMES = {
       blue: "#5fafff",
       magenta: "#d787ff",
       cyan: "#00d7d7",
+      // Muted text and finger greys.
       white: "#ffffff",
-      brightBlack: "#a8a8a8",
+      // Borders.
+      brightBlack: "#8a8a8a",
+      // Metric group labels.
       brightRed: "#ff8787",
       brightGreen: "#87ff87",
       brightYellow: "#ffff87",
@@ -43,29 +56,34 @@ const THEMES = {
       brightMagenta: "#ffafff",
       brightCyan: "#5fffff",
       brightWhite: "#ffffff",
+      // Ranker rows (STRIPE_DARK, STRIPE_LIGHT and ROW_SELECTED in ui.rs):
+      // a lighter and a darker stripe every four rows, as in a terminal.
+      extendedAnsi: extended({ 233: "#121212", 235: "#1e1e1e", 236: "#242424" }),
     },
   },
   light: {
     label: "Light",
     terminal: {
-      background: "#1e1e1e",
-      foreground: "#e4e4e4",
-      black: "#1e1e1e",
+      background: "#141414",
+      foreground: "#ffffff",
+      black: "#141414",
       red: "#f07178",
       green: "#a6d189",
       yellow: "#f0c674",
       blue: "#6cb6ff",
       magenta: "#d2a8ff",
       cyan: "#66d9e8",
-      white: "#e4e4e4",
-      brightBlack: "#9a9a9a",
-      brightRed: "#ff8b92",
+      white: "#ffffff",
+      brightBlack: "#7a7a7a",
+      brightRed: "#ff9aa2",
       brightGreen: "#c0e8a0",
       brightYellow: "#ffd98e",
-      brightBlue: "#8fcaff",
+      brightBlue: "#9fd0ff",
       brightMagenta: "#e2c2ff",
-      brightCyan: "#8de8f2",
+      brightCyan: "#9eeaf2",
       brightWhite: "#ffffff",
+      // Ranker rows: every other row a step lighter.
+      extendedAnsi: extended({ 233: "#1c1c1c", 235: "#1c1c1c", 236: "#2e2e2e" }),
     },
   },
 };
@@ -146,15 +164,26 @@ terminal.attachCustomKeyEventHandler(
   (event) => !(event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === "l"),
 );
 
-const themePicker = document.getElementById("theme");
-for (const [name, { label }] of Object.entries(THEMES)) {
-  themePicker.add(new Option(`${label} theme`, name));
-}
-themePicker.value = themeName;
-themePicker.addEventListener("change", () => {
-  themeName = themePicker.value;
+// The theme button shows the current theme: a moon for dark, a sun for light.
+const ICONS = {
+  dark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>',
+  light:
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/>' +
+    '<path d="M12 1.5v3M12 19.5v3M1.5 12h3M19.5 12h3M4.6 4.6l2.1 2.1M17.3 17.3l2.1 2.1M4.6 19.4l2.1-2.1M17.3 6.7l2.1-2.1"/></svg>',
+};
+const themeButton = document.getElementById("theme");
+const otherTheme = () => Object.keys(THEMES).find((name) => name !== themeName);
+const showTheme = () => {
+  themeButton.innerHTML = ICONS[themeName];
+  themeButton.title = `${THEMES[themeName].label} theme; click for ${THEMES[otherTheme()].label.toLowerCase()}`;
+  themeButton.setAttribute("aria-label", themeButton.title);
+};
+showTheme();
+themeButton.addEventListener("click", () => {
+  themeName = otherTheme();
   document.documentElement.dataset.theme = themeName;
   terminal.options.theme = THEMES[themeName].terminal;
+  showTheme();
   terminal.focus();
   try {
     localStorage.setItem(THEME_KEY, themeName);

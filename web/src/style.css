@@ -35,10 +35,10 @@
 }
 
 :root[data-theme="light"] {
-  --bg: #1e1e1e;
-  --panel: #2a2a2a;
-  --fg: #e4e4e4;
-  --muted: #9a9a9a;
+  --bg: #141414;
+  --panel: #222222;
+  --fg: #ffffff;
+  --muted: #b0b0b0;
   --accent: #6cb6ff;
   --control: #353535;
   --border: #474747;
@@ -99,6 +99,26 @@ select {
 button:hover,
 select:hover {
   border-color: var(--accent);
+}
+
+button.icon {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+}
+
+button.icon svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 0;
+}
+
+:root[data-theme="light"] button.icon svg path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
 }
 
 #terminal {

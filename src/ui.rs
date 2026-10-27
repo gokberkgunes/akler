@@ -13,7 +13,7 @@ const FG: u8 = 7;
 
 const MUTED: u8 = 8;
 
-const BORDER: u8 = 8;
+const BORDER: u8 = 9;
 
 const BLUE: u8 = 4;
 
@@ -58,6 +58,17 @@ fn saved_layout_message(path: &Path) -> String {
 }
 
 fn ansi_color(color: u8) -> String {
+    // In a browser the page's theme sets the palette, so muted text, the
+    // finger greys and the group tints use palette slots it can recolour.
+    #[cfg(target_os = "wasi")]
+    if let Some(code) = match color {
+        MUTED | 70 => Some(37),
+        71 => Some(39),
+        72..=77 => Some([94, 92, 93, 95, 96, 91][usize::from(color - 72)]),
+        _ => None,
+    } {
+        return format!("\x1b[{code}m");
+    }
     if matches!(color, 70 | 71) {
         let value = if color == 70 { 155 } else { 230 };
         return format!("\x1b[38;2;{value};{value};{value}m");
@@ -97,13 +108,29 @@ fn ansi_color(color: u8) -> String {
         4 => "\x1b[34m",
         5 => "\x1b[35m",
         6 => "\x1b[36m",
-        8 => "\x1b[90m",
+        MUTED | BORDER => "\x1b[90m",
         _ => "\x1b[39m",
     }
     .into()
 }
 
+// Ranker row backgrounds: the darker and lighter stripes and the selected
+// row. In a browser they are written as 256-colour palette entries, which
+// each page theme sets (web/src/main.js).
+const STRIPE_DARK: (u8, u8, u8) = (18, 18, 18);
+const STRIPE_LIGHT: (u8, u8, u8) = (30, 30, 30);
+const ROW_SELECTED: (u8, u8, u8) = (36, 36, 36);
+
 fn ansi_background(background: Option<(u8, u8, u8)>) -> String {
+    #[cfg(target_os = "wasi")]
+    if let Some(index) = match background {
+        Some(STRIPE_DARK) => Some(233),
+        Some(STRIPE_LIGHT) => Some(235),
+        Some(ROW_SELECTED) => Some(236),
+        _ => None,
+    } {
+        return format!("\x1b[48;5;{index}m");
+    }
     match background {
         Some((r, g, b)) => format!("\x1b[48;2;{r};{g};{b}m"),
         None => "\x1b[49m".into(),
