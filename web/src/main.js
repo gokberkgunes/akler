@@ -82,8 +82,8 @@ const THEMES = {
       brightMagenta: "#e2c2ff",
       brightCyan: "#9eeaf2",
       brightWhite: "#ffffff",
-      // Ranker rows: every other row a step lighter.
-      extendedAnsi: extended({ 233: "#1c1c1c", 235: "#1c1c1c", 236: "#2e2e2e" }),
+      // Ranker rows: every other row pure black.
+      extendedAnsi: extended({ 233: "#000000", 235: "#000000", 236: "#2e2e2e" }),
     },
   },
 };

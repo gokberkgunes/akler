@@ -1,7 +1,9 @@
 // Compact, cell-based terminal UI. Rendering and mouse hitboxes share the
 // same rectangles; wheel scrolling and resizing cannot desynchronize them.
 const PANEL_WIDTH: usize = 108;
-const BACK_LABEL: &str = " ← Back ";
+/// Rows above every screen, holding the Back button.
+const TOP_BAR: usize = 3;
+const BACK_BUTTON: [&str; TOP_BAR] = ["┌──────────┐", "│ ◀━━ Back │", "└──────────┘"];
 
 const DISPLAY_DECIMALS: usize = 2;
 
@@ -535,7 +537,10 @@ struct Terminal {
     #[cfg_attr(target_os = "wasi", allow(dead_code))]
     saved: String,
     decoder: Decoder,
+    /// The area screens draw in: the terminal less the top bar.
     size: (usize, usize),
+    /// The whole terminal, columns then rows.
+    screen: (usize, usize),
     #[cfg_attr(target_os = "wasi", allow(dead_code))]
     size_at: Instant,
     previous: Vec<Cell>,
@@ -548,9 +553,9 @@ struct Terminal {
     quitting: bool,
     restart_requested: bool,
     restart_arguments: Option<Vec<std::ffi::OsString>>,
-    /// Whether present draws the Back button; the home menu turns it off.
+    /// Whether the top bar has the Back button; the home menu turns it off.
     show_back: bool,
-    /// The Back button's columns on the top row, as last drawn.
+    /// The Back button's columns in the top bar, as last drawn.
     back: Option<(usize, usize)>,
     _reports: crate::profile_output::TerminalReports,
 }
@@ -595,7 +600,8 @@ impl Terminal {
             tty,
             saved,
             decoder: Decoder::default(),
-            size,
+            size: (size.0, size.1.saturating_sub(TOP_BAR)),
+            screen: size,
             size_at: Instant::now() - Duration::from_secs(2),
             previous: Vec::new(),
             offset_x: 0,
@@ -652,11 +658,7 @@ impl Terminal {
                 .filter_map(|v| v.parse().ok())
                 .collect();
             if v.len() == 2 && v[0] > 0 && v[1] > 0 {
-                let size = (v[1].min(1000), v[0].min(500));
-                if size != self.size {
-                    self.previous.clear();
-                    self.size = size;
-                }
+                self.set_screen((v[1].min(1000), v[0].min(500)));
             }
         }
         Ok(())
@@ -727,25 +729,37 @@ impl Terminal {
         Ok(self.visible_event(event))
     }
 
-    fn visible_event(&mut self, e: Event) -> Event {
-        if let Event::Mouse {
-            x,
-            y: 0,
-            button: 0,
-            release: false,
-            motion: false,
-        } = e
-        {
-            if self.back.is_some_and(|(start, end)| (start..end).contains(&x)) {
-                return Event::Escape;
-            }
+    fn set_screen(&mut self, screen: (usize, usize)) {
+        if screen != self.screen {
+            self.previous.clear();
+            self.screen = screen;
+            self.size = (screen.0, screen.1.saturating_sub(TOP_BAR));
         }
-        if let Event::Resize(columns, rows) = e {
-            let size = (columns.min(1000), rows.min(500));
-            if size != self.size {
-                self.previous.clear();
-                self.size = size;
+    }
+
+    fn visible_event(&mut self, e: Event) -> Event {
+        // Screens see coordinates below the top bar; a click on its Back
+        // button is read as Esc.
+        let e = match e {
+            Event::Mouse { x, y, button, release, motion } if y < TOP_BAR => {
+                let back = self.back.is_some_and(|(start, end)| (start..end).contains(&x));
+                return if back && button == 0 && !release && !motion {
+                    Event::Escape
+                } else {
+                    Event::Tick
+                };
             }
+            Event::Mouse { x, y, button, release, motion } => Event::Mouse {
+                x,
+                y: y - TOP_BAR,
+                button,
+                release,
+                motion,
+            },
+            e => e,
+        };
+        if let Event::Resize(columns, rows) = e {
+            self.set_screen((columns.min(1000), rows.min(500)));
             return Event::Tick;
         }
         // In a browser Ctrl-C only backs out, since quitting ends the page.
@@ -785,22 +799,6 @@ impl Terminal {
                 view[y * w + x + self.offset_x] = c.cells[(y + scroll) * c.w + x];
             }
         }
-        // A Back button at the top right, where the screen leaves room; a
-        // click on it is read as Esc.
-        self.back = None;
-        let right = c.w.min(w);
-        let x = right.saturating_sub(BACK_LABEL.chars().count());
-        if self.show_back && x > 0 && view[x..right].iter().all(|cell| cell.ch == ' ') {
-            for (i, ch) in BACK_LABEL.chars().enumerate() {
-                view[x + i] = Cell {
-                    ch,
-                    color: FG,
-                    background: Some((60, 60, 60)),
-                    bold: false,
-                };
-            }
-            self.back = Some((x, right));
-        }
         if w < 64 || h < 12 {
             view.fill(Cell {
                 ch: ' ',
@@ -821,6 +819,40 @@ impl Terminal {
                 };
             }
         }
+        // The top bar: a boxed Back button at the left, or the program's
+        // name on the home menu.
+        let blank = Cell {
+            ch: ' ',
+            color: FG,
+            background: None,
+            bold: false,
+        };
+        let mut frame = vec![blank; w * TOP_BAR];
+        self.back = None;
+        if self.show_back {
+            for (row, line) in BACK_BUTTON.iter().enumerate() {
+                for (x, ch) in line.chars().take(w).enumerate() {
+                    frame[row * w + x] = Cell {
+                        ch,
+                        color: FG,
+                        background: None,
+                        bold: row == 1,
+                    };
+                }
+            }
+            self.back = Some((0, BACK_BUTTON[0].chars().count()));
+        } else {
+            for (x, ch) in "akler".chars().take(w.saturating_sub(2)).enumerate() {
+                frame[w + 2 + x] = Cell {
+                    ch,
+                    color: FG,
+                    background: None,
+                    bold: true,
+                };
+            }
+        }
+        frame.extend(view);
+        let (view, h) = (frame, h + TOP_BAR);
         let mut out = String::new();
         if self.previous.len() != view.len() {
             out.push_str("\x1b[2J");

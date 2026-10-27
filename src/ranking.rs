@@ -979,6 +979,23 @@ enum RankTab {
     Columns,
 }
 
+/// Options as "key Label value", each clickable as its key; they wrap onto
+/// the next row when the line is full.
+fn draw_option_line(c: &mut Canvas, y: usize, options: &[(char, &str, (String, u8))]) {
+    let (mut x, mut y) = (0, y);
+    for (key, label, (value, color)) in options {
+        let w = label.chars().count() + value.chars().count() + 3;
+        if x > 0 && x + w > c.w {
+            (x, y) = (0, y + 1);
+        }
+        c.text(x, y, &key.to_string(), YELLOW);
+        c.text(x + 2, y, label, FG);
+        c.text(x + 3 + label.chars().count(), y, value, *color);
+        c.hit(Rect { x, y, w, h: 1 }, Action::Command(*key));
+        x += w + 4;
+    }
+}
+
 fn draw_rank_tabs(canvas: &mut Canvas, active: RankTab, y: usize) {
     let index = match active {
         RankTab::Rankings => 0,
@@ -1090,14 +1107,9 @@ fn choose_rank_settings(
         };
         match active {
             RankTab::Layouts => {
-                header(
-                    &mut canvas,
-                    "Ranker settings",
-                    "",
-                    "",
-                    "Space toggle · / search · ? help · 1/q apply · Esc cancel",
-                );
-                draw_rank_tabs(&mut canvas, active, 2);
+                canvas.text(0, 0, "Ranker settings", FG);
+                draw_rank_tabs(&mut canvas, active, 1);
+                canvas.text(0, 2, &short("Space toggle · / search · ? help · 1/q apply · Esc cancel", canvas.w), MUTED);
                 let magic = format!(
                     "[m Magic hidden: {}]",
                     if draft.filters.hide_magic {
@@ -1190,14 +1202,9 @@ fn choose_rank_settings(
                 }
             }
             RankTab::Columns | RankTab::Rankings => {
-                header(
-                    &mut canvas,
-                    "Ranker settings",
-                    "",
-                    "",
-                    "Space toggle · d compact · a all · 1/q apply · Esc cancel",
-                );
-                draw_rank_tabs(&mut canvas, active, 2);
+                canvas.text(0, 0, "Ranker settings", FG);
+                draw_rank_tabs(&mut canvas, active, 1);
+                canvas.text(0, 2, &short("Space toggle · d compact · a all · 1/q apply · Esc cancel", canvas.w), MUTED);
                 for index in column_scroll..(column_scroll + column_capacity).min(order.len()) {
                     let metric = order[index];
                     canvas.text(
@@ -1814,53 +1821,11 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         }
         let grid = RankGrid::new(width, name_width, cw, &mut columns);
         let mut c = Canvas::ranking(width, height);
-        let title = if data.mana2 {
-            "Mana2 ranker".to_string()
-        } else {
-            format!("Ranker · {} weights [s]", data.scoring)
-        };
-        let alt_fingers = format!(
-            "Alternate fingers: {} [f]",
-            data.weights.alt_fingers_label()
-        );
-        let combos = format!(
-            "Combos: {} [F]",
-            if data.weights.4 {
-                "enabled"
-            } else {
-                "disabled"
-            }
-        );
-        let spacegrams = format!(
-            "Spacegrams: {} [z]",
-            if data.spacegrams { "ON" } else { "OFF" }
-        );
-        let typing = format!("{alt_fingers} · {combos} · {spacegrams}");
-        header(&mut c, &title, &data.name, "", &typing);
-        if !data.mana2 {
-            c.hit(Rect { x: 0, y: 0, w: title.chars().count(), h: 1 }, Action::Command('s'));
-        }
-        draw_rank_tabs(&mut c, RankTab::Rankings, 2);
-        let filter_buttons = [
-            ('m', "Hide magic", data.filters.hide_magic),
-            ('t', "Hide no thumb letters", data.filters.hide_non_thumb),
-        ];
-        let mut filter_x = 0;
-        for (key, label, enabled) in filter_buttons {
-            let text = format!("{key} {label}: {}", if enabled { "ON" } else { "OFF" });
-            c.text(filter_x, 3, &text, if enabled { GREEN } else { MUTED });
-            c.hit(
-                Rect {
-                    x: filter_x,
-                    y: 3,
-                    w: text.chars().count(),
-                    h: 1,
-                },
-                Action::Command(key),
-            );
-            filter_x += text.chars().count() + 3;
-        }
+        // Title and corpus, the tabs, then one line of options.
+        let title = if data.mana2 { "Mana2 ranker" } else { "Ranker" };
+        c.text(0, 0, title, FG);
         let corpus_x = title.chars().count() + 2;
+        c.text(corpus_x, 0, &data.name, CYAN);
         c.hit(
             Rect {
                 x: corpus_x,
@@ -1874,44 +1839,21 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             },
             Action::Command('C'),
         );
-        c.hit(
-            Rect {
-                x: 0,
-                y: 1,
-                w: alt_fingers.chars().count().min(width),
-                h: 1,
-            },
-            Action::Command('f'),
-        );
-        let combos_x = alt_fingers.chars().count() + 3;
-        c.hit(
-            Rect {
-                x: combos_x,
-                y: 1,
-                w: combos.chars().count().min(width.saturating_sub(combos_x)),
-                h: 1,
-            },
-            Action::Command('F'),
-        );
-        let spacegrams_x = combos_x + combos.chars().count() + 3;
-        c.text(
-            spacegrams_x,
-            1,
-            &short(&spacegrams, width.saturating_sub(spacegrams_x)),
-            if data.spacegrams { GREEN } else { MUTED },
-        );
-        c.hit(
-            Rect {
-                x: spacegrams_x,
-                y: 1,
-                w: spacegrams
-                    .chars()
-                    .count()
-                    .min(width.saturating_sub(spacegrams_x)),
-                h: 1,
-            },
-            Action::Command('z'),
-        );
+        draw_rank_tabs(&mut c, RankTab::Rankings, 1);
+        let on_off = |on: bool| (if on { "on" } else { "off" }.to_string(), if on { GREEN } else { MUTED });
+        let mut options = Vec::new();
+        if !data.mana2 {
+            options.push(('s', "Weights", (data.scoring.to_string(), CYAN)));
+        }
+        let alt_fingers = data.weights.alt_fingers_label();
+        options.extend([
+            ('f', "Alt fingers", (alt_fingers.to_string(), if alt_fingers == "disabled" { MUTED } else { GREEN })),
+            ('F', "Combos", on_off(data.weights.4)),
+            ('z', "Spacegrams", on_off(data.spacegrams)),
+            ('m', "Hide magic", on_off(data.filters.hide_magic)),
+            ('t', "Hide no-thumb", on_off(data.filters.hide_non_thumb)),
+        ]);
+        draw_option_line(&mut c, 2, &options);
         let bottom = draw_rank_table(
             &mut c,
             &grid,

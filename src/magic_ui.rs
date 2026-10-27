@@ -1,5 +1,5 @@
 fn magic_designer_main(term: &mut Terminal) -> AppResult<()> {
-    let Some(path) = select_source_path(term, false)? else {
+    let Some(path) = select_source_path(term, true)? else {
         return Ok(());
     };
     let Some(data) = load_ranking_tui(term, &path)? else {

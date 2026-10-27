@@ -1,6 +1,6 @@
 // Peer diagnostics use the same evaluated snapshot as the ordinary ranker.
 fn weakness_open(term: &mut Terminal) -> AppResult<()> {
-    let Some(path) = select_source_path(term, false)? else {
+    let Some(path) = select_source_path(term, true)? else {
         return Ok(());
     };
     let Some(data) = load_ranking_tui(term, &path)? else {
