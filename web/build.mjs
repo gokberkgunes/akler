@@ -51,16 +51,14 @@ cpSync(join(modules, "@xterm/addon-webgl/lib/addon-webgl.mjs"), join(dist, "vend
 // test's word list, and akler.conf using one worker per core.
 const skip = (name) =>
   name.startsWith(".") || name.endsWith(".bak") || name.endsWith(".run.txt") || name.endsWith(".csv");
-const copyTree = (from, to) => {
-  mkdirSync(to, { recursive: true });
-  for (const name of readdirSync(from)) {
-    if (skip(name)) continue;
-    const source = join(from, name);
-    if (statSync(source).isDirectory()) copyTree(source, join(to, name));
-    else cpSync(source, join(to, name));
-  }
-};
-copyTree(join(root, "layouts"), join(data, "layouts"));
+// Only layouts git tracks: local files and optimizer output stay private.
+const tracked = execFileSync("git", ["ls-files", "-z", "layouts"], { cwd: root, encoding: "utf8" })
+  .split("\0")
+  .filter((path) => path && !path.split("/").some(skip));
+for (const path of tracked) {
+  mkdirSync(dirname(join(data, path)), { recursive: true });
+  cpSync(join(root, path), join(data, path));
+}
 // Only the corpora listed here are served, to keep the first load small.
 const CORPORA = ["corpus-reddit.json"];
 mkdirSync(join(data, "corpus/processed"), { recursive: true });
