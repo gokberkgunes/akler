@@ -49,6 +49,34 @@ fn within_limits(metrics: &Metrics, baseline: &Metrics, settings: &SearchSetting
     })
 }
 
+/// Why a report fails the caps or coverage measured against `baseline`.
+fn limit_failure(
+    report: &summary::Summary,
+    baseline: &summary::Summary,
+    settings: &SearchSettings,
+) -> Option<String> {
+    let (metrics, base) = (&report.metrics, &baseline.metrics);
+    for (metric, name, key, limit) in [
+        (SFB, "SFB", "max_sfb_increase", settings.sfb_limit),
+        (SFS, "SFS", "max_sfs_increase", settings.sfs_limit),
+        (TRAVEL, "TRAVEL", "max_travel_increase", settings.travel_limit),
+        (SFTRAVEL, "SFTRAVEL", "max_sftravel_increase", settings.sftravel_limit),
+    ] {
+        if let Some(increase) = limit {
+            if metrics.v[metric] > base.v[metric] + increase + 1e-10 {
+                return Some(format!(
+                    "{name} is {:.3} against the original's {:.3} + {increase} ({key})",
+                    metrics.v[metric], base.v[metric]
+                ));
+            }
+        }
+    }
+    let lost = report.counts.ignored_characters - baseline.counts.ignored_characters;
+    (lost > 1e-10).then(|| {
+        format!("it cannot type {lost:.0} corpus characters the original types")
+    })
+}
+
 fn identity_snapshot(mut snapshot: Snapshot, slots: usize, score: f64) -> Snapshot {
     let candidate = Candidate {
         arr: (0..slots).collect(),
@@ -87,10 +115,7 @@ fn evaluate_joint(
         // Match the ordinary optimizer: a corpus with no share is available
         // for display, but it neither contributes to the objective nor gates
         // a candidate through limits or coverage.
-        if *share != 0.0
-            && (!within_limits(&report.metrics, &baseline.metrics, settings)
-                || report.counts.ignored_characters > baseline.counts.ignored_characters + 1e-10)
-        {
+        if *share != 0.0 && limit_failure(&report, baseline, settings).is_some() {
             return Ok(None);
         }
         score += share * report.score;
@@ -302,6 +327,59 @@ fn exact_candidate_reusing(
         layout,
         score,
     }))
+}
+
+/// The start layout scored without the caps, for annealing to leave a start
+/// that breaks them, and why it breaks them.
+fn ungated_start(
+    layout: &ak::Layout,
+    corpora: &[(ng::NgramCorpus, f64)],
+    shares: &[f64],
+    weights: &Weights,
+    baselines: &[summary::Summary],
+    settings: &SearchSettings,
+    stop: &AtomicBool,
+    progress: Progress,
+) -> ak::Result<(JointResult, String)> {
+    let counter = AtomicU64::new(0);
+    let (mut score, mut first, mut reason) = (0.0, None, None);
+    for (((corpus, _), share), baseline) in corpora.iter().zip(shares).zip(baselines) {
+        let report =
+            summary::evaluate_with_mode(layout, corpus, weights, stop, &counter, &settings.mode)?;
+        if *share != 0.0 {
+            score += share * report.score;
+            if reason.is_none() {
+                reason = limit_failure(&report, baseline, settings);
+            }
+        }
+        first.get_or_insert(report);
+    }
+    let first = first.ok_or("Optimization requires a corpus.")?;
+    let start = JointResult {
+        raw: first.raw.clone(),
+        totals: first.totals,
+        snapshot: Snapshot {
+            best: Candidate {
+                arr: (0..layout.slots.len()).collect(),
+                score,
+            },
+            progress,
+            archive: Vec::new(),
+            has_best: true,
+        },
+        layout: layout.clone(),
+        score,
+    };
+    Ok((start, reason.unwrap_or_else(|| "its score is not finite".into())))
+}
+
+/// The error for a run that found nothing within the caps.
+fn infeasible(reason: &str) -> String {
+    format!(
+        "Nothing found within the caps. The start layout breaks one: {reason}. \
+         Raise that cap or set it to none, give the run more time, or undo the \
+         edit that caused it."
+    )
 }
 
 /// Fits one worker has made, by input layout. A fit's result depends only on
@@ -876,6 +954,8 @@ fn improves(candidate: &JointResult, best: &Option<JointResult>) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn run_restart_chain(
     initial: &JointResult,
+    // False when `initial` breaks the caps: it is then only a place to start.
+    initial_feasible: bool,
     action_name: Option<&str>,
     locks: &[bool],
     corpora: &[(ng::NgramCorpus, f64)],
@@ -906,7 +986,7 @@ fn run_restart_chain(
     // A generated restart (random or evolve) follows its own arrangement:
     // measured against the start, its first chunk rarely wins and would be
     // dropped for the start, so every restart would refine the start.
-    let mut best = (settings.design == "refine").then(|| initial.clone());
+    let mut best = (settings.design == "refine" && initial_feasible).then(|| initial.clone());
     let started = Instant::now();
     // Without one (other physical slots), candidates are evaluated afresh.
     let mut scorer = ExactScorer::new(&initial.layout, corpora, weights, fit_physical).ok();
@@ -1464,15 +1544,39 @@ pub(crate) fn run_controlled(
             }
         }
     }
-    let Some(initial) = best.clone() else {
-        return Err(if control.cancel.load(Ordering::Relaxed) {
-            "cancelled"
-        } else {
-            "No feasible magic layout could be produced under the active limits."
+    // A start that breaks the caps (an edit raised SFB, say) is annealed
+    // anyway: annealing may pass above a cap and comes back under it.
+    let mut infeasible_reason = None;
+    let initial = match best.clone() {
+        Some(initial) => initial,
+        None if control.cancel.load(Ordering::Relaxed) => return Err("cancelled".into()),
+        None => {
+            let (start, reason) = ungated_start(
+                seed,
+                corpora,
+                &shares,
+                weights,
+                &baselines,
+                settings,
+                &control.cancel,
+                initial_progress.clone(),
+            )?;
+            if expired(deadline) {
+                return Err(infeasible(&reason));
+            }
+            infeasible_reason = Some(reason);
+            start
         }
-        .into());
     };
+    let initial_feasible = infeasible_reason.is_none();
     if control.cancel.load(Ordering::Relaxed) || expired(deadline) {
+        if let Some(reason) = &infeasible_reason {
+            return Err(if control.cancel.load(Ordering::Relaxed) {
+                "cancelled".into()
+            } else {
+                infeasible(reason)
+            });
+        }
         let mut snapshot = identity_snapshot(
             initial.snapshot.clone(),
             initial.layout.slots.len(),
@@ -1536,6 +1640,7 @@ pub(crate) fn run_controlled(
                         }
                         let (result, path) = run_restart_chain(
                             &initial,
+                            initial_feasible,
                             action_name_ref,
                             locks,
                             corpora,
@@ -1703,7 +1808,10 @@ pub(crate) fn run_controlled(
         return Err(error);
     }
 
-    let best = best.ok_or("Magic optimizer finished without a feasible candidate.")?;
+    let best = best.ok_or_else(|| match &infeasible_reason {
+        Some(reason) => infeasible(reason),
+        None => "Magic optimizer finished without a feasible candidate.".into(),
+    })?;
     let mut snapshot =
         identity_snapshot(best.snapshot.clone(), best.layout.slots.len(), best.score);
     snapshot.progress.restart = restart_evaluations
