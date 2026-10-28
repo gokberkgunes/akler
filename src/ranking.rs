@@ -293,6 +293,362 @@ fn mana2_rank_stats(row: &RankRow, raw: &mana2_metrics::RawStats) -> mana2_metri
     }
 }
 
+/// One same-finger bigram or skipgram's share of akl.gg finger speed.
+struct SpeedPair {
+    name: String,
+    finger: usize,
+    skip: bool,
+    /// Percent of the bigram or skipgram population.
+    frequency: f64,
+    /// Fspeed units; a finger's pairs add up to its Fspeed.
+    speed: f64,
+}
+
+/// AKLER finger order (LP..RP, LT, RT) as Mana2 stat names.
+const SPEED_FINGER_NAMES: [&str; 10] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP", "LT", "RT"];
+
+fn mana_stat(stats: &mana2_metrics::Stats, id: &str) -> f64 {
+    stats.values[mana2_metrics::STAT_IDS.iter().position(|s| *s == id).unwrap()]
+}
+
+/// Every same-finger pair of a ranked layout with its finger speed, scored
+/// one pair at a time through the same stats as the ranker's columns.
+fn speed_pairs(row: &RankRow) -> Vec<SpeedPair> {
+    let mut merged = BTreeMap::<(String, usize, bool), (f64, f64)>::new();
+    let mut add = |name: String, skip: bool, frequency: f64, stats: mana2_metrics::Stats, population: f64| {
+        for (finger, id) in SPEED_FINGER_NAMES.iter().enumerate() {
+            let speed = mana_stat(&stats, &format!("fspeed-{id}"));
+            if speed != 0.0 {
+                let entry = merged.entry((name.clone(), finger, skip)).or_default();
+                entry.0 += 100.0 * frequency / population;
+                entry.1 += speed;
+            }
+        }
+    };
+    let pair_name = |a: String, b: String, skip: bool| {
+        let gap = match (a.chars().count(), skip) {
+            (1, true) if b.chars().count() == 1 => "_",
+            (1, false) if b.chars().count() == 1 => "",
+            (_, true) => " _ ",
+            _ => " ",
+        };
+        format!("{a}{gap}{b}")
+    };
+    match row {
+        RankRow::Plain { model, corpus, .. } => {
+            let positions = positions(&model.original);
+            let symbol = |id: usize| match model.canonical[id] {
+                b' ' => "␣".to_string(),
+                byte => (byte as char).to_string(),
+            };
+            for gram in corpus.grams.iter().filter(|gram| matches!(gram.kind(), 1 | 2)) {
+                let ids = [positions[gram.id(0)], positions[gram.id(1)]];
+                let mut stats = mana2_metrics::RawStats::default();
+                model.geometry.mana2().add_gram(&mut stats, gram.kind(), &ids, gram.f);
+                if stats.1 == finger_speed::Raw::default() {
+                    continue;
+                }
+                let skip = gram.kind() == 2;
+                let speed = mana_stats_for_corpus(&Raw([0.0; N_RAW], Some(stats)), corpus);
+                let population = corpus.totals[gram.kind()];
+                add(pair_name(symbol(gram.id(0)), symbol(gram.id(1)), skip), skip, gram.f, speed, population);
+            }
+        }
+        RankRow::Action { layout, summary, .. } => {
+            let keys = action_ui::physical_keys(layout);
+            let counts = &summary.counts;
+            let label = |slot: usize| layout.slots[slot].label.replace('␠', "␣");
+            let mut patterns = Vec::new();
+            if let (Some(tables), Some(skip)) = (&counts.finger_tables, &counts.finger_skip) {
+                for (table, skip) in [(&tables[1], false), (skip, true)] {
+                    for (pattern, &frequency) in table {
+                        patterns.push((pattern.slots.clone(), pattern.fingers.clone(), frequency, skip));
+                    }
+                }
+            } else {
+                for (table, skip) in [(&counts.tables[1], false), (&counts.skip, true)] {
+                    for (slots, frequency) in table.entries() {
+                        let fingers = slots.iter().map(|&slot| keys[slot].finger).collect();
+                        patterns.push((slots.to_vec(), fingers, frequency, skip));
+                    }
+                }
+            }
+            for (slots, fingers, frequency, skip) in patterns {
+                if frequency == 0.0 || fingers[0] != fingers[1] {
+                    continue;
+                }
+                let pair: Vec<_> = slots
+                    .iter()
+                    .zip(&fingers)
+                    .map(|(&slot, &finger)| alt_fingers::with_finger(keys[slot], finger))
+                    .collect();
+                let mut stats = mana2_metrics::RawStats::default();
+                finger_speed::accumulate(&mut stats.1, &pair[0], &pair[1], frequency, skip);
+                let speed = action_ngrams::mana_stats(&stats, summary.totals, counts.speed_populations);
+                let kind = if skip { 2 } else { 1 };
+                let population = match counts.speed_populations[kind - 1] {
+                    stored if stored > 0.0 => stored,
+                    _ => summary.totals[kind],
+                };
+                add(pair_name(label(slots[0]), label(slots[1]), skip), skip, frequency, speed, population);
+            }
+        }
+    }
+    let mut pairs: Vec<_> = merged
+        .into_iter()
+        .map(|((name, finger, skip), (frequency, speed))| SpeedPair { name, finger, skip, frequency, speed })
+        .collect();
+    pairs.sort_by(|a, b| b.speed.total_cmp(&a.speed).then_with(|| a.name.cmp(&b.name)));
+    pairs
+}
+
+/// The fingers each clickable cell of the stats page lists: one finger,
+/// a hand (10 left, 11 right) or both hands (12).
+fn speed_group(group: usize) -> (String, Vec<usize>) {
+    const NAMES: [&str; 5] = ["pinky", "ring", "middle", "index", "thumb"];
+    const LEFT: [usize; 5] = [0, 1, 2, 3, 8];
+    const RIGHT: [usize; 5] = [7, 6, 5, 4, 9];
+    match group {
+        10 => ("left hand".into(), LEFT.to_vec()),
+        11 => ("right hand".into(), RIGHT.to_vec()),
+        12 => ("both hands".into(), (0..10).collect()),
+        finger => {
+            let left = LEFT.iter().position(|&f| f == finger);
+            let index = left.or_else(|| RIGHT.iter().position(|&f| f == finger)).unwrap();
+            let hand = if left.is_some() { "left" } else { "right" };
+            (format!("{hand} {}", NAMES[index]), vec![finger])
+        }
+    }
+}
+
+/// akl.gg's layout view: bigram and trigram stats beside per-finger usage and
+/// speed. Clicking a finger's numbers lists its same-finger pairs.
+fn aklgg_stats_page(term: &mut Terminal, row: &RankRow, data: &RankingData) -> AppResult<()> {
+    let raw = row
+        .raw()
+        .1
+        .as_ref()
+        .ok_or("Mana2 statistics were not collected for this layout")?;
+    let stats = mana2_rank_stats(row, raw);
+    let value = |id: &str| mana_stat(&stats, id);
+    let percent = |id: &str| {
+        let index = mana2_metrics::STAT_IDS.iter().position(|s| *s == id).unwrap();
+        rank_percent(RANK_MANA_START + index)
+    };
+    let shown = |id: &str| {
+        if percent(id) {
+            format!("{:.3}%", value(id))
+        } else {
+            format!("{:.3}", value(id))
+        }
+    };
+    let mut pairs: Option<Vec<SpeedPair>> = None;
+    let mut scroll = 0;
+    loop {
+        let wide = term.width() >= 96;
+        let mut c = Canvas::new(term.width(), if wide { 30 } else { 48 });
+        c.text(0, 0, row.name(), FG);
+        for x in 0..row.name().chars().count().min(c.w) {
+            c.cells[x].bold = true;
+        }
+        let score = if data.mana2 {
+            format!("Mana2 score {:.4} · higher is better", -row.score())
+        } else {
+            format!("aklgg score {:.4} · lower is better", row.score())
+        };
+        c.text(row.name().chars().count() + 3, 0, &score, MUTED);
+        let on_off = |on: bool| if on { "on" } else { "off" };
+        c.text(
+            0,
+            1,
+            &format!(
+                "corpus {} · Alts: {} · Spacegrams: {}",
+                data.name,
+                on_off(data.weights.3),
+                on_off(data.spacegrams)
+            ),
+            MUTED,
+        );
+
+        let mut y = 3;
+        c.right(18, y, 9, "BIGRAM", MUTED);
+        c.right(28, y, 9, "SKIPGRAM", MUTED);
+        y += 1;
+        for (label, bigram, skipgram) in [
+            ("Same Finger", "sfb", "sfs"),
+            ("Weighted SF", "sfbw", "sfsw"),
+            ("Same Key", "skb", "sks"),
+            ("Stretch", "lsb", "lss"),
+            ("Scissor", "vsb", "vss"),
+        ] {
+            c.text(0, y, label, FG);
+            c.right(18, y, 9, &shown(bigram), FG);
+            c.right(28, y, 9, &shown(skipgram), FG);
+            y += 1;
+        }
+        y += 1;
+        c.right(18, y, 9, "ALL", MUTED);
+        c.right(28, y, 9, "NO THUMBS", MUTED);
+        y += 1;
+        for (label, id) in [
+            ("Alternation", "alt"),
+            ("  Alt & SFS", "altsfs"),
+            ("Redirect", "redirect"),
+            ("  Red & SFS", "redirectsfs"),
+            ("  Weak", "redirectweak"),
+            ("  Weak & SFS", "redirectsfsweak"),
+            ("Roll", "roll"),
+            ("  Inroll2", "inroll2"),
+            ("  Outroll2", "outroll2"),
+            ("  Inroll3", "inroll3"),
+            ("  Outroll3", "outroll3"),
+            ("Good roll", "goodroll"),
+        ] {
+            c.text(0, y, label, FG);
+            c.right(18, y, 9, &shown(id), FG);
+            c.right(28, y, 9, &shown(&format!("{id}nothumbs")), FG);
+            y += 1;
+        }
+        c.text(0, y, "Off pinky", FG);
+        c.right(18, y, 9, &shown("offpinky"), FG);
+        y += 1;
+        c.text(0, y, "Pinky/ring curl", FG);
+        c.right(18, y, 9, &shown("pinkyringcurl"), FG);
+        y += 1;
+
+        // The finger table sits to the right when it fits, below otherwise.
+        let left_end = y;
+        let (x0, mut y) = if wide { (42, 3) } else { (0, y + 1) };
+        const CELL: usize = 9;
+        let hand_x = |hand: usize| x0 + 7 + hand * (3 * CELL + 2);
+        for (hand, name) in ["Left", "Right"].into_iter().enumerate() {
+            c.center(hand_x(hand), y, 3 * CELL, name, MUTED);
+        }
+        y += 1;
+        for hand in 0..2 {
+            for (column, name) in ["Usage", "Fspeed", "Weighted"].into_iter().enumerate() {
+                c.right(hand_x(hand) + column * CELL, y, CELL, name, MUTED);
+            }
+        }
+        y += 1;
+        let finger_cells = |c: &mut Canvas, y: usize, hand: usize, ids: &[&str], group: usize| {
+            let sum = |prefix: &str| ids.iter().map(|id| value(&format!("{prefix}{id}"))).sum::<f64>();
+            let x = hand_x(hand);
+            c.right(x, y, CELL, &format!("{:.1}%", sum("finger-usage-")), FG);
+            c.right(x + CELL, y, CELL, &format!("{:.2}", sum("fspeed-")), CYAN);
+            c.right(x + 2 * CELL, y, CELL, &format!("{:.2}", sum("weighted-speed-")), FG);
+            c.hit(Rect { x, y, w: 3 * CELL, h: 1 }, Action::Item(group));
+        };
+        for (name, left, right) in [
+            ("pinky", 0, 7),
+            ("ring", 1, 6),
+            ("middle", 2, 5),
+            ("index", 3, 4),
+            ("thumb", 8, 9),
+        ] {
+            c.text(x0, y, name, FG);
+            finger_cells(&mut c, y, 0, &[SPEED_FINGER_NAMES[left]], left);
+            finger_cells(&mut c, y, 1, &[SPEED_FINGER_NAMES[right]], right);
+            y += 1;
+        }
+        c.line(x0, y, 7 + 6 * CELL + 2, BORDER);
+        y += 1;
+        c.text(x0, y, "total", FG);
+        finger_cells(&mut c, y, 0, &["LP", "LR", "LM", "LI", "LT"], 10);
+        finger_cells(&mut c, y, 1, &["RP", "RR", "RM", "RI", "RT"], 11);
+        y += 2;
+        c.text(x0, y, "both", FG);
+        finger_cells(&mut c, y, 0, &SPEED_FINGER_NAMES, 12);
+        y += 2;
+        for line in wrap_lines(
+            &["Click a row's numbers for its top finger-speed pairs; Esc returns.".into()],
+            if wide { c.w.saturating_sub(x0) } else { c.w },
+        ) {
+            c.text(x0, y, &line, MUTED);
+            y += 1;
+        }
+
+        c.h = y.max(left_end);
+        term.present(&c, scroll)?;
+        let mut e = term.event()?;
+        if scroll_event(&e, &mut scroll, c.h, term.size.1) {
+            continue;
+        }
+        if let Some(action) = action_press(term, &c, &e, scroll) {
+            match action {
+                Action::Item(group) => {
+                    let pairs = pairs.get_or_insert_with(|| speed_pairs(row));
+                    speed_pairs_page(term, row.name(), group, pairs)?;
+                    continue;
+                }
+                Action::Command(ch) => e = Event::Char(ch),
+                _ => {}
+            }
+        }
+        if matches!(e, Event::Escape | Event::Quit | Event::Char('q' | '\u{1b}')) {
+            return Ok(());
+        }
+    }
+}
+
+/// A finger group's same-finger pairs, largest finger speed first.
+fn speed_pairs_page(term: &mut Terminal, layout: &str, group: usize, pairs: &[SpeedPair]) -> AppResult<()> {
+    let (name, fingers) = speed_group(group);
+    let shown: Vec<_> = pairs.iter().filter(|pair| fingers.contains(&pair.finger)).collect();
+    let total = |skip: bool| shown.iter().filter(|pair| pair.skip == skip).map(|pair| pair.speed).sum::<f64>();
+    let (bigrams, skipgrams) = (total(false), total(true));
+    let mut scroll = 0;
+    loop {
+        let mut c = Canvas::new(term.width(), shown.len() + 6);
+        c.text(0, 0, &format!("Top fspeed — {name} · {layout}"), CYAN);
+        c.text(
+            0,
+            1,
+            &format!(
+                "Fspeed {:.3} = bigrams {bigrams:.3} + skipgrams {skipgrams:.3} (skipgrams count half)",
+                bigrams + skipgrams
+            ),
+            FG,
+        );
+        c.text(0, 3, "Pair", MUTED);
+        c.text(12, 3, "Finger", MUTED);
+        c.right(19, 3, 9, "Fspeed", MUTED);
+        c.right(29, 3, 8, "Share", MUTED);
+        c.right(38, 3, 10, "Frequency", MUTED);
+        c.right(49, 3, 9, "Distance", MUTED);
+        for (index, pair) in shown.iter().enumerate() {
+            let y = 4 + index;
+            // Fspeed is 800 · frequency · distance, halved for skipgrams.
+            let distance = pair.speed / (8.0 * pair.frequency * if pair.skip { 0.5 } else { 1.0 });
+            c.text(0, y, &short(&pair.name, 11), FG);
+            c.text(12, y, SPEED_FINGER_NAMES[pair.finger], MUTED);
+            c.right(19, y, 9, &format!("{:.3}", pair.speed), CYAN);
+            c.right(29, y, 8, &format!("{:.1}%", 100.0 * pair.speed / (bigrams + skipgrams)), FG);
+            c.right(38, y, 10, &format!("{:.3}%", pair.frequency), FG);
+            c.right(49, y, 9, &format!("{distance:.2}"), FG);
+        }
+        if shown.is_empty() {
+            c.text(0, 4, "No same-finger pairs.", MUTED);
+        }
+        term.present(&c, scroll)?;
+        let mut e = term.event()?;
+        if scroll_event(&e, &mut scroll, c.h, term.size.1) {
+            continue;
+        }
+        if let Some(Action::Command(ch)) = action_press(term, &c, &e, scroll) {
+            e = Event::Char(ch);
+        }
+        match e {
+            Event::Up | Event::Char('k') => scroll = scroll.saturating_sub(1),
+            Event::Down | Event::Char('j') => {
+                scroll = (scroll + 1).min(c.h.saturating_sub(term.size.1));
+            }
+            Event::Escape | Event::Quit | Event::Char('q' | '\u{1b}') => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
 // Switching objectives reuses the existing physical mappings. Only missing
 // counters are calculated; action winners and corpus preparation stay intact.
 fn rescore_rank_rows(rows: &mut [RankRow], weights: &Weights, mode: &str) {
@@ -1792,7 +2148,8 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                 continue;
             }
         }
-        // A click on a layout opens the optimizer for it.
+        // A click on a layout opens its aklgg stats, or the optimizer in
+        // normal mode.
         if let Event::Mouse {
             x,
             y,
@@ -1805,7 +2162,11 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             if let Some(offset) = grid.layout_at(x, y, shown) {
                 if let Some(&i) = order.get(top + offset) {
                     selected = top + offset;
-                    open_ranked_optimizer(term, &rows[i], &mut session, &data.path)?;
+                    if data.physical_catalog() {
+                        aklgg_stats_page(term, &rows[i], data)?;
+                    } else {
+                        open_ranked_optimizer(term, &rows[i], &mut session, &data.path)?;
+                    }
                 }
                 continue;
             }
@@ -1861,7 +2222,11 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                 Action::Item(r) => {
                     selected = r;
                     if let Some(&i) = order.get(r) {
-                        open_ranked_optimizer(term, &data.rows[i], &mut session, &data.path)?;
+                        if data.physical_catalog() {
+                            aklgg_stats_page(term, &data.rows[i], data)?;
+                        } else {
+                            open_ranked_optimizer(term, &data.rows[i], &mut session, &data.path)?;
+                        }
                     }
                     continue;
                 }
@@ -2262,7 +2627,16 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             Event::Char('?') => {
                 let lines = vec![
                     "j/k · ↑/↓\tSelect layout".into(),
-                    "Enter · Space · Click\tOptimize a layout".into(),
+                    if data.physical_catalog() {
+                        "Enter · Space\tOptimize a layout".into()
+                    } else {
+                        "Enter · Space · Click\tOptimize a layout".into()
+                    },
+                    if data.physical_catalog() {
+                        "Click\tShow a layout's stats and finger speed".into()
+                    } else {
+                        "s, then click\tShow a layout's aklgg stats".into()
+                    },
                     "h/l · ←/→ · Tab\tScroll columns".into(),
                     "PgUp/PgDn\tScroll layouts".into(),
                     "n\tSort by name".into(),

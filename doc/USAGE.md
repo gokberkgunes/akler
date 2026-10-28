@@ -96,8 +96,10 @@ by stat.
   without a thumb letter. Middle-click hides a layout or column; Ctrl+click
   hides the clicked layout and every layout above it in the current order. `u` undoes
   the last hide, `H` restores everything, `r` reloads. Hidden layouts are
-  stored in `ranker-hidden.json`. Enter, Space or a click opens a layout in
-  the optimizer.
+  stored in `ranker-hidden.json`. Enter or Space opens a layout in the
+  optimizer; so does a click in normal mode. In aklgg mode a click shows
+  the layout's akl.gg-style stats; click a finger's numbers there to list
+  its same-finger pairs by finger speed.
 - **Editor:** click a metric to see its contributors. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
