@@ -1343,6 +1343,10 @@ impl<'a> Mapper<'a> {
         {
             return Err("chord position requires a forced physical root".into());
         }
+        if forced.iter().all(Option::is_none) && !chords.contains(&true) {
+            // Nothing forced: the plain, memoized mapping.
+            return self.map_profiled::<PROFILE, F>(text, effort, ops);
+        }
         self.map_impl::<PROFILE, true, false, F>(text, Some(forced), Some(chords), effort, ops)?;
         Ok(self.expanded_keys())
     }

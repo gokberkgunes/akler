@@ -440,7 +440,7 @@ impl<'a> Prepared<'a> {
     ) -> ak::Result<(Summary, Option<ng::Mappings>)> {
         let exact = self
             .corpus
-            .exact_sums_for(layout, self.weights.combo_policy());
+            .exact_sums_for(layout, self.weights.combo_policy(), self.weights.alts());
         self.evaluate_from(layout, start.filter(|_| exact), stop, progress)
     }
 

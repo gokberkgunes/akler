@@ -143,16 +143,21 @@ fn apply_rule(
         }) {
             continue;
         }
-        // A finger the key a `_` stands for already uses next to it is no
-        // alternative: "e_␣ (LT RT)" leaves Space on its own finger in "er␣"
-        // when r is on RT, instead of making a same-finger pair.
+        // As on akl.gg, a key keeps its own finger rather than move onto the
+        // finger a neighbouring key uses: "e␣ (LT RT)" leaves Space on LT in
+        // "e␣r" and "e_␣" in "er␣" when r is on RT.
+        let finger_at = |position: usize| match position.checked_sub(start) {
+            Some(offset) if offset < len => rule.fingers[offset].or(result[position]),
+            _ => result[position],
+        };
         let clashes = (0..len).any(|offset| {
-            rule.ngram[offset].is_none()
-                && [offset.wrapping_sub(1), offset + 1].into_iter().any(|next| {
-                    next < len
-                        && rule.fingers[next].is_some()
-                        && rule.fingers[next] == result[start + offset]
-                })
+            let position = start + offset;
+            rule.fingers[offset].is_some_and(|finger| {
+                Some(finger) != result[position]
+                    && [position.wrapping_sub(1), position + 1]
+                        .into_iter()
+                        .any(|next| next < text.len() && finger_at(next) == Some(finger))
+            })
         });
         if clashes {
             continue;
@@ -603,23 +608,11 @@ impl Compiled {
         self.codes.is_some()
     }
 
-    /// Whether a move can change a rule's effect outside the moved keys.
-    /// A wildcard can clash with an assigned finger, so even moving a key at
-    /// an unnamed position can change the rule's effect on its neighbours.
-    /// Rules matching characters never reach beyond the mapped keys.
+    /// Whether a move can change a rule's effect outside the moved keys'
+    /// own tails. A key next to a moved one, even the one after a context's
+    /// counted key, can clash with its assigned finger, so any rule can.
     pub(crate) fn reaches(&self, slots: &[usize]) -> bool {
-        let Some(codes) = &self.codes else {
-            return false;
-        };
-        self.rules.iter().any(|rule| rule.ngram.contains(&None))
-            || slots.iter().any(|&slot| {
-                let code = codes[slot];
-                code != 0
-                    && self
-                        .rules
-                        .iter()
-                        .any(|rule| rule.ngram.contains(&Some(code)))
-            })
+        !self.rules.is_empty() && !slots.is_empty()
     }
 
     /// `resolve` over one window, matching position rules against the codes

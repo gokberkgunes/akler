@@ -19,10 +19,10 @@ alts: [{"ngram":["p",null,"g"],"fingers":["LM",null,"LI"]}]
 
 `ngram` is two or three characters; `null` matches any character or keeps the
 normal finger. Longer rules win, then rules with more literal characters, then
-the later rule. A rule is skipped where a key its `_` matches already uses, next
-to it, the finger the rule assigns: `e_␣ (LT RT)` leaves Space on its own finger
-in "er␣" when r is on RT. A file without `alts` may instead keep rules in a leading
-comment block, as stray's notes do:
+the later rule. As on akl.gg, a rule is skipped where a key it moves would land
+on the finger of the key next to it: with r on RT, `e␣ (LT RT)` leaves Space on
+LT in "e␣r", and `e_␣` does in "er␣". A file without `alts` may instead keep
+rules in a leading comment block, as stray's notes do:
 
 ```jsonc
 // alt fingers
@@ -51,10 +51,18 @@ and t with the left index whenever r is followed by t, adjacent or one key
 apart. `.` keeps a key's normal finger. Row-staggered boards use `rowstag`;
 all others use `colstag`. A layout's own `alts` take precedence.
 
-Magic and action evaluation applies these rules exactly but runs about three
-times slower. The ordinary model applies them only within each bigram,
-skipgram or trigram, so it misses some same-finger pairs (about 15% of SFB on
-stray). Finger usage still counts the normal finger.
+Magic and action evaluation reads each key with three characters before it
+and one after. That context counts the bigram ending on the key, the previous
+key's usage, and the skipgram and trigram ending on the next key, so each key
+in them sees up to two characters on either side: rules that read the key
+after (`␣e`, `␣_e`) also move that key's own press. This needs an order-4
+corpus or better. Optimizer searches count each key at its own context
+instead, which is several times faster and slightly less exact; the stats
+they show are counted exactly.
+
+The ordinary model applies them only within each bigram, skipgram or trigram,
+so it misses some same-finger pairs (about 15% of SFB on stray). Finger usage
+still counts the normal finger.
 
 `v` in the editor (`a` in the ranker) lists a layout's alternate fingers,
 combos and magic rules.

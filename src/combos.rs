@@ -75,6 +75,9 @@ pub(crate) struct ChordPlan {
     /// Leading positions a combo that began before a left-open context may
     /// cover; their movement is unknown.
     open_prefix: u8,
+    /// Planned for alternate fingers alone (`Program::for_contexts`):
+    /// `chord_grams` counts skipgrams one key later.
+    ahead: bool,
 }
 
 impl ChordPlan {
@@ -96,7 +99,17 @@ impl ChordPlan {
     /// Whether this plan forces, chords and hides nothing: the window then
     /// maps exactly as without combos.
     pub(crate) fn is_empty(&self) -> bool {
-        self.open_prefix == 0 && self.forced.iter().all(Option::is_none)
+        !self.ahead && self.open_prefix == 0 && self.forced.iter().all(Option::is_none)
+    }
+
+    /// Whether the plan is for alternate fingers alone, without combos.
+    pub(crate) fn ahead(&self) -> bool {
+        self.ahead
+    }
+
+    /// The planned context's length.
+    pub(crate) fn len(&self) -> usize {
+        usize::from(self.len)
     }
 
     /// Chord positions.
@@ -127,6 +140,9 @@ pub(crate) struct Program {
     /// window can begin with: a window holding neither has an empty plan.
     first_bytes: [u64; 4],
     open_bytes: [u64; 4],
+    /// No combos: alternate fingers alone asked for centred contexts, and
+    /// every context is planned (`ChordPlan::ahead`).
+    ahead: bool,
 }
 
 fn has_byte(set: &[u64; 4], byte: u8) -> bool {
@@ -253,6 +269,44 @@ impl Program {
         Ok(Self::assemble(combos, layout.slots.len()))
     }
 
+    /// The program a layout's contexts are counted with: its combos while
+    /// the policy types them, or none at all when only alternate fingers
+    /// need the centred windows, whose key after the counted one rules like
+    /// "␣e" read. Corpora below order 4 have no such windows.
+    pub(crate) fn for_contexts(
+        layout: &action_keys::Layout,
+        policy: Policy,
+        alts: crate::alt_fingers::AltPolicy,
+        order: usize,
+    ) -> Result<Option<Self>, String> {
+        if policy.enabled && !layout.combos.is_empty() {
+            Self::new(layout).map(Some)
+        } else if order >= 4 && alts.active(layout) {
+            Ok(Some(Self {
+                ahead: true,
+                ..Self::assemble(Vec::new(), layout.slots.len())
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Whether alternate fingers alone asked for centred contexts, counted
+    /// as `ChordPlan::ahead` describes.
+    pub(crate) fn ahead(&self) -> bool {
+        self.ahead
+    }
+
+    /// This program for an optimizer search: alternate fingers then count
+    /// each key at its own context, which is several times faster and
+    /// slightly less exact.
+    pub(crate) fn for_search(self) -> Self {
+        Self {
+            ahead: false,
+            ..self
+        }
+    }
+
     fn assemble(combos: Vec<Combo>, n: usize) -> Self {
         let mut first_bytes = [0u64; 4];
         let mut open_bytes = [0u64; 4];
@@ -267,6 +321,7 @@ impl Program {
             slot_count: n,
             first_bytes,
             open_bytes,
+            ahead: false,
         }
     }
 
@@ -328,6 +383,7 @@ impl Program {
             chord: [false; PLAN_LEN],
             starts: [false; PLAN_LEN],
             open_prefix: 0,
+            ahead: self.ahead,
         };
         let open = left_open
             && text
@@ -381,6 +437,9 @@ impl Program {
     /// proper suffix begins it. Otherwise every plan forces, chords and
     /// hides nothing, and the window maps exactly as without combos.
     pub(crate) fn touches(&self, text: &[u8], left_open: bool) -> bool {
+        if self.ahead {
+            return true;
+        }
         let mut buffer = [0u8; PLAN_LEN];
         let lower = &mut buffer[..text.len()];
         for (lower, byte) in lower.iter_mut().zip(text) {

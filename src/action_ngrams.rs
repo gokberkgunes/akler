@@ -874,7 +874,7 @@ type Postings = Arc<std::sync::OnceLock<WindowIndex>>;
 /// covers the JSON's contents, the limits, this format and the build, so any
 /// change misses and rewrites it.
 const CACHE_MAGIC: &[u8; 8] = b"AKLERNG1";
-const CACHE_VERSION: u32 = 1;
+const CACHE_VERSION: u32 = 4;
 /// Keep a few configurations for each corpus without unbounded disk growth.
 const CACHE_FILES_PER_CORPUS: usize = 8;
 
@@ -940,15 +940,17 @@ fn write_cache(corpus: &NgramCorpus, cache: &Path, key: u64) {
         write_text(&mut out, warning);
     }
     write_windows(&mut out, &corpus.windows);
-    match corpus.chord_windows.get() {
-        None => out.push(0),
-        Some(Ok((windows, _, _))) => {
-            out.push(1);
-            write_windows(&mut out, windows);
-        }
-        Some(Err(error)) => {
-            out.push(2);
-            write_text(&mut out, error);
+    for built in [&corpus.chord_windows, &corpus.alt_windows] {
+        match built.get() {
+            None => out.push(0),
+            Some(Ok((windows, _, _))) => {
+                out.push(1);
+                write_windows(&mut out, windows);
+            }
+            Some(Err(error)) => {
+                out.push(2);
+                write_text(&mut out, error);
+            }
         }
     }
     let temporary = cache.with_extension(format!(
@@ -1055,17 +1057,19 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         .map(|_| reader.text())
         .collect::<Option<Vec<_>>>()?;
     let windows = reader.windows()?;
-    let chord_windows = std::sync::OnceLock::new();
-    match reader.take(1)?[0] {
-        0 => {}
-        1 => {
-            let chords = reader.windows()?;
-            let _ = chord_windows.set(Ok((chords.clone(), exact_sums_of(&chords), Postings::default())));
+    let [chord_windows, alt_windows] = [(), ()].map(|_| std::sync::OnceLock::new());
+    for built in [&chord_windows, &alt_windows] {
+        match reader.take(1)?[0] {
+            0 => {}
+            1 => {
+                let centred = reader.windows()?;
+                let _ = built.set(Ok((centred.clone(), exact_sums_of(&centred), Postings::default())));
+            }
+            2 => {
+                let _ = built.set(Err(reader.text()?));
+            }
+            _ => return None,
         }
-        2 => {
-            let _ = chord_windows.set(Err(reader.text()?));
-        }
-        _ => return None,
     }
     if !reader.bytes.is_empty() || !(1..=5).contains(&order) || windows.is_empty() {
         return None;
@@ -1079,9 +1083,10 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         exact_sums: exact_sums_of(&windows),
         windows,
         postings: Postings::default(),
-        // The chord contexts it was only kept for are in the cache.
+        // The centred contexts it was only kept for are in the cache.
         chord_source: None,
         chord_windows: Arc::new(chord_windows),
+        alt_windows: Arc::new(alt_windows),
         rule_candidates: Arc::default(),
         speed_populations,
     })
@@ -1104,6 +1109,8 @@ pub struct NgramCorpus {
     postings: Postings,
     /// The chord windows, their `exact_sums_of` and postings.
     chord_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
+    /// The same for alternate fingers, shortened from the left under caps.
+    alt_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// `rule_candidates`, built on first use.
     rule_candidates: Arc<std::sync::OnceLock<Vec<(bool, u8, u8, f64)>>>,
     /// Whole-corpus bigram and skipgram masses, measured as ordinary corpora
@@ -1186,9 +1193,34 @@ impl NgramCorpus {
     /// The chord windows, built on first use.
     fn chord_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
         self.chord_windows.get_or_init(|| {
-            self.build_chord_windows()
+            self.build_chord_windows(false)
                 .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
         })
+    }
+
+    /// The alternate-finger windows, built on first use.
+    fn alt_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
+        self.alt_windows.get_or_init(|| {
+            self.build_chord_windows(true)
+                .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
+        })
+    }
+
+    /// The contexts a layout counted with `program` is evaluated on. Without
+    /// combos only alternate fingers need them. Rules up to three characters
+    /// long decide a key's finger from up to two characters on either side;
+    /// `chord_grams` counts a bigram at its last key, which then sees one
+    /// character after it, and a skipgram or trigram one key later, so its
+    /// first key sees three before it.
+    pub(crate) fn contexts_for(&self, program: &crate::combos::Program) -> ak::Result<Self> {
+        if !program.ahead() {
+            return self.chord_contexts();
+        }
+        let windows = self.alt_windows().clone()?;
+        let mut result = self.clone();
+        (result.windows, result.exact_sums, result.postings) = windows;
+        result.rule_candidates = Arc::default();
+        Ok(result)
     }
 
     fn context_tables(&self) -> [TableBytes; 5] {
@@ -1208,7 +1240,9 @@ impl NgramCorpus {
     /// without its following character (a combo starting on the counted one
     /// then goes unseen), then without its earliest one (its start becomes
     /// left-open), so every counted character keeps its full frequency.
-    fn build_chord_windows(&self) -> ak::Result<Arc<[Window]>> {
+    /// `ahead` (alternate fingers) drops the earliest character first
+    /// instead: skipgrams are counted on the following one.
+    fn build_chord_windows(&self, ahead: bool) -> ak::Result<Arc<[Window]>> {
         // Contexts the capped tables kept, by length.
         let retained = self.chord_source.as_ref().map(|_| {
             let mut retained: [std::collections::HashSet<u64>; 5] = Default::default();
@@ -1271,7 +1305,7 @@ impl NgramCorpus {
                             0.0
                         };
                     if weight < -1e-8 * f.abs().max(1.0) {
-                        return Err("Combo chords require consistent left/right n-gram contexts; rebuild the corpus with all n-gram limits set to all.".into());
+                        return Err("Combos and alternate fingers require consistent left/right n-gram contexts; rebuild the corpus with all n-gram limits set to all.".into());
                     }
                     // Left-open hides a first character a combo begun earlier
                     // may cover; three characters before the counted one keep
@@ -1309,7 +1343,12 @@ impl NgramCorpus {
                 // order, so each shorter count sums in a fixed order.
                 let mut dropped: Vec<(u64, f64)> = levels[n]
                     .iter()
-                    .filter(|&(&key, _)| !tables[n - 1].contains(&pack_gram(&unpack(key).2[..n])))
+                    // Alternate fingers keep every three-key context, so a
+                    // counted key never loses the key before it.
+                    .filter(|&(&key, _)| {
+                        !(ahead && n <= 3)
+                            && !tables[n - 1].contains(&pack_gram(&unpack(key).2[..n]))
+                    })
                     .map(|(&key, &weight)| (key, weight))
                     .collect();
                 dropped.sort_unstable_by_key(|&(key, _)| key);
@@ -1317,7 +1356,7 @@ impl NgramCorpus {
                     levels[n].remove(&key);
                     let (target, left_open, bytes) = unpack(key);
                     let target = usize::from(target);
-                    let shorter = if target + 1 < n {
+                    let shorter = if target + 1 < n && !(ahead && target > 0) {
                         pack(target as u8, left_open, &gram_slice(&bytes[..n - 1]))
                     } else {
                         pack(target as u8 - 1, true, &gram_slice(&bytes[1..n]))
@@ -1398,9 +1437,11 @@ impl NgramCorpus {
             return Ok(corpus);
         }
         let corpus = Self::parse(text, path, stop, progress, limits).map_err(|e| e.to_string())?;
-        // The cache holds the chord contexts too, so build them now.
+        // The cache holds the centred contexts too, so build them now: the
+        // capped tables they need are not kept in it.
         if corpus.order >= 4 {
             corpus.chord_windows();
+            corpus.alt_windows();
         }
         write_cache(&corpus, &cache, key);
         timing.mark("Parse corpus and write its pre-parsed cache");
@@ -1556,6 +1597,7 @@ impl NgramCorpus {
             postings: Postings::default(),
             chord_source,
             chord_windows: Arc::new(std::sync::OnceLock::new()),
+            alt_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             speed_populations,
         })
@@ -1726,12 +1768,9 @@ impl NgramCorpus {
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
         let (alt_fingers, policy, finite) = flags;
-        let combos = if policy.enabled && !layout.combos.is_empty() {
-            Some(crate::combos::Program::new(layout)?)
-        } else {
-            None
-        };
-        let chord_corpus = combos.as_ref().map(|_| self.chord_contexts()).transpose()?;
+        let combos =
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order)?;
+        let chord_corpus = combos.as_ref().map(|program| self.contexts_for(program)).transpose()?;
         let source = chord_corpus.as_ref().unwrap_or(self);
         let mut timing = crate::load_profile::LoadProfile::new("detailed physical mapping");
         let program = match crate::action_fast::Program::new(layout, self.order) {
@@ -2013,12 +2052,9 @@ impl NgramCorpus {
         let mut timing = crate::load_profile::LoadProfile::new("reference physical mapping");
         let mut mapper = ak::WindowMapper::new(layout, self.order)?;
         let policy: crate::combos::Policy = combos.into();
-        let combos = if policy.enabled && !layout.combos.is_empty() {
-            Some(crate::combos::Program::new(layout)?)
-        } else {
-            None
-        };
-        let chord_corpus = combos.as_ref().map(|_| self.chord_contexts()).transpose()?;
+        let combos =
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order)?;
+        let chord_corpus = combos.as_ref().map(|program| self.contexts_for(program)).transpose()?;
         let source = chord_corpus.as_ref().unwrap_or(self);
         timing.mark("Validate and initialize reference mapper");
 
@@ -2120,9 +2156,10 @@ impl NgramCorpus {
         &self,
         layout: &ak::Layout,
         policy: crate::combos::Policy,
+        alts: crate::alt_fingers::AltPolicy,
     ) -> bool {
-        if policy.enabled && !layout.combos.is_empty() {
-            self.chord_contexts().is_ok_and(|chords| chords.exact_sums)
+        if let Ok(Some(program)) = crate::combos::Program::for_contexts(layout, policy, alts, self.order) {
+            self.contexts_for(&program).is_ok_and(|contexts| contexts.exact_sums)
         } else {
             self.exact_sums
         }
@@ -3137,6 +3174,25 @@ fn chord_grams(
             grams.len += 1;
         }
     };
+    if plan.ahead() {
+        // Alternate fingers alone. A key's finger reads up to two characters
+        // on either side, so each statistic is counted where the context
+        // covers the most of them: the bigram ending on the counted key, the
+        // unigram before it, and the skipgram and trigram ending on the key
+        // after it. A sequence's last key counts its own unigram.
+        let ([(kb, fb)], [(kc, fc)]) = (b, c) else {
+            unreachable!("presses without combos are single keys");
+        };
+        push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
+        if target + 1 < plan.len() {
+            let (kd, fd) = element(target + 1);
+            push([GAP, GAP, *kb], [GAP, GAP, *fb], 1.0);
+            push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
+            push([*kb, *kc, kd], [*fb, *fc, fd], 1.0);
+            push([GAP, *kc, kd], [GAP, *fc, fd], -1.0);
+        }
+        return grams;
+    }
     let (sa, sb) = (a.len() as f64, b.len() as f64);
     for &(ka, fa) in a {
         for &(kb, fb) in b {
@@ -4876,13 +4932,13 @@ impl Incremental {
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
         let policy: crate::combos::Policy = combos.into();
-        let combos = if policy.enabled && !layout.combos.is_empty() {
-            Some(crate::combos::Program::new(layout)?)
-        } else {
-            None
-        };
-        let corpus = if combos.is_some() {
-            corpus.chord_contexts()?
+        // Searches count alternate fingers the faster way; evaluations for
+        // display count them exactly (`contexts_for`).
+        let combos =
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, corpus.order)?
+                .map(crate::combos::Program::for_search);
+        let corpus = if let Some(program) = &combos {
+            corpus.contexts_for(program)?
         } else {
             corpus.clone()
         };
@@ -8559,10 +8615,11 @@ mod tests {
                 for known in [&previous, &first] {
                     let (reused, _) = evaluate(&layout, Some(known));
                     super::detailed_mapping_tests::assert_counts_bits(&reused, &fresh);
-                    let combos = (policy.enabled && !layout.combos.is_empty())
-                        .then(|| crate::combos::Program::new(&layout).unwrap());
-                    let source = if combos.is_some() {
-                        corpus.chord_contexts().unwrap()
+                    let combos =
+                        crate::combos::Program::for_contexts(&layout, policy, alts, corpus.order)
+                            .unwrap();
+                    let source = if let Some(program) = &combos {
+                        corpus.contexts_for(program).unwrap()
                     } else {
                         corpus.clone()
                     };
@@ -9257,6 +9314,7 @@ mod detailed_mapping_tests {
             postings: Postings::default(),
             chord_source: None,
             chord_windows: Arc::new(std::sync::OnceLock::new()),
+            alt_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             speed_populations: [0.0; 2],
         }
