@@ -178,6 +178,20 @@ pub(crate) fn position_names<'a>(
     move |code| names[usize::from(code)].clone()
 }
 
+/// A slot's position code: `position_code` on the main block, and 128 up for
+/// thumb keys by thumb column, so a layout's own rules can pin thumb keys.
+/// Matching lowercases ASCII, so thumb codes stay above it.
+fn slot_code(slot: &action_keys::Slot) -> u8 {
+    if slot.main {
+        position_code(slot.row, slot.col)
+    } else {
+        u8::try_from(160 + i16::from(slot.col))
+            .ok()
+            .filter(|&code| code >= 128)
+            .unwrap_or(0)
+    }
+}
+
 /// Positions are encoded as bytes 1-30 so `resolve` can match them as text.
 fn position_code(row: i8, col: i8) -> u8 {
     if (0..3).contains(&row) && (0..10).contains(&col) {
@@ -199,27 +213,31 @@ impl AltRules {
                 Some(position_code(row as i8, col as i8))
             })
         };
-        Self::parse_with(text, key, "use QWERTY key names or _")
+        Self::parse_with(text, key, "use QWERTY key names or _", &FINGERS[..8])
     }
 
     /// `parse` for letters instead of positions, as stray writes a layout's
-    /// own rules in its notes: `sg s_g (LM LI) · gs g_s (LI LM)`.
+    /// own rules in its notes: `sg s_g (LM LI) · gs g_s (LI LM)`. `␣` names
+    /// Space, and thumb keys may take `LT` or `RT`: `e␣ (LT RT)`.
     pub(crate) fn parse_letters(text: &str) -> Result<Vec<Rule>, String> {
-        let key = |byte: u8| byte.is_ascii_graphic().then_some(byte);
+        let key = |byte: u8| (byte.is_ascii_graphic() || byte == b' ').then_some(byte);
         Self::parse_with(
             &text.replace('·', " "),
             key,
-            "use one character per key or _",
+            "use one character per key, ␣ or _",
+            &FINGERS,
         )
     }
 
     /// `parse` with `key` naming each pattern character; `hint` explains a
-    /// character it rejects.
+    /// character it rejects. `fingers` are the names a list may use.
     fn parse_with(
         text: &str,
         key: impl Fn(u8) -> Option<u8>,
         hint: &str,
+        fingers: &[&str],
     ) -> Result<Vec<Rule>, String> {
+        let fingers_allowed = fingers;
         let mut rules = Vec::new();
         let mut pending: Vec<Vec<Option<u8>>> = Vec::new();
         let spaced = text.replace('(', " ( ").replace(')', " ) ");
@@ -227,13 +245,14 @@ impl AltRules {
         while let Some(token) = tokens.next() {
             if token != "(" {
                 let pattern = token
-                    .bytes()
-                    .map(|byte| match byte.to_ascii_lowercase() {
-                        b'_' => Ok(None),
-                        byte => key(byte)
-                            .map(Some)
-                            .ok_or_else(|| format!("{token}: {hint}")),
-                    })
+                    .chars()
+                    .map(|ch| match ch {
+                        '_' => Some(None),
+                        '␣' | '␠' => key(b' ').map(Some),
+                        ch if ch.is_ascii() => key((ch as u8).to_ascii_lowercase()).map(Some),
+                        _ => None,
+                    }
+                    .ok_or_else(|| format!("{token}: {hint}")))
                     .collect::<Result<Vec<_>, _>>()?;
                 if !matches!(pattern.len(), 2 | 3) || pattern.iter().all(Option::is_none) {
                     return Err(format!("{token}: a pattern names two or three keys"));
@@ -249,10 +268,10 @@ impl AltRules {
                 fingers.push(match token {
                     "." => None,
                     _ => Some(
-                        FINGERS[..8]
+                        fingers_allowed
                             .iter()
                             .position(|name| name.eq_ignore_ascii_case(token))
-                            .ok_or_else(|| format!("{token}: use LP LR LM LI RI RM RR RP or ."))?,
+                            .ok_or_else(|| format!("{token}: use {} or .", fingers_allowed.join(" ")))?,
                     ),
                 });
             }
@@ -288,7 +307,10 @@ impl AltRules {
 
     /// A layout's own letter rules in the `parse` form.
     pub(crate) fn letters(rules: &[Rule]) -> String {
-        Self::text_with(rules, |letter| char::from(letter).to_string())
+        Self::text_with(rules, |letter| match letter {
+            b' ' => "␣".into(),
+            _ => char::from(letter).to_string(),
+        })
     }
 
     /// `text` with each position named by `name`, e.g. the letter a layout
@@ -411,7 +433,8 @@ pub(crate) struct AltPolicy {
 
 /// Ties a layout's own rules to the keys their letters are on now, so an
 /// optimizer moving letters keeps the alternates on those keys. Rules naming
-/// a letter off the main 3x10 block are dropped.
+/// a letter no key types alone (or a key off the 3x10 block and thumbs) are
+/// dropped.
 pub(crate) fn pin(layout: &mut action_keys::Layout) {
     if layout.alt_spots {
         return;
@@ -429,9 +452,8 @@ fn spot_rules(layout: &action_keys::Layout) -> Vec<Rule> {
         layout
             .slots
             .iter()
-            .filter(|slot| slot.main)
             .find(|slot| slot_letter(layout, slot) == Some(letter))
-            .map(|slot| position_code(slot.row, slot.col))
+            .map(slot_code)
             .filter(|&code| code != 0)
     };
     map_rules(&layout.alt_fingers, code)
@@ -446,31 +468,33 @@ pub(crate) fn unpin(layout: &mut action_keys::Layout) {
         layout
             .slots
             .iter()
-            .filter(|slot| slot.main)
-            .find(|slot| position_code(slot.row, slot.col) == code)
+            .find(|slot| slot_code(slot) == code)
             .and_then(|slot| slot_letter(layout, slot))
     };
     layout.alt_fingers = map_rules(&layout.alt_fingers, letter);
     layout.alt_spots = false;
 }
 
-/// The letter a slot types on its own: its text, or an adaptive key's
-/// fallback.
+/// The letter naming a slot in rules: its text, an adaptive key's fallback,
+/// or else a magic key's one-character label (`*`).
 fn slot_letter(layout: &action_keys::Layout, slot: &action_keys::Slot) -> Option<u8> {
     use action_keys::{Action, Binding, Emission};
     let text = match &slot.binding {
         Binding::Text(text) => text,
-        Binding::Named(name) => match layout.actions.get(name)? {
-            Action::Text(text)
-            | Action::Rules {
-                fallback: Emission::Text(text),
-                ..
-            } => text,
-            _ => return None,
+        Binding::Named(name) => match layout.actions.get(name) {
+            Some(
+                Action::Text(text)
+                | Action::Rules {
+                    fallback: Emission::Text(text),
+                    ..
+                },
+            ) => text,
+            _ => slot.label.as_bytes(),
         },
         Binding::Empty => return None,
     };
-    (text.len() == 1).then(|| text[0].to_ascii_lowercase())
+    (text.len() == 1 && (text[0].is_ascii_graphic() || text[0] == b' '))
+        .then(|| text[0].to_ascii_lowercase())
 }
 
 fn map_rules(rules: &[Rule], map: impl Fn(u8) -> Option<u8>) -> Vec<Rule> {
@@ -506,19 +530,7 @@ impl AltPolicy {
         if !self.enabled {
             return None;
         }
-        let codes = || {
-            layout
-                .slots
-                .iter()
-                .map(|slot| {
-                    if slot.main {
-                        position_code(slot.row, slot.col)
-                    } else {
-                        0
-                    }
-                })
-                .collect()
-        };
+        let codes = || layout.slots.iter().map(slot_code).collect();
         // A layout's own rules win over `[alts]`. Each letter names the key
         // it is on, as in the optimizers: another key typing that letter (a
         // magic key, or an adaptive swap) keeps its own finger.

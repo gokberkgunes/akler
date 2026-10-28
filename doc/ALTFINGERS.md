@@ -25,8 +25,12 @@ comment block, as stray's notes do:
 ```jsonc
 // alt fingers
 //   sg s_g (LM LI) · gs g_s (LI LM)
+//   e␣ e_␣ (LT RT) · *e *_e (RT LT)
 //
 ```
+
+`␣` names Space, and thumb keys may take `LT` or `RT`. A magic key is named
+by its label (`*`).
 
 ## Position alternates
 
