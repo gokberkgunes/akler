@@ -496,6 +496,7 @@ fn weakness_loaded(term: &mut Terminal, data: &RankingData, mut selected: usize)
             button: 0,
             release: false,
             motion: false,
+            ..
         } = event
         {
             if let Some(Action::Command(key)) = c.action(x, y) {
@@ -509,6 +510,7 @@ fn weakness_loaded(term: &mut Terminal, data: &RankingData, mut selected: usize)
             button: 0,
             release: false,
             motion: false,
+            ..
         } = event
         {
             if let Some(Action::Setting(index)) = c.action(x, y) {

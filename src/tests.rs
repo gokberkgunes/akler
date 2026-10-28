@@ -2029,7 +2029,8 @@ fn mouse_decoder_distinguishes_middle_press_release() {
             y: 8,
             button: 1,
             release: false,
-            motion: false
+            motion: false,
+            ctrl: false,
         })
     );
     assert_eq!(
@@ -2039,7 +2040,8 @@ fn mouse_decoder_distinguishes_middle_press_release() {
             y: 8,
             button: 1,
             release: true,
-            motion: false
+            motion: false,
+            ctrl: false,
         })
     );
     d.push(b"\x1b[200~q\x1b[201~");

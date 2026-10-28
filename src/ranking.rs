@@ -730,6 +730,8 @@ fn open_ranked_editor(term: &mut Terminal, row: &mut RankRow, weights: &Weights)
 enum Hidden {
     Column(usize),
     Row(PathBuf),
+    /// Layouts hidden together, undone together.
+    Rows(Vec<PathBuf>),
 }
 
 struct RankColumns {
@@ -784,12 +786,31 @@ impl RankColumns {
         true
     }
 
+    /// Hide `paths` as one step; returns how many were not hidden already.
+    fn hide_rows(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> usize {
+        let added: Vec<PathBuf> = paths
+            .into_iter()
+            .filter(|path| self.rows.insert(path.clone()))
+            .collect();
+        let count = added.len();
+        if count > 0 {
+            self.history.push(Hidden::Rows(added));
+            self.redo.clear();
+        }
+        count
+    }
+
     fn undo(&mut self, capacity: usize) -> bool {
         if let Some(last) = self.history.pop() {
-            let rows_changed = matches!(last, Hidden::Row(_));
+            let rows_changed = matches!(last, Hidden::Row(_) | Hidden::Rows(_));
             match &last {
                 Hidden::Row(p) => {
                     self.rows.remove(p);
+                }
+                Hidden::Rows(paths) => {
+                    for path in paths {
+                        self.rows.remove(path);
+                    }
                 }
                 Hidden::Column(m) => {
                     self.hidden[*m] = false;
@@ -811,10 +832,13 @@ impl RankColumns {
 
     fn redo(&mut self) -> bool {
         if let Some(next) = self.redo.pop() {
-            let rows_changed = matches!(next, Hidden::Row(_));
+            let rows_changed = matches!(next, Hidden::Row(_) | Hidden::Rows(_));
             match &next {
                 Hidden::Row(p) => {
                     self.rows.insert(p.clone());
+                }
+                Hidden::Rows(paths) => {
+                    self.rows.extend(paths.iter().cloned());
                 }
                 Hidden::Column(m) => {
                     if let Some(i) = self.visible().iter().position(|&id| id == *m) {
@@ -1783,7 +1807,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             columns.mana2 = data.physical_catalog();
             columns.hidden = data.columns;
             columns.first = 0;
-            columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+            columns.history.retain(|item| matches!(item, Hidden::Row(_) | Hidden::Rows(_)));
             columns.redo.clear();
             metric = Some(RANK_SCORE);
             ascending = true;
@@ -1863,12 +1887,36 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         c.h = bottom + 3;
         term.present(&c, 0)?;
         let mut e = term.event()?;
+        // Ctrl+click on a layout hides every layout below it in this order.
+        if let Event::Mouse {
+            x,
+            y,
+            button: 0,
+            release: false,
+            motion: false,
+            ctrl: true,
+        } = e
+        {
+            if let Some(offset) = grid.layout_at(x, y, shown) {
+                if let Some(&clicked) = order.get(top + offset) {
+                    let below = order[top + offset + 1..]
+                        .iter()
+                        .map(|&i| rows[i].path().to_owned());
+                    let count = columns.hide_rows(below);
+                    status = persist_hidden_rows(&columns.rows).unwrap_or_else(|| {
+                        format!("Hid {count} layouts below {}; u undoes", rows[clicked].name())
+                    });
+                }
+                continue;
+            }
+        }
         if let Event::Mouse {
             x,
             y,
             button: 1,
             release: false,
             motion: false,
+            ..
         } = e
         {
             if let Some(offset) = grid.layout_at(x, y, shown) {
@@ -1944,7 +1992,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                         columns.hidden = if columns.mana2 { default_mana2_rank_columns() } else {
                             load_app_config().map(|config| config.rank_columns).unwrap_or_else(|_| default_rank_columns())
                         };
-                        columns.history.retain(|item| matches!(item, Hidden::Row(_)));
+                        columns.history.retain(|item| matches!(item, Hidden::Row(_) | Hidden::Rows(_)));
                         columns.redo.clear();
                         columns.first = 0;
                         metric = Some(RANK_SCORE);
@@ -2315,7 +2363,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                         columns.first = 0;
                         columns
                             .history
-                            .retain(|item| matches!(item, Hidden::Row(_)));
+                            .retain(|item| matches!(item, Hidden::Row(_) | Hidden::Rows(_)));
                         columns.redo.clear();
                         status.clear();
                     }
@@ -2337,6 +2385,8 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     "s\tSwitch normal / aklgg".into(),
                     "/\tFilter layouts".into(),
                     ".\tChange decimal precision".into(),
+                    "Middle click\tHide a layout or column".into(),
+                    "Ctrl+click\tHide every layout below the clicked one".into(),
                     "u\tUndo hiding".into(),
                     "U\tRedo hiding".into(),
                     "H\tRestore manually hidden rows and columns".into(),

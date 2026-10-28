@@ -539,6 +539,7 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
             button: 0,
             release: false,
             motion: false,
+            ..
         } = event
         {
             match term.hit(&c, x, y, 0) {
@@ -1170,6 +1171,7 @@ fn magic_finger_picker(
                 button: 0,
                 release: false,
                 motion: false,
+                ..
             } => {
                 if let Some(Action::Item(i)) = term.hit(&c, x, y, 0) {
                     selected = i;

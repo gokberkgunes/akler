@@ -347,6 +347,8 @@ enum Event {
         button: u8,
         release: bool,
         motion: bool,
+        /// Ctrl was held.
+        ctrl: bool,
     },
     Wheel(i32),
     Paste(String),
@@ -448,6 +450,7 @@ impl Decoder {
                 button: cb & 3,
                 release: last == b'm',
                 motion: cb & 32 != 0,
+                ctrl: cb & 16 != 0,
             });
         }
         // WASI hosts report their size on start and on every resize.
@@ -718,7 +721,7 @@ impl Terminal {
         // Screens see coordinates below the top bar. A click on its Back
         // button is read as Esc, and on a tab as that tab's number.
         let e = match e {
-            Event::Mouse { x, y, button, release, motion } if y < self.bar => {
+            Event::Mouse { x, y, button, release, motion, .. } if y < self.bar => {
                 let pressed = (button == 0 && !release && !motion)
                     .then(|| self.bar_hits.iter().find(|(r, _)| r.contains(x, y)))
                     .flatten();
@@ -728,12 +731,13 @@ impl Terminal {
                     _ => Event::Tick,
                 };
             }
-            Event::Mouse { x, y, button, release, motion } => Event::Mouse {
+            Event::Mouse { x, y, button, release, motion, ctrl } => Event::Mouse {
                 x,
                 y: y - self.bar + self.skip,
                 button,
                 release,
                 motion,
+                ctrl,
             },
             e => e,
         };
@@ -919,6 +923,7 @@ fn action_press(term: &Terminal, c: &Canvas, e: &Event, scroll: usize) -> Option
         button: 0,
         release: false,
         motion: false,
+        ..
     } = e
     {
         term.hit(c, *x, *y, scroll)
@@ -3943,7 +3948,8 @@ fn editor_with_analysis(
                 y,
                 button: 0,
                 release: false,
-                motion: false
+                motion: false,
+                ..
             } => {
                 keyboard_mode = false;
                 match term.hit(&frame, x, y, scroll) {
@@ -3963,7 +3969,8 @@ fn editor_with_analysis(
                 y,
                 button: 0,
                 release: false,
-                motion: true
+                motion: true,
+                ..
             } => {
                 if drag.is_some() {
                     if let Some(Action::Key(i)) = term.hit(&frame, x, y, scroll) {
@@ -4646,6 +4653,7 @@ fn optimizer_setup(
                 button: 0,
                 release: false,
                 motion: false,
+                ..
             } => {
                 if let Some(Action::Key(i)) = term.hit(&c, x, y, scroll) {
                     drag = Some(i);
@@ -4659,6 +4667,7 @@ fn optimizer_setup(
                 button: 0,
                 release: false,
                 motion: true,
+                ..
             } if drag.is_some() => {
                 if let Some(Action::Key(i)) = term.hit(&c, x, y, scroll) {
                     drag_hover = Some(i);

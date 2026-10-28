@@ -93,10 +93,10 @@ by stat.
 
 - **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns. `s` switches the
   scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
-  without a thumb letter, `u` restores the last hidden row or column, `H`
-  restores everything, `r` reloads. Hidden
-  layouts are stored in `ranker-hidden.json`. Enter opens a layout in the
-  editor.
+  without a thumb letter. Middle-click hides a layout or column; Ctrl+click
+  hides every layout below the clicked one in the current order. `u` undoes
+  the last hide, `H` restores everything, `r` reloads. Hidden layouts are
+  stored in `ranker-hidden.json`. Enter opens a layout in the editor.
 - **Editor:** click a metric to see its contributors. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`

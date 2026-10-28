@@ -1856,6 +1856,7 @@ fn action_editor_core(
                 button: 0,
                 release: false,
                 motion: false,
+                ..
             } => match term.hit(&c, x, y, scroll) {
                 Some(Action::Key(i)) => drag = Some(i),
                 Some(Action::Command('v')) => crate::layout_rules::show(term, &c, &l, &w)?,
@@ -2271,6 +2272,7 @@ fn action_optimizer_setup(
                 button: 0,
                 release: false,
                 motion: false,
+                ..
             } => {
                 if let Some(Action::Key(i)) = term.hit(&frame, x, y, scroll) {
                     drag = Some(i);
@@ -2284,6 +2286,7 @@ fn action_optimizer_setup(
                 button: 0,
                 release: false,
                 motion: true,
+                ..
             } if drag.is_some() => {
                 if let Some(Action::Key(i)) = term.hit(&frame, x, y, scroll) {
                     drag_hover = Some(i);
