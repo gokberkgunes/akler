@@ -19,7 +19,9 @@ alts: [{"ngram":["p",null,"g"],"fingers":["LM",null,"LI"]}]
 
 `ngram` is two or three characters; `null` matches any character or keeps the
 normal finger. Longer rules win, then rules with more literal characters, then
-the later rule. A file without `alts` may instead keep rules in a leading
+the later rule. A rule is skipped where a key its `_` matches already uses, next
+to it, the finger the rule assigns: `e_␣ (LT RT)` leaves Space on its own finger
+in "er␣" when r is on RT. A file without `alts` may instead keep rules in a leading
 comment block, as stray's notes do:
 
 ```jsonc

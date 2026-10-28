@@ -3,6 +3,8 @@
 //! presses. No keys move.
 //! Null ngram entries match one character; null fingers retain the usual finger.
 //! Longer rules win, then rules with more literal characters, then later rules.
+//! A rule does not apply where a key its `_` matches already uses, next to it,
+//! the finger the rule assigns.
 //! Rules never cross an unmapped character or reset. Only retained context is
 //! known: this is an ngram estimate, not a simulation with unlimited lookahead.
 
@@ -139,6 +141,20 @@ fn apply_rule(
                 || rule.ngram[offset]
                     .is_some_and(|ch| ch != text[start + offset].to_ascii_lowercase())
         }) {
+            continue;
+        }
+        // A finger the key a `_` stands for already uses next to it is no
+        // alternative: "e_␣ (LT RT)" leaves Space on its own finger in "er␣"
+        // when r is on RT, instead of making a same-finger pair.
+        let clashes = (0..len).any(|offset| {
+            rule.ngram[offset].is_none()
+                && [offset.wrapping_sub(1), offset + 1].into_iter().any(|next| {
+                    next < len
+                        && rule.fingers[next].is_some()
+                        && rule.fingers[next] == result[start + offset]
+                })
+        });
+        if clashes {
             continue;
         }
         for (offset, &finger) in rule.fingers.iter().enumerate() {
