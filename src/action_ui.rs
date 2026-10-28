@@ -232,31 +232,6 @@ fn evaluate_counts_shared(
     })
 }
 
-pub(crate) fn evaluate_ranked(
-    l: &ak::Layout,
-    c: &ng::NgramCorpus,
-    w: &Weights,
-    summary: &crate::action_summary::Summary,
-) -> ak::Result<Evaluated> {
-    let mut timing = crate::load_profile::LoadProfile::new("ranked action editor adapter");
-    let (model, corpus) = evaluation_adapter(l, c, w, &summary.counts, &mut timing)?;
-    debug_assert_eq!(
-        corpus.totals.map(f64::to_bits),
-        summary.totals.map(f64::to_bits)
-    );
-    let score = breakdown(&summary.metrics, w).net;
-    timing.mark("Reuse ranked physical metrics and counts");
-    Ok(Evaluated {
-        labels: l.slots.iter().map(|slot| slot.label.clone()).collect(),
-        model,
-        corpus,
-        raw: summary.raw.clone(),
-        metrics: summary.metrics.clone(),
-        score,
-        counts: Arc::clone(&summary.counts),
-    })
-}
-
 // Keep terminal input live while loading or evaluating cached contexts.
 pub(crate) fn ngram_job<T, F>(
     term: &mut Terminal,
@@ -1561,18 +1536,6 @@ pub(crate) fn action_editor(
         return Ok(());
     };
     timing.mark("Baseline evaluation (nested report)");
-    action_editor_core(term, l, corpus, w, baseline, timing)
-}
-
-pub(crate) fn action_editor_prepared(
-    term: &mut Terminal,
-    l: ak::Layout,
-    corpus: Arc<ng::NgramCorpus>,
-    w: Weights,
-    baseline: Arc<Evaluated>,
-) -> AppResult<()> {
-    let mut timing = crate::load_profile::LoadProfile::new("prepared action editor initialization");
-    timing.mark("Reuse ranked mapping and metrics");
     action_editor_core(term, l, corpus, w, baseline, timing)
 }
 

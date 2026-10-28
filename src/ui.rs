@@ -3806,18 +3806,6 @@ fn plain_corpus_with_spacegrams(
     model.corpus(&source)
 }
 
-// Opens an ordinary editor from a ranker's already prepared evaluator state.
-// The supplied raw counters describe model.original under corpus and weights.
-fn editor_prepared(
-    term: &mut Terminal,
-    model: Model,
-    corpus: Corpus,
-    weights: Weights,
-    raw: Raw,
-) -> AppResult<()> {
-    editor_with_analysis(term, model, corpus, weights, raw, None)
-}
-
 fn editor_with_analysis(
     term: &mut Terminal,
     model: Model,

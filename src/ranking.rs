@@ -171,7 +171,6 @@ enum RankRow {
         layout: action_keys::Layout,
         summary: action_summary::Summary,
         corpus: Arc<action_ngrams::NgramCorpus>,
-        details: Option<Arc<action_ui::Evaluated>>,
     },
 }
 
@@ -486,7 +485,6 @@ fn evaluate_rank_layout_with_mode(
                 layout,
                 summary,
                 corpus: Arc::clone(corpus),
-                details: None,
             })
         }
     }
@@ -670,60 +668,23 @@ fn load_ranking_tui_for_settings(
     )
 }
 
-// A cancelled or failed first load leaves the row uncached. The cache belongs
-// to one ranking snapshot: reload/corpus changes replace the complete row.
-fn rank_details_with<F>(
-    cached: &mut Option<Arc<action_ui::Evaluated>>,
-    prepare: F,
-) -> AppResult<Option<Arc<action_ui::Evaluated>>>
-where
-    F: FnOnce() -> AppResult<Option<Arc<action_ui::Evaluated>>>,
-{
-    if cached.is_none() {
-        *cached = prepare()?;
-    }
-    Ok(cached.clone())
-}
-
-fn open_ranked_editor(term: &mut Terminal, row: &mut RankRow, weights: &Weights) -> AppResult<()> {
-    if let RankRow::Action {
-        layout,
-        summary,
-        corpus,
-        details,
-        ..
-    } = row
-    {
-        let evaluation = rank_details_with(details, || {
-            action_ui::evaluate_ranked(layout, corpus, weights, summary)
-                .map(|value| Some(Arc::new(value)))
-                .map_err(|error| error.into())
-        })?;
-        if let Some(evaluation) = evaluation {
-            action_ui::action_editor_prepared(
-                term,
-                layout.clone(),
-                Arc::clone(corpus),
-                weights.clone(),
-                evaluation,
-            )?;
+/// Opens the optimizer setup for a ranked layout. Magic layouts reuse the
+/// ranker's corpus; ordinary ones load their tables once per ranker visit.
+fn open_ranked_optimizer(
+    term: &mut Terminal,
+    row: &RankRow,
+    session: &mut crate::session::CorpusSession,
+    path: &Path,
+) -> AppResult<()> {
+    match row {
+        RankRow::Action { layout, corpus, .. } => {
+            action_ui::action_editor(term, layout.clone(), (**corpus).clone(), true)
         }
-        return Ok(());
+        RankRow::Plain { model, .. } => match session.plain_tui(term, path)? {
+            Some(source) => optimizer(term, model.board.clone(), &source),
+            None => Ok(()),
+        },
     }
-
-    let RankRow::Plain {
-        model, corpus, raw, ..
-    } = row
-    else {
-        unreachable!();
-    };
-    editor_prepared(
-        term,
-        model.clone(),
-        (**corpus).clone(),
-        weights.clone(),
-        raw.clone(),
-    )
 }
 
 #[derive(Clone, Debug)]
@@ -1704,87 +1665,6 @@ fn draw_rank_table(
     bottom
 }
 
-fn rank_editor_return_status(weights: &Weights, spacegrams: bool) -> String {
-    match load_app_config() {
-        Ok(config)
-            if config.weights.3 != weights.3
-                || config.weights.1 != weights.1
-                || config.weights.4 != weights.4
-                || config.ngrams.include_spacegrams != spacegrams =>
-        {
-            "Typing policy changed; showing the previous ranking snapshot. r reloads it.".into()
-        }
-        _ => "Returned from editor; r reloads saved layouts".into(),
-    }
-}
-
-fn inspect_mana2_ranked(
-    term: &mut Terminal,
-    row: &RankRow,
-    weights: &mana2_metrics::Weights,
-    mode: &str,
-) -> AppResult<()> {
-    let raw = row
-        .raw()
-        .1
-        .as_ref()
-        .ok_or("Mana2 statistics were not collected for this layout")?;
-    let stats = mana2_rank_stats(row, raw);
-    let contributions = mana2_metrics::score_contributions(&stats, weights);
-    let mut lines = vec![
-        format!("Layout: {}", row.name()),
-        if mode == "aklgg" { format!("aklgg score: {:.6} (lower is better)", row.score()) }
-        else { format!("Mana2 score: {:.6} (higher is better)", -row.score()) },
-    ];
-    if let RankRow::Action { layout, .. } = row {
-        lines.extend(action_ui::rules_and_combos(layout));
-    }
-    lines.extend([
-        String::new(),
-        format!("{:<26} {:>12} {:>12}", "Statistic", "Value", "Score"),
-    ]);
-    for &index in mana2_metrics::WEIGHTABLE_STATS {
-        let id = mana2_metrics::STAT_IDS[index];
-        let metric = RANK_MANA_START + index;
-        let value = if rank_percent(metric) {
-            format!("{:.4}%", stats.values[index])
-        } else {
-            format!("{:.6}", stats.values[index])
-        };
-        lines.push(format!(
-            "{:<26} {:>12} {:>12.6}",
-            id, value, if mode == "aklgg" { -contributions[index] } else { contributions[index] }
-        ));
-    }
-    let speed = finger_speed::calculate(&stats.speed, &finger_speed::Settings::default());
-    lines.extend([
-        String::new(),
-        "Finger detail".into(),
-        format!(
-            "{:<8} {:>10} {:>10} {:>10}",
-            "Finger", "Usage", "Fspeed", "Weighted"
-        ),
-    ]);
-    for (name, usage_index, speed_index) in [
-        ("LP", 0, 0),
-        ("LR", 1, 1),
-        ("LM", 2, 2),
-        ("LI", 3, 3),
-        ("LT", 4, 8),
-        ("RT", 5, 9),
-        ("RI", 6, 4),
-        ("RM", 7, 5),
-        ("RR", 8, 6),
-        ("RP", 9, 7),
-    ] {
-        lines.push(format!(
-            "{name:<8} {:>9.3}% {:>10.3} {:>10.3}",
-            stats.values[usage_index], speed.per_finger[speed_index], speed.weighted[speed_index],
-        ));
-    }
-    info_page(term, if mode == "aklgg" { "aklgg layout statistics" } else { "Mana2 layout statistics" }, &lines)
-}
-
 fn ranking(term: &mut Terminal, path: &Path) -> AppResult<()> {
     let Some(mut data) = load_ranking_tui(term, path)? else {
         return Ok(());
@@ -1801,6 +1681,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
     let (mut selected, mut top) = (0, 0);
     let mut filter = String::new();
     let mut status = String::new();
+    let mut session = crate::session::CorpusSession::new();
 
     loop {
         if columns.mana2 != data.physical_catalog() {
@@ -1910,6 +1791,24 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                 continue;
             }
         }
+        // A click on a layout opens the optimizer for it.
+        if let Event::Mouse {
+            x,
+            y,
+            button: 0,
+            release: false,
+            motion: false,
+            ctrl: false,
+        } = e
+        {
+            if let Some(offset) = grid.layout_at(x, y, shown) {
+                if let Some(&i) = order.get(top + offset) {
+                    selected = top + offset;
+                    open_ranked_optimizer(term, &rows[i], &mut session, &data.path)?;
+                }
+                continue;
+            }
+        }
         if let Event::Mouse {
             x,
             y,
@@ -1959,17 +1858,10 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     continue;
                 }
                 Action::Item(r) => {
-                    if selected == r {
-                        if let Some(&i) = order.get(r) {
-                            if data.physical_catalog() {
-                                inspect_mana2_ranked(term, &data.rows[i], &data.weights.2, &data.scoring)?;
-                            } else {
-                                open_ranked_editor(term, &mut data.rows[i], &data.weights)?;
-                                status = rank_editor_return_status(&data.weights, data.spacegrams);
-                            }
-                        }
-                    }
                     selected = r;
+                    if let Some(&i) = order.get(r) {
+                        open_ranked_optimizer(term, &data.rows[i], &mut session, &data.path)?;
+                    }
                     continue;
                 }
                 Action::Command(ch) => e = Event::Char(ch),
@@ -2004,14 +1896,9 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     Err(error) => status = format!("Weights unchanged: {error}"),
                 }
             }
-            Event::Enter => {
+            Event::Enter | Event::Char(' ') => {
                 if let Some(&i) = order.get(selected) {
-                    if data.physical_catalog() {
-                        inspect_mana2_ranked(term, &data.rows[i], &data.weights.2, &data.scoring)?;
-                    } else {
-                        open_ranked_editor(term, &mut data.rows[i], &data.weights)?;
-                        status = rank_editor_return_status(&data.weights, data.spacegrams);
-                    }
+                    open_ranked_optimizer(term, &data.rows[i], &mut session, &data.path)?;
                 }
             }
             Event::Up | Event::Char('k') => {
@@ -2374,11 +2261,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             Event::Char('?') => {
                 let lines = vec![
                     "j/k · ↑/↓\tSelect layout".into(),
-                    if data.physical_catalog() {
-                        "Enter\tView physical statistics".into()
-                    } else {
-                        "Enter\tEdit selected layout".into()
-                    },
+                    "Enter · Space · Click\tOptimize a layout".into(),
                     "h/l · ←/→ · Tab\tScroll columns".into(),
                     "PgUp/PgDn\tScroll layouts".into(),
                     "n\tSort by name".into(),
@@ -3007,73 +2890,6 @@ mod ranker_tests {
     }
 
     #[test]
-    fn action_details_are_lazy_reused_and_retryable_after_cancellation_or_error() {
-        let stop = AtomicBool::new(false);
-        let weights = Weights::default();
-        let prepared = RankCorpora::prepare(
-            &[(
-                PathBuf::from("magic.dat"),
-                parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
-            )],
-            CORPUS,
-            Path::new("inline.json"),
-            NgramLimits::default(),
-            &stop,
-        );
-        let mut row = evaluate_rank_layout(
-            parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
-            &prepared,
-            &weights,
-            &stop,
-        )
-        .unwrap();
-        let RankRow::Action {
-            layout,
-            summary,
-            corpus,
-            details,
-            ..
-        } = &mut row
-        else {
-            panic!("expected an action row");
-        };
-        assert!(details.is_none());
-        assert!(Arc::ptr_eq(
-            corpus,
-            prepared.action.as_ref().unwrap().as_ref().unwrap()
-        ));
-
-        assert!(rank_details_with(details, || Ok(None)).unwrap().is_none());
-        let error = rank_details_with(details, || Err("interrupted detail load".into()))
-            .err()
-            .unwrap();
-        assert_eq!(error.to_string(), "interrupted detail load");
-        assert!(details.is_none());
-
-        let first = rank_details_with(details, || {
-            action_ui::evaluate_ranked(layout, corpus, &weights, summary)
-                .map(|value| Some(Arc::new(value)))
-                .map_err(|error| error.into())
-        })
-        .unwrap()
-        .unwrap();
-        assert!(Arc::ptr_eq(&first.counts, &summary.counts));
-        assert_eq!(
-            first.raw.0.map(f64::to_bits),
-            summary.raw.0.map(f64::to_bits)
-        );
-        assert_eq!(
-            first.metrics.v.map(f64::to_bits),
-            summary.metrics.v.map(f64::to_bits)
-        );
-        let reopened =
-            rank_details_with(details, || panic!("cached details must not be reevaluated"))
-                .unwrap()
-                .unwrap();
-        assert!(Arc::ptr_eq(&first, &reopened));
-    }
-
-    #[test]
     fn action_ranking_reload_creates_independent_corpus_layout_and_limit_snapshots() {
         let stop = AtomicBool::new(false);
         let weights = Weights::default();
@@ -3128,24 +2944,18 @@ mod ranker_tests {
             ),
         ];
         let RankRow::Action {
-            corpus: old_corpus,
-            details: old_details,
-            ..
+            corpus: old_corpus, ..
         } = &original
         else {
             panic!("expected an action row");
         };
         for replacement in &replacements {
-            let RankRow::Action {
-                corpus, details, ..
-            } = replacement
+            let RankRow::Action { corpus, .. } = replacement
             else {
                 panic!("expected an action row");
             };
             assert!(!Arc::ptr_eq(old_corpus, corpus));
-            assert!(details.is_none());
         }
-        assert!(old_details.is_none());
         assert_eq!(original.score().to_bits(), original_score);
         assert_eq!(replacements[0].score().to_bits(), original_score);
     }

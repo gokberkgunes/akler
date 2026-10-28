@@ -212,7 +212,6 @@ impl Sub for RawStats {
 #[derive(Clone, Debug)]
 pub(crate) struct Stats {
     pub(crate) values: [f64; N_STATS],
-    pub(crate) speed: crate::finger_speed::Normalized,
 }
 
 impl Stats {
@@ -1507,7 +1506,6 @@ pub(crate) fn stats_with_speed_totals(
     let calculated_speed =
         crate::finger_speed::calculate(&speed, &crate::finger_speed::Settings::default());
     Stats {
-        speed,
         values: std::array::from_fn(|index| {
             if index == TOTAL_FSPEED {
                 return calculated_speed.per_finger.iter().sum();
@@ -2626,7 +2624,6 @@ mod tests {
         values[index("weighted-speed-LT")] = 5.0;
         let synthetic = Stats {
             values,
-            speed: crate::finger_speed::Normalized::default(),
         };
         let mut weights = Weights::default();
         for &stat in WEIGHTABLE_STATS {
@@ -2663,7 +2660,6 @@ mod tests {
         values[index("weighted_speed")] = 11.0;
         let aklgg_stats = Stats {
             values,
-            speed: crate::finger_speed::Normalized::default(),
         };
         // AKL.GG defaults weight only the all-finger total; the per-finger
         // values start at 0 and count once given a weight.

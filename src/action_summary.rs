@@ -1449,11 +1449,6 @@ mod tests {
                             &layout, &corpus, &weights, &stop, &progress,
                         )
                         .unwrap();
-                        let ranked =
-                            action_ui::evaluate_ranked(&layout, &corpus, &weights, &summary)
-                                .unwrap();
-
-                        assert!(Arc::ptr_eq(&summary.counts, &ranked.counts));
                         assert_eq!(summary.counts.tables, detailed.counts.tables);
                         assert_eq!(summary.counts.skip, detailed.counts.skip);
 
@@ -1478,7 +1473,6 @@ mod tests {
                             detailed.metrics.off.map(f64::to_bits)
                         );
                         assert_eq!(summary.score.to_bits(), detailed.score.to_bits());
-                        assert_eq!(ranked.score.to_bits(), detailed.score.to_bits());
                     }
                 }
             }

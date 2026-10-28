@@ -96,7 +96,8 @@ by stat.
   without a thumb letter. Middle-click hides a layout or column; Ctrl+click
   hides every layout below the clicked one in the current order. `u` undoes
   the last hide, `H` restores everything, `r` reloads. Hidden layouts are
-  stored in `ranker-hidden.json`. Enter opens a layout in the editor.
+  stored in `ranker-hidden.json`. Enter, Space or a click opens a layout in
+  the optimizer.
 - **Editor:** click a metric to see its contributors. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
