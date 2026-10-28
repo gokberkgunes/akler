@@ -94,7 +94,7 @@ by stat.
 - **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns. `s` switches the
   scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
   without a thumb letter. Middle-click hides a layout or column; Ctrl+click
-  hides every layout below the clicked one in the current order. `u` undoes
+  hides the clicked layout and every layout above it in the current order. `u` undoes
   the last hide, `H` restores everything, `r` reloads. Hidden layouts are
   stored in `ranker-hidden.json`. Enter, Space or a click opens a layout in
   the optimizer.

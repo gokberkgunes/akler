@@ -1768,7 +1768,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         c.h = bottom + 3;
         term.present(&c, 0)?;
         let mut e = term.event()?;
-        // Ctrl+click on a layout hides every layout below it in this order.
+        // Ctrl+click on a layout hides it and every layout above it in this order.
         if let Event::Mouse {
             x,
             y,
@@ -1780,12 +1780,13 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         {
             if let Some(offset) = grid.layout_at(x, y, shown) {
                 if let Some(&clicked) = order.get(top + offset) {
-                    let below = order[top + offset + 1..]
+                    let name = rows[clicked].name().to_owned();
+                    let above = order[..=top + offset]
                         .iter()
                         .map(|&i| rows[i].path().to_owned());
-                    let count = columns.hide_rows(below);
+                    let count = columns.hide_rows(above);
                     status = persist_hidden_rows(&columns.rows).unwrap_or_else(|| {
-                        format!("Hid {count} layouts below {}; u undoes", rows[clicked].name())
+                        format!("Hid {count} layouts from {name} up; u undoes")
                     });
                 }
                 continue;
@@ -2269,7 +2270,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     "/\tFilter layouts".into(),
                     ".\tChange decimal precision".into(),
                     "Middle click\tHide a layout or column".into(),
-                    "Ctrl+click\tHide every layout below the clicked one".into(),
+                    "Ctrl+click\tHide a layout and every layout above it".into(),
                     "u\tUndo hiding".into(),
                     "U\tRedo hiding".into(),
                     "H\tRestore manually hidden rows and columns".into(),
