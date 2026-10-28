@@ -102,10 +102,12 @@ by stat.
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
   (with backups), `S` saves a copy.
-- **Optimizer:** click keys to lock them, `H` locks the home row, `U`/`L`
-  unlock/lock everything. Space starts a search, `q` stops it and keeps the
-  best result. Results are saved under `layouts/optimized/` with a `.run.txt`
-  record.
+- **Optimizer:** every layout gets an outer pinky column on each side and two
+  thumb keys per hand; the added keys start empty and locked. Click keys to
+  lock them, `H` locks the home row, `U`/`L` unlock/lock everything. Space
+  starts a search, `q` stops it and keeps the best result. Results are saved
+  under `layouts/optimized/` with a `.run.txt` record; added keys still empty
+  are left out.
 
 `f`, `F` and `z` toggle alternate fingers, combos and spacegrams.
 

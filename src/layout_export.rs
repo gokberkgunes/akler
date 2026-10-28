@@ -1,5 +1,5 @@
 //! Lossless JSONC layout exports and coordinated DAT/JSONC saves.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -11,6 +11,8 @@ use crate::Json;
 /// Save optimizer output separately from editable source layouts. Claim a
 /// fresh name without overwriting a layout or its existing run record.
 pub(crate) fn save_optimized(layout: &Layout) -> Result<PathBuf> {
+    // The optimizer's spare keys are saved only when they hold something.
+    let layout = &layout.without_spare_keys();
     let parent = layout
         .path
         .parent()
@@ -716,7 +718,24 @@ fn canonical_action_names(layout: &Layout) -> Layout {
 
 /// Export the subset that the readable Mana-style JSONC fields preserve exactly.
 pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
-    let layout = &canonical_action_names(layout);
+    let mut layout = canonical_action_names(layout);
+    // JSONC rows start at column 0; a DAT outer column sits at -1.
+    let origins: BTreeSet<_> = (0..3)
+        .filter_map(|row| {
+            layout
+                .slots
+                .iter()
+                .filter(|slot| slot.main && slot.row == row)
+                .map(|slot| slot.col)
+                .min()
+        })
+        .collect();
+    if let [origin] = origins.iter().copied().collect::<Vec<_>>()[..] {
+        for slot in layout.slots.iter_mut().filter(|slot| slot.main) {
+            slot.col -= origin;
+        }
+    }
+    let layout = &layout;
     let (action_labels, magic) = action_blocks(layout)?;
     for slot in &layout.slots {
         let expected = match &slot.binding {

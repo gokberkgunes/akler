@@ -1532,6 +1532,40 @@ fn default_locks(board: &Board) -> Vec<bool> {
     board.keys.iter().map(|key| !key.main).collect()
 }
 
+/// The optimizer's board: outer pinky columns and two thumb keys per hand
+/// added as empty keys (`Layout::with_spare_keys`).
+fn with_spare_keys(board: Board) -> Board {
+    let padded = board_as_action_layout(&board, &board.symbols)
+        .map(|layout| layout.with_spare_keys().text())
+        .ok()
+        .and_then(|text| board_from_dat(&text, &board.path).ok());
+    match padded {
+        Some(padded) => Board {
+            name: board.name,
+            ..padded
+        },
+        None => board,
+    }
+}
+
+/// `locks` with the empty spare keys locked too (`Layout::spare_slots`).
+fn optimizer_locks(board: &Board, mut locks: Vec<bool>) -> Vec<bool> {
+    for (slot, key) in board.keys.iter().enumerate() {
+        let row: Vec<_> = board
+            .keys
+            .iter()
+            .filter(|k| k.main && k.row == key.row && k.hand == key.hand)
+            .map(|k| k.col)
+            .collect();
+        let edge = if key.hand == 0 { row.iter().min() } else { row.iter().max() };
+        let outer = row.len() >= 6 && edge == Some(&key.col);
+        if blank(board.symbols[slot]) && (!key.main || outer) {
+            locks[slot] = true;
+        }
+    }
+    locks
+}
+
 /// The `H` preset: the default locks plus the home row.
 fn home_locks(board: &Board) -> Vec<bool> {
     let homes = home_slot_mask(&board.keys);

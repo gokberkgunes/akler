@@ -1950,6 +1950,11 @@ pub(crate) fn action_default_locks(layout: &ak::Layout) -> Vec<bool> {
     layout.slots.iter().map(|slot| !slot.main).collect()
 }
 
+/// `locks` with the empty spare keys locked too.
+fn optimizer_locks(layout: &ak::Layout, locks: Vec<bool>) -> Vec<bool> {
+    locks.into_iter().zip(layout.spare_slots()).map(|(a, b)| a || b).collect()
+}
+
 /// The `H` preset: the default locks plus the home row and actions other than
 /// adaptive keys.
 pub(crate) fn action_home_locks(layout: &ak::Layout) -> Vec<bool> {
@@ -2421,7 +2426,7 @@ fn action_optimizer_setup(
                         *locks = saved_locks;
                     } else {
                         *layout = original.clone();
-                        *locks = action_default_locks(layout);
+                        *locks = optimizer_locks(layout, action_default_locks(layout));
                     }
                     *current_cache = None;
                     if stashed_swaps.is_some() {
@@ -2443,7 +2448,7 @@ fn action_optimizer_setup(
                     }
                 }
             }
-            Event::Char('H') => *locks = action_home_locks(layout),
+            Event::Char('H') => *locks = optimizer_locks(layout, action_home_locks(layout)),
             Event::Char('U') => locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o') => {
@@ -3073,7 +3078,8 @@ fn action_optimizer(
     let config = load_app_config()?;
     let weights = config.weights;
     let settings = config.search;
-    let locks = action_default_locks(&original);
+    let original = original.with_spare_keys();
+    let locks = optimizer_locks(&original, action_default_locks(&original));
     action_optimizer_session(
         term, original, corpus, weights, settings, locks, false, false,
     )

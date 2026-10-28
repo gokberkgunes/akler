@@ -1656,20 +1656,7 @@ impl Layout {
             .filter(|slot| !slot.main)
             .map(|slot| slot.col)
             .collect();
-        let default_columns: Vec<_> = self
-            .slots
-            .iter()
-            .filter(|slot| !slot.main)
-            .enumerate()
-            .map(|(index, slot)| {
-                if index == 0 && slot.hand == 1 {
-                    1
-                } else {
-                    index as i8
-                }
-            })
-            .collect();
-        if thumb_columns != default_columns {
+        if !default_thumb_columns(&self.slots) {
             out.push_str(&format!(
                 "thumb-columns: {}\n",
                 thumb_columns
@@ -1785,6 +1772,150 @@ impl Layout {
         out
     }
 
+    /// Whether each slot is a spare the optimizer adds (`with_spare_keys`):
+    /// an empty key in an outer pinky column, or an empty thumb key.
+    pub(crate) fn spare_slots(&self) -> Vec<bool> {
+        let outer = |slot: &Slot| {
+            let row: Vec<_> = self
+                .slots
+                .iter()
+                .filter(|s| s.main && s.row == slot.row && s.hand == slot.hand)
+                .map(|s| s.col)
+                .collect();
+            row.len() >= 6
+                && Some(slot.col)
+                    == if slot.hand == 0 {
+                        row.iter().min().copied()
+                    } else {
+                        row.iter().max().copied()
+                    }
+        };
+        self.slots
+            .iter()
+            .map(|slot| slot.binding == Binding::Empty && (!slot.main || outer(slot)))
+            .collect()
+    }
+
+    /// This layout with empty keys added for the optimizer to show: an outer
+    /// pinky column on each side that has none, and two thumb keys per hand.
+    pub(crate) fn with_spare_keys(&self) -> Layout {
+        let mut out = self.clone();
+        for hand in 0..2i8 {
+            let rows: Vec<Vec<&Slot>> = (0..3)
+                .map(|row| {
+                    self.slots
+                        .iter()
+                        .filter(|s| s.main && s.row == row && s.hand == hand)
+                        .collect()
+                })
+                .collect();
+            if rows.iter().any(|row| row.is_empty() || row.len() >= 6) {
+                continue;
+            }
+            for row in rows {
+                let edge = if hand == 0 {
+                    row.iter().min_by_key(|s| s.col)
+                } else {
+                    row.iter().max_by_key(|s| s.col)
+                };
+                let mut slot = (**edge.unwrap()).clone();
+                let Some(col) = slot.col.checked_add(if hand == 0 { -1 } else { 1 }) else {
+                    continue;
+                };
+                slot.col = col;
+                slot.finger = if hand == 0 { 0 } else { 7 };
+                slot.rank = 0;
+                slot.binding = Binding::Empty;
+                slot.label = "·".into();
+                out.slots.push(slot);
+            }
+            if hand == 0 {
+                out.left_outer = true;
+            } else {
+                out.right_outer = true;
+            }
+        }
+        for hand in 0..2i8 {
+            let have = out.slots.iter().filter(|s| !s.main && s.hand == hand).count();
+            for _ in have..2 {
+                let cols = out.slots.iter().filter(|s| !s.main).map(|s| s.col);
+                let col = if hand == 0 {
+                    cols.min().map_or(0, |col| col.saturating_sub(1))
+                } else {
+                    cols.max().map_or(1, |col| col.saturating_add(1))
+                };
+                out.slots.push(Slot {
+                    binding: Binding::Empty,
+                    label: "·".into(),
+                    row: 3,
+                    col,
+                    row_offset: 0,
+                    column_offset: 0,
+                    finger: 8 + hand as usize,
+                    rank: -1,
+                    hand,
+                    main: false,
+                });
+            }
+        }
+        out.order_slots();
+        out
+    }
+
+    /// Drops the spare keys `with_spare_keys` added that are still empty: a
+    /// wholly empty outer column at -1 or 10, and empty thumbs.
+    pub(crate) fn without_spare_keys(&self) -> Layout {
+        let spare = self.spare_slots();
+        let mut drop = vec![false; self.slots.len()];
+        for hand in 0..2i8 {
+            // Only the columns it adds: magic seeds shift columns to put
+            // theirs at 0 and 11, and rows need those to be written back.
+            let col = if hand == 0 { -1 } else { 10 };
+            let outer: Vec<_> = (0..self.slots.len())
+                .filter(|&i| {
+                    spare[i]
+                        && self.slots[i].main
+                        && self.slots[i].hand == hand
+                        && self.slots[i].col == col
+                })
+                .collect();
+            if outer.len() == 3 {
+                outer.iter().for_each(|&i| drop[i] = true);
+            }
+            for i in 0..self.slots.len() {
+                if spare[i] && !self.slots[i].main && self.slots[i].hand == hand {
+                    drop[i] = true;
+                }
+            }
+        }
+        let mut out = self.clone();
+        let mut index = 0;
+        out.slots.retain(|_| {
+            index += 1;
+            !drop[index - 1]
+        });
+        for (hand, flag) in [(0, &mut out.left_outer), (1, &mut out.right_outer)] {
+            *flag = (0..3).any(|row| {
+                self.slots
+                    .iter()
+                    .zip(&drop)
+                    .filter(|(s, &dropped)| !dropped && s.main && s.row == row && s.hand == hand)
+                    .count()
+                    >= 6
+            });
+        }
+        out.order_slots();
+        out
+    }
+
+    /// Main keys by row and column, then left and right thumbs by column, as
+    /// `text` writes them. Spare thumbs sit outside the others, so removing
+    /// them leaves the original thumb columns.
+    fn order_slots(&mut self) {
+        self.slots
+            .sort_by_key(|s| (!s.main, s.row, if s.main { 0 } else { s.hand }, s.col));
+    }
+
     pub fn save_new(&self) -> Result<PathBuf> {
         let dir = self.path.parent().unwrap_or(Path::new("layouts"));
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1800,6 +1931,16 @@ impl Layout {
         }
         err("no unused save filename")
     }
+}
+
+/// Whether the thumbs use the columns a layout without `thumb-columns` gets:
+/// 0, 1, 2… in order, the first right thumb at 1 when there is no left one.
+fn default_thumb_columns(slots: &[Slot]) -> bool {
+    slots
+        .iter()
+        .filter(|slot| !slot.main)
+        .enumerate()
+        .all(|(index, slot)| slot.col == if index == 0 && slot.hand == 1 { 1 } else { index as i8 })
 }
 
 fn emission_text(e: &Emission) -> String {

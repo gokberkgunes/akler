@@ -4815,7 +4815,7 @@ fn optimizer_setup(
             Event::Escape | Event::Char('q') if term.optimizer_weights => { term.optimizer_weights = false; scroll = 0; },
             Event::Escape | Event::Char('q') if term.optimizer_score => { term.optimizer_score = false; scroll = 0; },
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(false),
-            Event::Char('H')=>*locks = home_locks(&model.board),
+            Event::Char('H')=>*locks = optimizer_locks(&model.board, home_locks(&model.board)),
             Event::Char('U')=>locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o')=>*arr = model.original.clone(),
@@ -5232,10 +5232,10 @@ fn objective_audit(term: &mut Terminal, p: &Problem, arr: &[usize]) -> AppResult
 fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()> {
     let mut timing = crate::load_profile::LoadProfile::new("ordinary optimizer setup");
     let config = load_app_config()?;
-    let mut model = Model::with_rolls(board, config.weights.rolls());
+    let mut model = Model::with_rolls(with_spare_keys(board), config.weights.rolls());
     timing.mark("Configuration and geometry");
     let mut arr = model.original.clone();
-    let mut locks = default_locks(&model.board);
+    let mut locks = optimizer_locks(&model.board, default_locks(&model.board));
     let mut weights = config.weights;
     let mut settings = config.search;
     timing.mark("Weights, settings and locks");
