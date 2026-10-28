@@ -179,7 +179,10 @@ fit.fit();
 window.addEventListener("resize", () => fit.fit());
 // Ctrl+L belongs to the browser (the address bar), not to akler.
 // Ctrl+R goes to the browser too; Ctrl+Up / Ctrl+Down zoom the terminal.
+// Alt shortcuts belong to the browser: akler has none, and the terminal would
+// send them as Esc plus a key. Ctrl+Alt stays, as AltGr types characters.
 terminal.attachCustomKeyEventHandler((event) => {
+  if (event.altKey && !event.ctrlKey) return false;
   if (!event.ctrlKey || event.altKey || event.metaKey) return true;
   const key = event.key.toLowerCase();
   if (key === "l" || key === "r") return false;

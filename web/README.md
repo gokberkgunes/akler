@@ -56,7 +56,8 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
   (`python3 boxfont.py`).
 - The sun/moon button switches between Dark (black, the default) and Light
   (a slightly lighter grey), both with white text. Ctrl+Up / Ctrl+Down
-  zoom the terminal; Ctrl+L and Ctrl+R go to the browser, not to akler.
+  zoom the terminal; Ctrl+L, Ctrl+R and Alt shortcuts go to the browser, not
+  to akler.
 - `?args=...` runs a command instead of the menu, for example
   `?args=bench layouts/night.jsonc corpus-reddit --seeds 2`.
 - The home menu has no quit; `q`, Esc and Ctrl-C only go back.
