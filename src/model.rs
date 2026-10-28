@@ -407,7 +407,7 @@ fn main_key_at(row: usize, col: i8) -> Key {
         5 | 6 => (4, 3, 1),
         7 => (5, 2, 1),
         8 => (6, 1, 1),
-        9 | 10 | 11 => (7, 0, 1),
+        9..=12 => (7, 0, 1),
         _ => unreachable!(),
     };
     Key {
@@ -1051,7 +1051,12 @@ fn parse_token(token: &str, empty: &mut u8) -> AppResult<u8> {
     Ok(bytes[0].to_ascii_lowercase())
 }
 
-fn parse_row(line: &str, row: usize, empty: &mut u8) -> AppResult<(Vec<(u8, i8)>, (usize, usize))> {
+fn parse_row(
+    line: &str,
+    row: usize,
+    empty: &mut u8,
+    absolute: bool,
+) -> AppResult<(Vec<(u8, i8)>, (usize, usize))> {
     let tokens: Vec<_> = line.split_whitespace().collect();
     // Legacy 20-character rows with two spaces between hands. Do not trim
     // leading whitespace: it encodes an empty leftmost physical slot.
@@ -1100,9 +1105,14 @@ fn parse_row(line: &str, row: usize, empty: &mut u8) -> AppResult<(Vec<(u8, i8)>
         };
         (&tokens[..n], &tokens[n..])
     };
-    if !(5..=6).contains(&left.len()) || !(5..=6).contains(&right.len()) {
+    let max_hand_width = if absolute && left.len() + right.len() == 13 {
+        7
+    } else {
+        6
+    };
+    if !(5..=max_hand_width).contains(&left.len()) || !(5..=max_hand_width).contains(&right.len()) {
         return Err(format!(
-            "row {}: each hand needs five or six single-character slots",
+            "row {}: invalid number of single-character slots per hand",
             row + 1
         )
         .into());
@@ -1185,7 +1195,7 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
     let absolute = crate::action_keys::absolute_columns(&lines[3..])?;
     let mut geometry = crate::action_keys::GeometrySettings::default();
     for r in 0..3 {
-        let (row, _) = parse_row(lines[r], r, &mut empty)?;
+        let (row, _) = parse_row(lines[r], r, &mut empty, absolute)?;
         for (index, (ch, col)) in row.into_iter().enumerate() {
             let col = if absolute { index as i8 } else { col };
             symbols.push(ch);
@@ -1343,6 +1353,9 @@ fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
         .map(|key| key.col)
         .max()
         .unwrap_or(0);
+    if shape.iter().any(|&width| width == 13) && !geometry.has_fingermap() {
+        return Err("13-column layouts require an explicit fingermap".into());
+    }
     geometry.validate(shape, minimum, maximum)?;
     let mut columns = [0; 3];
     for key in keys.iter_mut().filter(|key| key.main) {
@@ -1410,7 +1423,7 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
         let mut first = true;
         let width = row.len();
         let absolute = board.keys.iter().any(|key| key.main && key.col == 11);
-        let separator = if absolute && width == 12 { 6 } else { 5 };
+        let separator = if absolute && width >= 12 { 6 } else { 5 };
         for (i, k) in row {
             if !first {
                 if k.col == separator {
@@ -2015,7 +2028,7 @@ struct Model {
     board: Board,
     canonical: Vec<u8>,
     original: Vec<usize>,
-    geometry: Geometry,
+    geometry: Arc<Geometry>,
 }
 
 impl Model {
@@ -2025,6 +2038,12 @@ impl Model {
     }
 
     fn with_rolls(board: Board, rolls: RollSettings) -> Self {
+        let geometry = Arc::new(Geometry::with_alts(board.keys.clone(), rolls));
+        Self::with_geometry(board, geometry)
+    }
+
+    fn with_geometry(board: Board, geometry: Arc<Geometry>) -> Self {
+        debug_assert_eq!(board.keys, geometry.keys);
         let mut canonical = board.symbols.clone();
         canonical.sort_unstable();
         let original = board
@@ -2032,7 +2051,6 @@ impl Model {
             .iter()
             .map(|s| canonical.iter().position(|c| c == s).unwrap())
             .collect();
-        let geometry = Geometry::with_alts(board.keys.clone(), rolls);
         Self {
             board,
             canonical,

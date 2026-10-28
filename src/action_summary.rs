@@ -1018,6 +1018,19 @@ pub(crate) fn evaluate_with_mode(
     progress: &AtomicU64,
     mode: &str,
 ) -> ak::Result<Summary> {
+    evaluate_with_geometry(layout, corpus, weights, stop, progress, mode, None)
+}
+
+/// A ranker load can reuse its physical geometry across matching layouts.
+pub(crate) fn evaluate_with_geometry(
+    layout: &ak::Layout,
+    corpus: &ng::NgramCorpus,
+    weights: &Weights,
+    stop: &AtomicBool,
+    progress: &AtomicU64,
+    mode: &str,
+    geometry: Option<&Geometry>,
+) -> ak::Result<Summary> {
     let mut timing = load_profile::LoadProfile::new("action ranking summary");
     let effort = action_ui::LocalEffort::new(layout, weights);
     timing.mark("Physical effort tables");
@@ -1043,19 +1056,18 @@ pub(crate) fn evaluate_with_mode(
     });
     timing.mark("Physical mapping and transient histograms (nested report)");
 
-    let summary = from_counts(layout, counts, weights, mode)?;
+    let owned_geometry;
+    let geometry = match geometry {
+        Some(geometry) => geometry,
+        None => {
+            owned_geometry =
+                Geometry::with_rolls(crate::action_ui::physical_keys(layout), weights.rolls());
+            &owned_geometry
+        }
+    };
+    let summary = from_counts_with_geometry(layout, counts, weights, mode, geometry)?;
     timing.mark("Physical geometry, raw metrics and score");
     Ok(summary)
-}
-
-fn from_counts(
-    layout: &ak::Layout,
-    counts: Arc<ng::Counts>,
-    weights: &Weights,
-    mode: &str,
-) -> ak::Result<Summary> {
-    let geometry = Geometry::with_rolls(crate::action_ui::physical_keys(layout), weights.rolls());
-    from_counts_with_geometry(layout, counts, weights, mode, &geometry)
 }
 
 fn from_counts_with_geometry(

@@ -127,7 +127,8 @@ Raw text goes in `corpus/raw/` (any extension); the cache is written to
 `corpus/processed/corpus-NAME.json`. Corpus names must be unique ignoring
 extension. The first load under each `[ngrams]` setting also saves a
 pre-parsed copy next to it (`corpus-NAME.KEY.ngrams`), which later loads
-read in milliseconds; `corpus prepare` writes it ahead of time. An optional `corpus/raw/NAME.config.json` can set:
+read in milliseconds; `corpus prepare` writes it ahead of time. Up to eight
+recently written configurations are retained per corpus. An optional `corpus/raw/NAME.config.json` can set:
 
 | Property | Meaning / default |
 |---|---|

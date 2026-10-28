@@ -345,7 +345,8 @@ fn alt_rules_name_qwerty_positions_and_pick_the_rules_by_stagger() {
     };
     assert_eq!(fingers(b"cg"), [2, 3]);
     assert_eq!(fingers(b"gc"), [3, 2]);
-    assert_eq!(fingers(b"cwg"), [2, 3, 3]);
+    // The wildcard w already uses LI, so the f_g rule would clash with it.
+    assert_eq!(fingers(b"cwg"), [3, 3, 3]);
     assert_eq!(fingers(b"cw"), [3, 3]);
     let staggered = format!("{PACKET}row-offsets: 0 0.25 0.75\n");
     let staggered = board_from_text(&staggered, Path::new("rowstag.dat")).unwrap();
@@ -848,6 +849,66 @@ fn plain_layouts_round_trip() {
     let b = board_from_text(&comma, Path::new("comma.dat")).unwrap();
     assert_eq!(&b.symbols[30..], &[b',', b' ']);
     assert_eq!(b.symbols.len(), 32);
+}
+
+#[test]
+fn thirteen_column_layouts_round_trip_through_dat() {
+    let rows = [
+        "q w e r t y u i o p [ ] =",
+        "a s d f g h j k l ; skip skip skip",
+        "z x c v b n m , . / skip skip skip",
+    ];
+    // The first map agrees with the inferred defaults; the second starts its
+    // right hand after seven positions. Both still need an explicit map.
+    for fingers in [
+        "0 1 2 3 3 6 6 7 8 9 9 9 9",
+        "0 1 2 3 3 3 3 6 7 8 9 9 9",
+    ] {
+        let json = format!(
+            r#"{{"layout":{{"fingers":["{}","{}","{}"],"thumbs":["space"]}},"fingermap":["{fingers}","{fingers}","{fingers}"]}}"#,
+            rows[0], rows[1], rows[2]
+        );
+        let layout = action_keys::Layout::parse(&json, Path::new("thirteen.jsonc")).unwrap();
+        let dat = layout.text();
+        assert!(dat.contains("fingermap:"));
+        let restored = action_keys::Layout::parse(&dat, Path::new("round.dat")).unwrap();
+        assert_eq!(layout.slots, restored.slots);
+
+        let board = board_from_text(&json, Path::new("thirteen.jsonc")).unwrap();
+        let dat = board_text(&board, &board.symbols);
+        assert!(dat.contains("fingermap:"));
+        let restored = board_from_text(&dat, Path::new("round.dat")).unwrap();
+        assert_eq!(board.symbols, restored.symbols);
+        assert_eq!(board.keys, restored.keys);
+
+        // Both legal hand dividers must parse to the same absolute geometry.
+        let alternate = dat
+            .lines()
+            .enumerate()
+            .map(|(index, line)| {
+                if index < 3 {
+                    let mut tokens: Vec<_> = line.split_whitespace().filter(|&t| t != "|").collect();
+                    tokens.insert(7, "|");
+                    tokens.join(" ")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let restored = board_from_text(&alternate, Path::new("seven-six.dat")).unwrap();
+        assert_eq!(board.keys, restored.keys);
+        let restored = action_keys::Layout::parse(&alternate, Path::new("seven-six.dat")).unwrap();
+        assert_eq!(layout.slots, restored.slots);
+
+        let missing_map = dat
+            .lines()
+            .filter(|line| !line.starts_with("fingermap:"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(board_from_text(&missing_map, Path::new("no-map.dat")).is_err());
+        assert!(action_keys::Layout::parse(&missing_map, Path::new("no-map.dat")).is_err());
+    }
 }
 
 #[test]
@@ -2062,6 +2123,164 @@ impl TestDir {
 impl Drop for TestDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn corpus_cache_keeps_a_bounded_set_of_configurations() {
+    let dir = TestDir::new();
+    let path = dir.0.join("corpus.json");
+    let counts = count_reader(
+        Cursor::new(b"abcdef abcdef abcdef"),
+        &CorpusConfig::default(),
+        20,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let text = counts_text(&counts);
+    fs::write(&path, &text).unwrap();
+    let load = |limits| {
+        action_ngrams::NgramCorpus::from_text_progress_with_limits(
+            &text,
+            &path,
+            limits,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap()
+    };
+    let caches = || {
+        fs::read_dir(&dir.0)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "ngrams"))
+            .collect::<Vec<_>>()
+    };
+    let defaults = NgramLimits::default();
+    load(defaults);
+    let first = caches().pop().unwrap();
+    load(NgramLimits {
+        trigrams: Some(1),
+        ..defaults
+    });
+    assert!(first.exists());
+    assert_eq!(caches().len(), 2);
+    load(NgramLimits {
+        include_spacegrams: !defaults.include_spacegrams,
+        ..defaults
+    });
+    assert!(first.exists());
+    assert_eq!(caches().len(), 3);
+    load(defaults);
+    assert_eq!(caches().len(), 3);
+    for limit in 2..=12 {
+        load(NgramLimits {
+            trigrams: Some(limit),
+            ..defaults
+        });
+    }
+    assert_eq!(caches().len(), 8);
+}
+
+#[cfg(not(target_os = "wasi"))]
+#[test]
+fn very_short_terminal_renders_without_panicking() {
+    let mut term = Terminal {
+        tty: OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/null")
+            .unwrap(),
+        saved: String::new(),
+        decoder: Decoder::default(),
+        size: (80, 0),
+        screen: (80, 3),
+        size_at: Instant::now(),
+        previous: Vec::new(),
+        offset_x: 0,
+        precise: false,
+        simple_stats: false,
+        optimizer_weights: false,
+        optimizer_score: false,
+        quitting: false,
+        show_back: true,
+        bar_hits: Vec::new(),
+        bar: 0,
+        skip: 0,
+        _reports: profile_output::TerminalReports::begin(),
+    };
+    let canvas = Canvas::new(80, 24);
+    for width in [1, 80] {
+        for height in 1..=4 {
+            term.set_screen((width, height));
+            for show_back in [true, false] {
+                term.show_back = show_back;
+                term.present(&canvas, 0).unwrap();
+            }
+        }
+    }
+}
+
+#[test]
+fn moving_a_wildcard_key_updates_incremental_alt_finger_metrics() {
+    let text =
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+    let mut layout = action_keys::Layout::parse(text, Path::new("plain.dat")).unwrap();
+    let counts = count_reader(
+        Cursor::new(b"fsg fsg fsg"),
+        &CorpusConfig::default(),
+        11,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let corpus =
+        action_ngrams::NgramCorpus::from_text(&counts_text(&counts), Path::new("probe.json"))
+            .unwrap();
+    let rules = alt_fingers::AltRules::parse("f_g (LM LI)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let geometry = Geometry::new(action_ui::physical_keys(&layout));
+    let stop = AtomicBool::new(false);
+    let mut cache = action_ngrams::Incremental::new_with_policy(
+        &corpus,
+        &layout,
+        geometry.clone(),
+        &stop,
+        alts,
+        false,
+        |_, _, _| 0.0,
+    )
+    .unwrap();
+    cache.enable_finite_effort();
+    let s = layout.slots.iter().position(|slot| slot.label == "s").unwrap();
+    let d = layout.slots.iter().position(|slot| slot.label == "d").unwrap();
+    let mut proposal = action_ngrams::Proposal::new();
+    cache
+        .propose_swap(s, d, &stop, |_, _, _| 0.0, &mut proposal)
+        .unwrap();
+    layout.swap(s, d);
+    let fresh = action_ngrams::Incremental::new_with_policy(
+        &corpus,
+        &layout,
+        geometry,
+        &stop,
+        alts,
+        false,
+        |_, _, _| 0.0,
+    )
+    .unwrap();
+    close(fresh.metrics().v[SFS], 55.55555555555556);
+    for (actual, expected) in proposal.metrics().v.into_iter().zip(fresh.metrics().v) {
+        close(actual, expected);
     }
 }
 

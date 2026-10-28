@@ -875,6 +875,8 @@ type Postings = Arc<std::sync::OnceLock<WindowIndex>>;
 /// change misses and rewrites it.
 const CACHE_MAGIC: &[u8; 8] = b"AKLERNG1";
 const CACHE_VERSION: u32 = 1;
+/// Keep a few configurations for each corpus without unbounded disk growth.
+const CACHE_FILES_PER_CORPUS: usize = 8;
 
 fn cache_key(text: &str, limits: NgramLimits) -> u64 {
     // A fast word hash; the contents only select a cache, which is also
@@ -922,8 +924,8 @@ fn write_text(out: &mut Vec<u8>, text: &str) {
     out.extend_from_slice(text.as_bytes());
 }
 
-/// Save `corpus` as its pre-parsed cache, replacing older caches of the same
-/// JSON. A failure only costs the next load its speed.
+/// Save `corpus` as its pre-parsed cache, keeping a bounded number of older
+/// configurations of the same JSON. A failure only costs the next load speed.
 fn write_cache(corpus: &NgramCorpus, cache: &Path, key: u64) {
     let mut out = Vec::new();
     out.extend_from_slice(CACHE_MAGIC);
@@ -949,27 +951,41 @@ fn write_cache(corpus: &NgramCorpus, cache: &Path, key: u64) {
             write_text(&mut out, error);
         }
     }
+    let temporary = cache.with_extension(format!(
+        "{}.{}.tmp",
+        crate::process_tag(),
+        crate::timestamp()
+    ));
+    if fs::write(&temporary, &out).is_err() || fs::rename(&temporary, cache).is_err() {
+        let _ = fs::remove_file(&temporary);
+        return;
+    }
     let Some(stem) = corpus.path.file_stem().map(|stem| stem.to_string_lossy().into_owned()) else {
         return;
     };
     if let Some(directory) = cache.parent() {
         if let Ok(entries) = fs::read_dir(directory) {
+            let mut older = Vec::new();
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let stale = name
+                let is_cache = name
                     .strip_prefix(&stem)
                     .and_then(|rest| rest.strip_prefix('.'))
                     .and_then(|rest| rest.strip_suffix(".ngrams"))
                     .is_some_and(|hex| hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
-                if stale {
-                    let _ = fs::remove_file(entry.path());
+                if is_cache && entry.path() != cache {
+                    let modified = entry
+                        .metadata()
+                        .and_then(|metadata| metadata.modified())
+                        .unwrap_or(UNIX_EPOCH);
+                    older.push((modified, entry.path()));
                 }
             }
+            older.sort_unstable_by(|a, b| b.cmp(a));
+            for (_, path) in older.into_iter().skip(CACHE_FILES_PER_CORPUS - 1) {
+                let _ = fs::remove_file(path);
+            }
         }
-    }
-    let temporary = cache.with_extension(format!("{}.tmp", crate::process_tag()));
-    if fs::write(&temporary, &out).is_err() || fs::rename(&temporary, cache).is_err() {
-        let _ = fs::remove_file(&temporary);
     }
 }
 
@@ -5183,7 +5199,7 @@ impl Incremental {
         }
         // A context's mapping depends only on its dependency bytes. Alternate
         // fingers can also read earlier keys through position rules, so a move
-        // touching a rule's position falls back to every byte.
+        // touching a rule's position or a wildcard falls back to every byte.
         let postings = if direct && grouped {
             &self.grouped_postings
         } else if direct {

@@ -795,7 +795,7 @@ impl Terminal {
             });
             for (i, ch) in "Resize terminal to at least 64 columns x 12 rows. Esc to back out."
                 .chars()
-                .take(w)
+                .take(w.min(view.len()))
                 .enumerate()
             {
                 view[i] = Cell {
@@ -4503,7 +4503,7 @@ fn optimizer_setup(
     let mut drag = None;
     let mut drag_hover = None;
     let mut preview_model = model.clone();
-    preview_model.geometry = Geometry::with_alts(model.board.keys.clone(), w.rolls());
+    preview_model.geometry = Arc::new(Geometry::with_alts(model.board.keys.clone(), w.rolls()));
     let corpus = preview_model.corpus(source)?;
     let mut preview_arr = arr.clone();
     let mut preview_mana = s.mode.as_str() == "aklgg";
@@ -4519,7 +4519,8 @@ fn optimizer_setup(
     loop {
         let mana = s.mode.as_str() == "aklgg";
         if preview_model.geometry.rolls != w.rolls() || preview_mana != mana {
-            preview_model.geometry = Geometry::with_alts(model.board.keys.clone(), w.rolls());
+            preview_model.geometry =
+                Arc::new(Geometry::with_alts(model.board.keys.clone(), w.rolls()));
             preview_mana = mana;
             baseline_raw = full_raw_with_mana2(
                 &model.original,
@@ -5253,7 +5254,8 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
             return Ok(());
         }
         if model.geometry.rolls != weights.rolls() {
-            model.geometry = Geometry::with_alts(model.board.keys.clone(), weights.rolls());
+            model.geometry =
+                Arc::new(Geometry::with_alts(model.board.keys.clone(), weights.rolls()));
         }
         let sources = load_training_sources(term, source, &settings)?;
         let mut problem = Problem::new(

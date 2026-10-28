@@ -347,7 +347,8 @@ impl Problem {
     ) -> AppResult<Self> {
         validate_search_settings(&settings)?;
         if model.geometry.rolls != weights.rolls() {
-            model.geometry = Geometry::with_alts(model.board.keys.clone(), weights.rolls());
+            model.geometry =
+                Arc::new(Geometry::with_alts(model.board.keys.clone(), weights.rolls()));
         }
         if selected >= sources.len() {
             return Err("no selected corpus".into());

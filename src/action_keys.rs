@@ -428,6 +428,10 @@ impl GeometrySettings {
     pub(crate) fn finger(&self, row: usize, column: usize) -> Option<usize> {
         self.fingers.as_ref().map(|rows| rows[row][column])
     }
+
+    pub(crate) fn has_fingermap(&self) -> bool {
+        self.fingers.is_some()
+    }
 }
 
 pub(crate) fn geometry_text(
@@ -462,9 +466,10 @@ pub(crate) fn geometry_text(
         out.push('\n');
     }
 
-    if keys
-        .iter()
-        .any(|key| key.4 != mode.finger(key.0, key.1, finger(key.1).0))
+    if (0..3).any(|row| keys.iter().filter(|key| key.0 == row).count() == 13)
+        || keys
+            .iter()
+            .any(|key| key.4 != mode.finger(key.0, key.1, finger(key.1).0))
     {
         const NAMES: [&str; 8] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP"];
         out.push_str("fingermap:");
@@ -613,7 +618,7 @@ fn main_rows(lines: &[&str], absolute: bool) -> Result<(Vec<Slot>, bool, bool)> 
         if !(5..=max_hand_width).contains(&left.len())
             || !(5..=max_hand_width).contains(&right.len())
         {
-            return err("each hand must have five or six columns");
+            return err("each hand must have five or six columns (six or seven in an absolute 13-column row)");
         }
         left_outer |= left.len() >= 6;
         right_outer |= right.len() >= 6;
@@ -1327,7 +1332,7 @@ impl Layout {
             .map(|s| s.col)
             .max()
             .unwrap_or(0);
-        if shape.iter().any(|&width| width == 13) && geometry.fingers.is_none() {
+        if shape.iter().any(|&width| width == 13) && !geometry.has_fingermap() {
             return err("13-column layouts require an explicit fingermap");
         }
         geometry.validate(shape, minimum, maximum)?;
@@ -1571,7 +1576,7 @@ impl Layout {
                 .iter()
                 .filter(|slot| slot.main && slot.row == row)
                 .count();
-            let separator = if absolute && width == 12 { 6 } else { 5 };
+            let separator = if absolute && width >= 12 { 6 } else { 5 };
             for s in self.slots.iter().filter(|s| s.main && s.row == row) {
                 if !first {
                     if s.col == separator {

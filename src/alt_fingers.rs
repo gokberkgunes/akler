@@ -603,21 +603,23 @@ impl Compiled {
         self.codes.is_some()
     }
 
-    /// Whether moving keys between these slots can change which rules match
-    /// outside the keys a context's own mapping depends on: only position
-    /// rules naming one of the slots can. Rules matching characters never do.
+    /// Whether a move can change a rule's effect outside the moved keys.
+    /// A wildcard can clash with an assigned finger, so even moving a key at
+    /// an unnamed position can change the rule's effect on its neighbours.
+    /// Rules matching characters never reach beyond the mapped keys.
     pub(crate) fn reaches(&self, slots: &[usize]) -> bool {
         let Some(codes) = &self.codes else {
             return false;
         };
-        slots.iter().any(|&slot| {
-            let code = codes[slot];
-            code != 0
-                && self
-                    .rules
-                    .iter()
-                    .any(|rule| rule.ngram.contains(&Some(code)))
-        })
+        self.rules.iter().any(|rule| rule.ngram.contains(&None))
+            || slots.iter().any(|&slot| {
+                let code = codes[slot];
+                code != 0
+                    && self
+                        .rules
+                        .iter()
+                        .any(|rule| rule.ngram.contains(&Some(code)))
+            })
     }
 
     /// `resolve` over one window, matching position rules against the codes

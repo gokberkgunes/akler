@@ -680,12 +680,13 @@ fn rescore_rank_rows(rows: &mut [RankRow], weights: &Weights, mode: &str) {
 
 fn plain_rank_row(
     board: Board,
+    geometry: Arc<Geometry>,
     source: &Source,
     cache: &std::cell::RefCell<BTreeMap<Vec<u8>, Arc<Corpus>>>,
     weights: &Weights,
     mode: &str,
 ) -> AppResult<RankRow> {
-    let model = Model::with_rolls(board, weights.rolls());
+    let model = Model::with_geometry(board, geometry);
     // Canonical IDs depend only on the exact sorted symbol vector, including
     // duplicate blank slots. Share the immutable mapped corpus across layouts
     // with those same IDs instead of rebuilding or cloning its gram tables.
@@ -740,6 +741,8 @@ fn parse_rank_layout(text: &str, path: &Path) -> AppResult<RankLayout> {
 struct RankCorpora {
     plain: Option<Result<Source, String>>,
     plain_cache: std::cell::RefCell<BTreeMap<Vec<u8>, Arc<Corpus>>>,
+    /// Ordinary and action evaluation apply alternate fingers differently.
+    geometry_cache: std::cell::RefCell<Vec<(bool, Arc<Geometry>)>>,
     action: Option<action_keys::Result<Arc<action_ngrams::NgramCorpus>>>,
 }
 
@@ -774,8 +777,25 @@ impl RankCorpora {
         Self {
             plain,
             plain_cache: std::cell::RefCell::new(BTreeMap::new()),
+            geometry_cache: std::cell::RefCell::new(Vec::new()),
             action,
         }
+    }
+
+    fn geometry(&self, keys: &[Key], rolls: RollSettings, ordinary: bool) -> Arc<Geometry> {
+        let mut cache = self.geometry_cache.borrow_mut();
+        if let Some((_, geometry)) = cache.iter().find(|(is_ordinary, geometry)| {
+            *is_ordinary == ordinary && geometry.rolls == rolls && geometry.keys == keys
+        }) {
+            return Arc::clone(geometry);
+        }
+        let geometry = Arc::new(if ordinary {
+            Geometry::with_alts(keys.to_vec(), rolls)
+        } else {
+            Geometry::with_rolls(keys.to_vec(), rolls)
+        });
+        cache.push((ordinary, Arc::clone(&geometry)));
+        geometry
     }
 
     fn warnings(&self) -> Vec<String> {
@@ -819,7 +839,8 @@ fn evaluate_rank_layout_with_mode(
                 .ok_or("ordinary corpus was not prepared")?
                 .as_ref()
                 .map_err(|error| error.clone())?;
-            plain_rank_row(board, source, &corpora.plain_cache, weights, mode)
+            let geometry = corpora.geometry(&board.keys, weights.rolls(), true);
+            plain_rank_row(board, geometry, source, &corpora.plain_cache, weights, mode)
         }
         RankLayout::Action(layout) => {
             let corpus = corpora
@@ -828,13 +849,16 @@ fn evaluate_rank_layout_with_mode(
                 .ok_or("action corpus was not prepared")?
                 .as_ref()
                 .map_err(|error| error.clone())?;
-            let summary = action_summary::evaluate_with_mode(
+            let geometry =
+                corpora.geometry(&action_ui::physical_keys(&layout), weights.rolls(), false);
+            let summary = action_summary::evaluate_with_geometry(
                 &layout,
                 corpus,
                 weights,
                 stop,
                 &AtomicU64::new(0),
                 mode,
+                Some(&geometry),
             )
             .map_err(|error| format!("action evaluation: {error}"))?;
             Ok(RankRow::Action {
@@ -2927,6 +2951,7 @@ mod ranker_tests {
         let prepared = RankCorpora {
             plain: Some(Ok(source.clone())),
             plain_cache: std::cell::RefCell::new(BTreeMap::new()),
+            geometry_cache: std::cell::RefCell::new(Vec::new()),
             action: Some(Ok(Arc::new(corpus.clone()))),
         };
 
@@ -2972,6 +2997,11 @@ mod ranker_tests {
         )
         .unwrap();
         assert!(Arc::ptr_eq(&original_corpus, &plain_corpus(&reused)));
+        let geometry = |row: &RankRow| match row {
+            RankRow::Plain { model, .. } => Arc::clone(&model.geometry),
+            _ => panic!("expected an ordinary row"),
+        };
+        assert!(Arc::ptr_eq(&geometry(&plain), &geometry(&reused)));
         assert_eq!(prepared.plain_cache.borrow().len(), 1);
         let different = NORMAL_LAYOUT.replace("q w", "! w");
         let separate = evaluate_rank_layout(
@@ -2982,6 +3012,7 @@ mod ranker_tests {
         )
         .unwrap();
         assert!(!Arc::ptr_eq(&original_corpus, &plain_corpus(&separate)));
+        assert!(Arc::ptr_eq(&geometry(&plain), &geometry(&separate)));
         assert_eq!(prepared.plain_cache.borrow().len(), 2);
         for (text, row) in [(&reordered, &reused), (&different, &separate)] {
             let model = Model::with_rolls(
@@ -3181,6 +3212,81 @@ mod ranker_tests {
     }
 
     #[test]
+    fn ranker_geometry_cache_respects_physical_keys_and_policy() {
+        let stop = AtomicBool::new(false);
+        let weights = Weights::default();
+        let prepared = RankCorpora::prepare(
+            &[(
+                PathBuf::from("magic.dat"),
+                parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+            )],
+            CORPUS,
+            Path::new("inline.json"),
+            NgramLimits::default(),
+            &stop,
+        );
+        let layout = action_keys::Layout::parse(ACTION_LAYOUT, Path::new("magic.dat")).unwrap();
+        let keys = action_ui::physical_keys(&layout);
+        let rolls = weights.rolls();
+        let action = prepared.geometry(&keys, rolls, false);
+        let again = prepared.geometry(&keys, rolls, false);
+        assert!(Arc::ptr_eq(&action, &again));
+        assert!(std::ptr::eq(action.mana2(), again.mana2()));
+
+        let ordinary = prepared.geometry(&keys, rolls, true);
+        assert!(!Arc::ptr_eq(&action, &ordinary));
+        let mut other_keys = keys.clone();
+        other_keys[0].column_offset += 1;
+        assert!(!Arc::ptr_eq(
+            &action,
+            &prepared.geometry(&other_keys, rolls, false)
+        ));
+        let mut other_rolls = rolls;
+        other_rolls.include_thumbs = !other_rolls.include_thumbs;
+        assert!(!Arc::ptr_eq(
+            &action,
+            &prepared.geometry(&keys, other_rolls, false)
+        ));
+        let rule = alt_fingers::AltRules::parse("fg (LM LI)").unwrap();
+        other_rolls = rolls;
+        other_rolls.alts = alt_fingers::AltRules {
+            rowstag: rule.clone(),
+            colstag: rule,
+        }
+        .intern();
+        assert!(!Arc::ptr_eq(
+            &action,
+            &prepared.geometry(&keys, other_rolls, false)
+        ));
+
+        let corpus = prepared.action.as_ref().unwrap().as_ref().unwrap();
+        for mode in ["detailed", "aklgg"] {
+            let expected = action_summary::evaluate_with_mode(
+                &layout,
+                corpus,
+                &weights,
+                &stop,
+                &AtomicU64::new(0),
+                mode,
+            )
+            .unwrap();
+            let actual = evaluate_rank_layout_with_mode(
+                RankLayout::Action(layout.clone()),
+                &prepared,
+                &weights,
+                &stop,
+                mode,
+            )
+            .unwrap();
+            assert_eq!(
+                actual.raw().0.map(f64::to_bits),
+                expected.raw.0.map(f64::to_bits)
+            );
+            assert_eq!(actual.score().to_bits(), expected.score.to_bits());
+        }
+    }
+
+    #[test]
     fn ranker_prepares_only_required_corpus_engines() {
         let path = Path::new("inline.json");
         let stop = AtomicBool::new(false);
@@ -3245,6 +3351,7 @@ mod ranker_tests {
         let prepared = RankCorpora {
             plain: None,
             plain_cache: std::cell::RefCell::new(BTreeMap::new()),
+            geometry_cache: std::cell::RefCell::new(Vec::new()),
             action: Some(Err("missing cached contexts".into())),
         };
 
