@@ -91,7 +91,7 @@ by stat.
 
 ## Ranker and editor
 
-- **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns. `s` switches the
+- **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns, `4` Presets. `s` switches the
   scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
   without a thumb letter. Middle-click hides a layout or column; Ctrl+click
   hides the clicked layout and every layout above it in the current order. `u` undoes
@@ -99,7 +99,13 @@ by stat.
   stored in `ranker-hidden.json`. Enter or Space opens a layout in the
   optimizer; so does a click in normal mode. In aklgg mode a click shows
   the layout's akl.gg-style stats; click a finger's numbers there to list
-  its same-finger pairs by finger speed.
+  its same-finger pairs by finger speed. In normal mode, Columns lets you
+  select the individual full-jump metrics (`daFJB`, `caFJB`, `dnFJB`,
+  `cnFJB` and their skipgram equivalents), as well as the combined FJB/FJS.
+  Presets offers Normal and a 4:1 view. The latter shows SCORE and every
+  combined bigram/skipgram column (`SFBS`, `SKBS`, etc.). Each value is `4 × bigram % + skipgram %`
+  using AKLER metrics, including in aklgg mode. Values are `n/a` when either
+  population is missing.
 - **Editor:** click a metric to see its contributors. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
@@ -150,6 +156,12 @@ akler bench layouts/packet.dat corpus-reddit --seeds 10 --set mode=aklgg
 ```
 
 Runs the optimizer without the TUI.
+
+For a quick, fixed-work throughput check with 16 workers, run
+`python3 bench/trials16.py`. Pass `--layout` to select a layout, `--config`
+to use different settings, `--before` to compare an older executable, and
+`--caps` to override SFB/SFS limits. `--steps`, `--restarts`, `--passes`,
+and `--adaptive` control the workload.
 
 | Option | Effect |
 |---|---|

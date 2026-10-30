@@ -2285,6 +2285,708 @@ fn moving_a_wildcard_key_updates_incremental_alt_finger_metrics() {
 }
 
 #[test]
+fn alternate_fingers_preserve_unigrams_at_boundaries_and_gaps() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("plain.dat"),
+    )
+    .unwrap();
+    // No input below contains q or w, so the rule activates the contextual
+    // path without changing any key's finger.
+    let rules = alt_fingers::AltRules::parse("q_w (LM LI)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let inputs: &[&[u8]] = &[
+        b"a",
+        b"as",
+        b"asd",
+        b"asdf",
+        b"asdf asdf",
+        b"as\ndf",
+        b"asd!fg",
+        b"asdf!",
+        b"as!d",
+        b"aaaa",
+        b"asdf asdf jkl;",
+    ];
+    let capped = NgramLimits {
+        trigrams: Some(1),
+        tetragrams: Some(1),
+        pentagrams: Some(1),
+        ..NgramLimits::default()
+    };
+    for order in [4, 5] {
+        for &input in inputs {
+            let mut config = CorpusConfig::default();
+            config.order = order;
+            let (source, _, _) = count_reader(
+                Cursor::new(input),
+                &config,
+                input.len() as u64,
+                &mut |_, _| {},
+            )
+            .unwrap();
+            let mut text = counts_text(&source);
+            if order == 4 {
+                text.truncate(text.rfind(",\"fivegrams\":").unwrap());
+                text.push('}');
+            }
+            for limits in [NgramLimits::default(), capped] {
+                let corpus = action_ngrams::NgramCorpus::from_text_with_limits(
+                    &text,
+                    Path::new("inline.json"),
+                    limits,
+                )
+                .unwrap();
+                let result = corpus
+                    .evaluate_with_policy(
+                        &layout,
+                        &AtomicBool::new(false),
+                        &AtomicU64::new(0),
+                        alts,
+                        false,
+                        |_, _, _| 0.0,
+                    )
+                    .unwrap();
+                for (slot, key) in layout.slots.iter().enumerate() {
+                    let action_keys::Binding::Text(bytes) = &key.binding else {
+                        continue;
+                    };
+                    if bytes.len() != 1 {
+                        continue;
+                    }
+                    let expected = source.uni[usize::from(bytes[0])] as f64;
+                    let physical = result.tables[0].get(&[slot][..]).copied().unwrap_or(0.0);
+                    let finger: f64 = result.finger_tables.as_ref().unwrap()[0]
+                        .iter()
+                        .filter(|(pattern, _)| pattern.slots == [slot])
+                        .map(|(_, &frequency)| frequency)
+                        .sum();
+                    assert_eq!(
+                        physical, expected,
+                        "order {order}, input {input:?}, {limits:?}, key {}",
+                        key.label
+                    );
+                    assert_eq!(
+                        finger, expected,
+                        "order {order}, input {input:?}, {limits:?}, key {}",
+                        key.label
+                    );
+                }
+                for (first, a) in layout.slots.iter().enumerate() {
+                    let action_keys::Binding::Text(a) = &a.binding else {
+                        continue;
+                    };
+                    if a.len() != 1 {
+                        continue;
+                    }
+                    for (second, b) in layout.slots.iter().enumerate() {
+                        let action_keys::Binding::Text(b) = &b.binding else {
+                            continue;
+                        };
+                        if b.len() != 1 {
+                            continue;
+                        }
+                        let expected =
+                            source.bi[(usize::from(a[0]) << 7) | usize::from(b[0])] as f64;
+                        let physical = result.tables[1]
+                            .get(&[first, second][..])
+                            .copied()
+                            .unwrap_or(0.0);
+                        let finger: f64 = result.finger_tables.as_ref().unwrap()[1]
+                            .iter()
+                            .filter(|(pattern, _)| pattern.slots == [first, second])
+                            .map(|(_, &frequency)| frequency)
+                            .sum();
+                        assert_eq!(physical, expected, "physical bigram {a:?}/{b:?}: order {order}, input {input:?}, {limits:?}");
+                        assert_eq!(
+                            finger, expected,
+                            "finger bigram {a:?}/{b:?}: order {order}, input {input:?}, {limits:?}"
+                        );
+                    }
+                }
+                for (pattern, &frequency) in &result.finger_tables.as_ref().unwrap()[1] {
+                    assert!(frequency >= 0.0);
+                    assert_eq!(
+                        pattern.fingers,
+                        pattern
+                            .slots
+                            .iter()
+                            .map(|&slot| layout.slots[slot].finger)
+                            .collect::<Vec<_>>()
+                    );
+                }
+                let total: f64 = result.tables[0]
+                    .entries()
+                    .map(|(_, frequency)| frequency)
+                    .sum();
+                assert_eq!(
+                    total, result.presses,
+                    "order {order}, input {input:?}, {limits:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn fivegram_frequencies_cannot_determine_both_outer_finger_contexts() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-context.dat"),
+    )
+    .unwrap();
+    let defaults: Vec<_> = layout.slots.iter().map(|slot| slot.finger).collect();
+    let rules = alt_fingers::AltRules::parse_letters("a_f (LP LM) g_x (LR LR)").unwrap();
+    let sequences = [["aufgvx", "qufgvz"], ["aufgvz", "qufgvx"]];
+    let mut tables = Vec::new();
+    let mut same_finger_fg = Vec::new();
+    for group in sequences {
+        let mut totals = [
+            BTreeMap::<Vec<u8>, usize>::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        ];
+        let mut same = 0;
+        for text in group {
+            let text = text.as_bytes();
+            for n in 1..=5 {
+                for gram in text.windows(n) {
+                    *totals[n - 1].entry(gram.to_vec()).or_default() += 1;
+                }
+            }
+            let mapped: Vec<_> = text
+                .iter()
+                .map(|&byte| {
+                    layout.slots.iter().position(|slot| {
+                matches!(&slot.binding, action_keys::Binding::Text(value) if value == &[byte])
+            })
+                })
+                .collect();
+            let fingers = alt_fingers::resolve(&rules, text, &mapped, &defaults);
+            same += usize::from(fingers[2] == fingers[3]);
+        }
+        tables.push(totals);
+        same_finger_fg.push(same);
+    }
+    assert_eq!(tables[0], tables[1]);
+    assert_eq!(same_finger_fg, [1, 0]);
+}
+
+#[test]
+fn alternate_finger_bigrams_keep_both_lookahead_and_history() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-bigrams.dat"),
+    )
+    .unwrap();
+    let f = layout
+        .slots
+        .iter()
+        .position(|slot| slot.label == "f")
+        .unwrap();
+    let g = layout
+        .slots
+        .iter()
+        .position(|slot| slot.label == "g")
+        .unwrap();
+    for (input, rule, expected, order) in [
+        (b"afgvx".as_slice(), "g_x (LM LR)", [3, 2], 5),
+        (b"afgvx".as_slice(), "g_x (LM LR)", [3, 2], 4),
+        (b"fgvx".as_slice(), "g_x (LM LR)", [3, 2], 4),
+        (b"asfgz".as_slice(), "a_f (LP LM)", [2, 3], 5),
+        (b"afgvx".as_slice(), "asf (. . LM) g_x (LM LR)", [3, 2], 5),
+        (b"asfgzx".as_slice(), "asf (. . LM) g_x (LM LR)", [2, 3], 5),
+        (b"fgvxd".as_slice(), "g_x (LM LM)", [3, 3], 5),
+    ] {
+        let mut config = CorpusConfig::default();
+        config.order = order;
+        let source = count_reader(
+            Cursor::new(input),
+            &config,
+            input.len() as u64,
+            &mut |_, _| {},
+        )
+        .unwrap()
+        .0;
+        let mut text = counts_text(&source);
+        if order == 4 {
+            text.truncate(text.rfind(",\"fivegrams\":").unwrap());
+            text.push('}');
+        }
+        let corpus =
+            action_ngrams::NgramCorpus::from_text(&text, Path::new("alternate-bigrams.json"))
+                .unwrap();
+        let rules = alt_fingers::AltRules::parse(rule).unwrap();
+        let alts = alt_fingers::AltPolicy {
+            enabled: true,
+            positions: alt_fingers::AltRules {
+                rowstag: rules.clone(),
+                colstag: rules,
+            }
+            .intern(),
+        };
+        let result = corpus
+            .evaluate_with_policy(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                alts,
+                false,
+                |_, _, _| 0.0,
+            )
+            .unwrap();
+        let pattern = action_ngrams::FingerPattern {
+            slots: vec![f, g],
+            fingers: expected.into(),
+        };
+        assert_eq!(
+            result.finger_tables.as_ref().unwrap()[1].get(&pattern),
+            Some(&1.0),
+            "{rule}, order {order}, {input:?}"
+        );
+        if input == b"afgvx" && rule == "g_x (LM LR)" {
+            let (raw, totals) =
+                action_ngrams::raw_from_counts(&layout, &result, &Weights::default(), false);
+            close(metrics_totals(&raw, &totals).v[SFB], 0.0);
+        }
+    }
+}
+
+#[test]
+fn alternate_bigram_lookahead_works_with_unrelated_action_keys() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = text \"h\"\n",
+        Path::new("alternate-action-bigrams.dat"),
+    ).unwrap();
+    let input = b"afgvx";
+    let source = count_reader(
+        Cursor::new(input),
+        &CorpusConfig::default(),
+        input.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let corpus =
+        action_ngrams::NgramCorpus::from_text(&counts_text(&source), Path::new("inline.json"))
+            .unwrap();
+    let rules = alt_fingers::AltRules::parse("g_x (LM LR)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let result = corpus
+        .evaluate_with_policy(
+            &layout,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            alts,
+            false,
+            |_, _, _| 0.0,
+        )
+        .unwrap();
+    let key = |name| {
+        layout
+            .slots
+            .iter()
+            .position(|slot| slot.label == name)
+            .unwrap()
+    };
+    let expected = action_ngrams::FingerPattern {
+        slots: vec![key("f"), key("g")],
+        fingers: vec![3, 2],
+    };
+    assert_eq!(result.finger_tables.unwrap()[1].get(&expected), Some(&1.0));
+}
+
+#[test]
+fn alternate_bigram_corrections_match_five_key_reference() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-reference.dat"),
+    )
+    .unwrap();
+    let defaults: Vec<_> = layout.slots.iter().map(|slot| slot.finger).collect();
+    let cases = [
+        ("g_x (LM LR)", true),
+        ("asf (. . LM) g_x (LM LR)", true),
+        ("fg (LR LI) g_x (LM LR)", true),
+        ("afg (. . LR) g_x (LM LR)", true),
+        ("afg (LR . LR) g_x (LM LR)", false),
+        ("g_x (LM LM)", false),
+    ];
+    for (rule_text, expected_safe) in cases {
+        let input = b"afgvx";
+        let rules = alt_fingers::AltRules::parse(rule_text).unwrap();
+        let alts = alt_fingers::AltPolicy {
+            enabled: true,
+            positions: alt_fingers::AltRules {
+                rowstag: rules.clone(),
+                colstag: rules,
+            }
+            .intern(),
+        };
+        let mapped: Vec<_> = input
+            .iter()
+            .map(|&byte| {
+                layout.slots.iter().position(|slot| {
+            matches!(&slot.binding, action_keys::Binding::Text(text) if text == &[byte])
+        })
+            })
+            .collect();
+        let compiled = alts.compile(&layout).unwrap();
+        let safe = compiled.bigram_can_use_lookahead(input, &mapped, 2, &defaults);
+        assert_eq!(safe, expected_safe, "{rule_text}");
+        if !safe {
+            continue;
+        }
+        let fingers = compiled.resolve(input, &mapped, &defaults);
+        let expected = action_ngrams::FingerPattern {
+            slots: vec![mapped[1].unwrap(), mapped[2].unwrap()],
+            fingers: vec![fingers[1].unwrap(), fingers[2].unwrap()],
+        };
+        let source = count_reader(
+            Cursor::new(input),
+            &CorpusConfig::default(),
+            input.len() as u64,
+            &mut |_, _| {},
+        )
+        .unwrap()
+        .0;
+        let corpus =
+            action_ngrams::NgramCorpus::from_text(&counts_text(&source), Path::new("inline.json"))
+                .unwrap();
+        let actual = corpus
+            .evaluate_with_policy(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                alts,
+                false,
+                |_, _, _| 0.0,
+            )
+            .unwrap();
+        assert_eq!(
+            actual.finger_tables.unwrap()[1].get(&expected),
+            Some(&1.0),
+            "{rule_text}"
+        );
+    }
+}
+
+#[test]
+fn alternate_bigram_correction_preserves_fractional_frequencies() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-fraction.dat"),
+    )
+    .unwrap();
+    let corpus = action_ngrams::NgramCorpus::from_text(
+        r#"{"letters":{"a":0.3,"f":0.3,"g":0.3,"v":0.3,"x":0.3},
+        "bigrams":{"af":0.3,"fg":0.3,"gv":0.3,"vx":0.3},
+        "trigrams":{"afg":0.3,"fgv":0.3,"gvx":0.3},
+        "fourgrams":{"afgv":0.3,"fgvx":0.3},"fivegrams":{"afgvx":0.3}}"#,
+        Path::new("alternate-fraction.json"),
+    )
+    .unwrap();
+    let rules = alt_fingers::AltRules::parse("g_x (LM LR)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let result = corpus
+        .evaluate_with_policy(
+            &layout,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            alts,
+            false,
+            |_, _, _| 0.0,
+        )
+        .unwrap();
+    let key = |name| {
+        layout
+            .slots
+            .iter()
+            .position(|slot| slot.label == name)
+            .unwrap()
+    };
+    let expected = action_ngrams::FingerPattern {
+        slots: vec![key("f"), key("g")],
+        fingers: vec![3, 2],
+    };
+    close(
+        *result.finger_tables.unwrap()[1].get(&expected).unwrap(),
+        0.3,
+    );
+    close(
+        *result.tables[1].get(&[key("f"), key("g")][..]).unwrap(),
+        0.3,
+    );
+}
+
+#[test]
+fn alternate_bigram_lookahead_survives_corpus_cache_roundtrip() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-cache.dat"),
+    )
+    .unwrap();
+    let input = b"afgvx afgvx afgvx";
+    let source = count_reader(
+        Cursor::new(input),
+        &CorpusConfig::default(),
+        input.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let text = counts_text(&source);
+    let dir = TestDir::new();
+    let path = dir.0.join("alternate.json");
+    fs::write(&path, &text).unwrap();
+    let load = || {
+        action_ngrams::NgramCorpus::from_text_progress_with_limits(
+            &text,
+            &path,
+            NgramLimits::default(),
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap()
+    };
+    let rules = alt_fingers::AltRules::parse("g_x (LM LR)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let evaluate = |corpus: &action_ngrams::NgramCorpus| {
+        corpus
+            .evaluate_with_policy(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                alts,
+                false,
+                |_, _, _| 0.0,
+            )
+            .unwrap()
+    };
+    let first = evaluate(&load());
+    let second = evaluate(&load());
+    let key = |name| {
+        layout
+            .slots
+            .iter()
+            .position(|slot| slot.label == name)
+            .unwrap()
+    };
+    let expected = action_ngrams::FingerPattern {
+        slots: vec![key("f"), key("g")],
+        fingers: vec![3, 2],
+    };
+    assert_eq!(
+        first.finger_tables.as_ref().unwrap()[1].get(&expected),
+        Some(&3.0)
+    );
+    let (raw, totals) = action_ngrams::raw_from_counts(&layout, &first, &Weights::default(), false);
+    close(metrics_totals(&raw, &totals).v[SFB], 0.0);
+    assert_eq!(first.finger_tables, second.finger_tables);
+    assert_eq!(first.tables, second.tables);
+
+    // A later evaluation may ask for lookahead after the corpus was already
+    // turned into centered windows for a different alternate policy.
+    let earlier = alt_fingers::AltRules::parse("a_f (LP LM)").unwrap();
+    let earlier = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: earlier.clone(),
+            colstag: earlier,
+        }
+        .intern(),
+    };
+    let program = combos::Program::for_contexts(&layout, false.into(), earlier, 5)
+        .unwrap()
+        .unwrap();
+    let centered = load().contexts_for(&program).unwrap();
+    let from_centered = evaluate(&centered);
+    assert_eq!(first.finger_tables, from_centered.finger_tables);
+    assert_eq!(first.tables, from_centered.tables);
+}
+
+#[test]
+fn alternate_bigram_corrections_preserve_physical_counts() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("alternate-bigrams.dat"),
+    )
+    .unwrap();
+    let rules = alt_fingers::AltRules::parse("g_x (LM LR)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let limits = [
+        NgramLimits::default(),
+        NgramLimits {
+            trigrams: Some(1),
+            tetragrams: Some(1),
+            pentagrams: Some(1),
+            ..NgramLimits::default()
+        },
+    ];
+    for input in [
+        b"afgvx afgvx".as_slice(),
+        b"fgvx fgvz",
+        b"afg!vx",
+        b"afgvxfgvx",
+    ] {
+        let source = count_reader(
+            Cursor::new(input),
+            &CorpusConfig::default(),
+            input.len() as u64,
+            &mut |_, _| {},
+        )
+        .unwrap()
+        .0;
+        for limit in limits {
+            let corpus = action_ngrams::NgramCorpus::from_text_with_limits(
+                &counts_text(&source),
+                Path::new("alternate-bigrams.json"),
+                limit,
+            )
+            .unwrap();
+            let result = corpus
+                .evaluate_with_policy(
+                    &layout,
+                    &AtomicBool::new(false),
+                    &AtomicU64::new(0),
+                    alts,
+                    false,
+                    |_, _, _| 0.0,
+                )
+                .unwrap();
+            for (first, a) in layout.slots.iter().enumerate() {
+                let action_keys::Binding::Text(a) = &a.binding else {
+                    continue;
+                };
+                if a.len() != 1 {
+                    continue;
+                }
+                for (second, b) in layout.slots.iter().enumerate() {
+                    let action_keys::Binding::Text(b) = &b.binding else {
+                        continue;
+                    };
+                    if b.len() != 1 {
+                        continue;
+                    }
+                    let expected = source.bi[(usize::from(a[0]) << 7) | usize::from(b[0])] as f64;
+                    let physical = result.tables[1]
+                        .get(&[first, second][..])
+                        .copied()
+                        .unwrap_or(0.0);
+                    let finger: f64 = result.finger_tables.as_ref().unwrap()[1]
+                        .iter()
+                        .filter(|(pattern, _)| pattern.slots == [first, second])
+                        .map(|(_, &count)| count)
+                        .sum();
+                    assert_eq!(
+                        physical, expected,
+                        "physical {a:?}/{b:?}: {input:?}, {limit:?}"
+                    );
+                    assert_eq!(finger, expected, "finger {a:?}/{b:?}: {input:?}, {limit:?}");
+                }
+            }
+            for (&count, pattern) in result.finger_tables.as_ref().unwrap()[1]
+                .values()
+                .zip(result.finger_tables.as_ref().unwrap()[1].keys())
+            {
+                assert!(count >= 0.0, "negative {pattern:?}: {input:?}, {limit:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn alternate_fingers_preserve_the_penultimate_keys_effective_finger() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("plain.dat"),
+    )
+    .unwrap();
+    let rules = alt_fingers::AltRules::parse("df (LR LI)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let d = layout
+        .slots
+        .iter()
+        .position(|slot| slot.label == "d")
+        .unwrap();
+    for input in [b"df".as_slice(), b"df!", b"df!a"] {
+        let (source, _, _) = count_reader(
+            Cursor::new(input),
+            &CorpusConfig::default(),
+            input.len() as u64,
+            &mut |_, _| {},
+        )
+        .unwrap();
+        let corpus =
+            action_ngrams::NgramCorpus::from_text(&counts_text(&source), Path::new("inline.json"))
+                .unwrap();
+        let result = corpus
+            .evaluate_with_policy(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                alts,
+                false,
+                |_, _, _| 0.0,
+            )
+            .unwrap();
+        let pattern = action_ngrams::FingerPattern {
+            slots: vec![d],
+            fingers: vec![1], // LR
+        };
+        assert_eq!(
+            result.finger_tables.unwrap()[0].get(&pattern),
+            Some(&1.0),
+            "{input:?}"
+        );
+    }
+}
+
+#[test]
 fn cache_metadata_and_higher_orders() {
     let dir = TestDir::new();
     let raw = dir.0.join("raw.txt");

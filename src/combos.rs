@@ -143,6 +143,9 @@ pub(crate) struct Program {
     /// No combos: alternate fingers alone asked for centred contexts, and
     /// every context is planned (`ChordPlan::ahead`).
     ahead: bool,
+    /// Additional existing five-gram windows can correct unambiguous
+    /// two-key lookahead in alternate-finger bigrams.
+    alt_bigram_lookahead: bool,
 }
 
 fn has_byte(set: &[u64; 4], byte: u8) -> bool {
@@ -281,9 +284,10 @@ impl Program {
     ) -> Result<Option<Self>, String> {
         if policy.enabled && !layout.combos.is_empty() {
             Self::new(layout).map(Some)
-        } else if order >= 4 && alts.active(layout) {
-            Ok(Some(Self {
+        } else if order >= 4 {
+            Ok(alts.compile(layout).map(|compiled| Self {
                 ahead: true,
+                alt_bigram_lookahead: compiled.has_bigram_lookahead(),
                 ..Self::assemble(Vec::new(), layout.slots.len())
             }))
         } else {
@@ -297,12 +301,17 @@ impl Program {
         self.ahead
     }
 
+    pub(crate) fn alt_bigram_lookahead(&self) -> bool {
+        self.alt_bigram_lookahead
+    }
+
     /// This program for an optimizer search: alternate fingers then count
     /// each key at its own context, which is several times faster and
     /// slightly less exact.
     pub(crate) fn for_search(self) -> Self {
         Self {
             ahead: false,
+            alt_bigram_lookahead: false,
             ..self
         }
     }
@@ -322,6 +331,7 @@ impl Program {
             first_bytes,
             open_bytes,
             ahead: false,
+            alt_bigram_lookahead: false,
         }
     }
 

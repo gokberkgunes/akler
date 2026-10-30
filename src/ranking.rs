@@ -10,7 +10,95 @@ const BASE_RANK_COUNT: usize = N_METRICS + 4;
 
 const RANK_MANA_START: usize = BASE_RANK_COUNT;
 
-const RANK_COUNT: usize = BASE_RANK_COUNT + mana2_metrics::N_STATS;
+const RANK_PRESET_START: usize = RANK_MANA_START + mana2_metrics::N_STATS;
+
+const RANK_COUNT: usize = RANK_PRESET_START + RANK_PRESETS.len();
+
+struct RankPreset {
+    name: &'static str,
+    bigram: &'static [usize],
+    skipgram: &'static [usize],
+}
+
+// Values are 4 × the bigram percentage + the matching skipgram percentage.
+// The slices also let aggregate jumps include each disjoint category once.
+const RANK_PRESETS: &[RankPreset] = &[
+    RankPreset {
+        name: "SFBS",
+        bigram: &[SFB],
+        skipgram: &[SFS],
+    },
+    RankPreset {
+        name: "SKBS",
+        bigram: &[SKB],
+        skipgram: &[SKS],
+    },
+    RankPreset {
+        name: "FSBS",
+        bigram: &[FSB],
+        skipgram: &[FSS],
+    },
+    RankPreset {
+        name: "HSBS",
+        bigram: &[HSB],
+        skipgram: &[HSS],
+    },
+    RankPreset {
+        name: "FJBS",
+        bigram: &[DAFJB, CAFJB, DNFJB, CNFJB],
+        skipgram: &[DAFJS, CAFJS, DNFJS, CNFJS],
+    },
+    RankPreset {
+        name: "HJBS",
+        bigram: &[DAHJB, CAHJB, DNHJB, CNHJB],
+        skipgram: &[DAHJS, CAHJS, DNHJS, CNHJS],
+    },
+    RankPreset {
+        name: "LSBS",
+        bigram: &[LSB],
+        skipgram: &[LSS],
+    },
+    RankPreset {
+        name: "daFJBS",
+        bigram: &[DAFJB],
+        skipgram: &[DAFJS],
+    },
+    RankPreset {
+        name: "caFJBS",
+        bigram: &[CAFJB],
+        skipgram: &[CAFJS],
+    },
+    RankPreset {
+        name: "dnFJBS",
+        bigram: &[DNFJB],
+        skipgram: &[DNFJS],
+    },
+    RankPreset {
+        name: "cnFJBS",
+        bigram: &[CNFJB],
+        skipgram: &[CNFJS],
+    },
+    RankPreset {
+        name: "daHJBS",
+        bigram: &[DAHJB],
+        skipgram: &[DAHJS],
+    },
+    RankPreset {
+        name: "caHJBS",
+        bigram: &[CAHJB],
+        skipgram: &[CAHJS],
+    },
+    RankPreset {
+        name: "dnHJBS",
+        bigram: &[DNHJB],
+        skipgram: &[DNHJS],
+    },
+    RankPreset {
+        name: "cnHJBS",
+        bigram: &[CNHJB],
+        skipgram: &[CNHJS],
+    },
+];
 
 const RANK_Y: usize = 3;
 
@@ -19,7 +107,7 @@ const RANK_DATA: usize = RANK_Y + 3;
 // The ordinary ranker only exposes AKLER's own metrics. Mana2 has a separate
 // catalog and entry point below so its statistics cannot leak into the normal
 // column picker or scoring mode.
-const RANK_ORDER: [usize; BASE_RANK_COUNT - 8] = [
+const RANK_ORDER: [usize; BASE_RANK_COUNT] = [
     RANK_SCORE,
     SFB,
     SKB,
@@ -32,7 +120,15 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT - 8] = [
     FSS,
     HSS,
     RANK_FJB,
+    DAFJB,
+    CAFJB,
+    DNFJB,
+    CNFJB,
     RANK_FJS,
+    DAFJS,
+    CAFJS,
+    DNFJS,
+    CNFJS,
     LSB,
     LSS,
     REDIR,
@@ -62,7 +158,7 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT - 8] = [
     RANK_COVERAGE,
 ];
 
-fn rank_catalog(mana2: bool) -> Vec<usize> {
+fn rank_base_catalog(mana2: bool) -> Vec<usize> {
     if mana2 {
         std::iter::once(RANK_SCORE)
             .chain(
@@ -76,8 +172,17 @@ fn rank_catalog(mana2: bool) -> Vec<usize> {
     }
 }
 
+fn rank_catalog(mana2: bool) -> Vec<usize> {
+    rank_base_catalog(mana2)
+        .into_iter()
+        .chain(RANK_PRESET_START..RANK_COUNT)
+        .collect()
+}
+
 fn rank_name(m: usize) -> &'static str {
-    if m >= RANK_MANA_START {
+    if m >= RANK_PRESET_START {
+        RANK_PRESETS[m - RANK_PRESET_START].name
+    } else if m >= RANK_MANA_START {
         match mana2_metrics::STAT_IDS[m - RANK_MANA_START] {
             // These IDs overlap with akler's detailed column names. Prefix
             // them so both metrics remain selectable and serializable.
@@ -105,7 +210,7 @@ fn rank_name(m: usize) -> &'static str {
 }
 
 fn displayed_rank_name(m: usize, mana2: bool) -> &'static str {
-    if mana2 && m >= RANK_MANA_START {
+    if mana2 && (RANK_MANA_START..RANK_PRESET_START).contains(&m) {
         match mana2_metrics::STAT_IDS[m - RANK_MANA_START] {
             "sfb" => "SFB",
             "sfs" => "SFS",
@@ -133,7 +238,7 @@ fn displayed_rank_name(m: usize, mana2: bool) -> &'static str {
 fn rank_positive(m: usize) -> bool {
     m == RANK_COVERAGE
         || (m < N_METRICS && higher_better(m))
-        || (m >= RANK_MANA_START
+        || ((RANK_MANA_START..RANK_PRESET_START).contains(&m)
             && mana2_higher_better(mana2_metrics::STAT_IDS[m - RANK_MANA_START]))
 }
 
@@ -148,7 +253,7 @@ fn rank_percent(m: usize) -> bool {
     if m == RANK_COVERAGE || m == RANK_FJB || m == RANK_FJS {
         return true;
     }
-    if m < RANK_MANA_START {
+    if !(RANK_MANA_START..RANK_PRESET_START).contains(&m) {
         return false;
     }
     let id = mana2_metrics::STAT_IDS[m - RANK_MANA_START];
@@ -251,7 +356,15 @@ impl RankRow {
 }
 
 fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
-    if m >= RANK_MANA_START {
+    if m >= RANK_PRESET_START {
+        let preset = &RANK_PRESETS[m - RANK_PRESET_START];
+        let sum = |metrics: &[usize]| {
+            metrics
+                .iter()
+                .try_fold(0.0, |sum, &id| Some(sum + rank_value(row, id)?))
+        };
+        Some(4.0 * sum(preset.bigram)? + sum(preset.skipgram)?)
+    } else if m >= RANK_MANA_START {
         let raw = row.raw().1.as_ref()?;
         let stats = mana2_rank_stats(row, raw);
         Some(stats.values[m - RANK_MANA_START])
@@ -988,7 +1101,12 @@ fn load_ranking_progress_for_mode(
         errors,
         warnings,
         columns: if is_mana2 || scoring == "aklgg" {
-            default_mana2_rank_columns()
+            let saved = if is_mana2 {
+                rank_settings_for_save()?.1
+            } else {
+                config.rank_columns
+            };
+            mana2_rank_columns_with_presets(&saved)
         } else {
             config.rank_columns
         },
@@ -1014,13 +1132,29 @@ fn persist_hidden_rows(rows: &BTreeSet<PathBuf>) -> Option<String> {
     })
 }
 
-/// Save the visible columns, as the settings tab does; AKL.GG's catalog
-/// keeps its defaults.
+/// Save the visible columns; AKL.GG's other columns remain session-only.
 fn persist_hidden_columns(columns: &RankColumns) -> Option<String> {
-    if columns.mana2 {
-        return None;
-    }
-    save_rank_columns(&columns.hidden).err().map(|error| {
+    let save = if columns.mana2 {
+        rank_settings_for_save().and_then(|(_, mut saved, _)| {
+            let before = saved;
+            let normal_history = columns.history.iter().chain(&columns.redo).any(|item| {
+                matches!(item, Hidden::Column(id) if *id != RANK_SCORE && RANK_ORDER.contains(id))
+            });
+            if normal_preset_view(&columns.hidden) || normal_history {
+                for &id in &RANK_ORDER {
+                    saved[id] = columns.hidden[id];
+                }
+            }
+            saved[RANK_PRESET_START..].copy_from_slice(&columns.hidden[RANK_PRESET_START..]);
+            if saved != before {
+                save_rank_columns(&saved)?;
+            }
+            Ok(())
+        })
+    } else {
+        save_rank_columns(&columns.hidden)
+    };
+    save.err().map(|error| {
         format!(
             "Column visibility changed for this session only; could not save {APP_CONFIG_FILE}: {error}"
         )
@@ -1097,7 +1231,7 @@ impl RankColumns {
     }
 
     fn visible(&self) -> Vec<usize> {
-        rank_catalog(self.mana2)
+        rank_catalog_for_selection(self.mana2, &self.hidden)
             .into_iter()
             .filter(|&m| !self.hidden[m])
             .collect()
@@ -1265,10 +1399,86 @@ fn default_mana2_rank_columns() -> [bool; RANK_COUNT] {
     ];
     std::array::from_fn(|metric| {
         metric != RANK_SCORE
-            && (metric < RANK_MANA_START
+            && (!(RANK_MANA_START..RANK_PRESET_START).contains(&metric)
                 || !wanted.contains(&mana2_metrics::STAT_IDS[metric - RANK_MANA_START]))
     })
 }
+
+// The user's normal ranker selection before switching to the 4:1 view.
+const NORMAL_RANK_PRESET: &[usize] = &[
+    RANK_SCORE,
+    FSB,
+    HSB,
+    RANK_FJB,
+    DAFJB,
+    CAFJB,
+    DNFJB,
+    CNFJB,
+    RANK_FJS,
+    LSB,
+    REDIR,
+    RANK_PRESET_START, // SFBS was also selected.
+];
+
+fn normal_preset_columns() -> [bool; RANK_COUNT] {
+    std::array::from_fn(|metric| !NORMAL_RANK_PRESET.contains(&metric))
+}
+
+fn normal_preset_view(hidden: &[bool; RANK_COUNT]) -> bool {
+    let normal_metrics = RANK_ORDER.iter().any(|&id| id != RANK_SCORE && !hidden[id]);
+    let no_mana2_columns = hidden[RANK_MANA_START..RANK_PRESET_START]
+        .iter()
+        .all(|&is_hidden| is_hidden);
+    let original_subset = (0..RANK_COUNT).all(|id| hidden[id] || NORMAL_RANK_PRESET.contains(&id));
+    // SFBS is part of the original selection and keeps its AKLER column
+    // catalog recognizable when additional ordinary columns are enabled.
+    normal_metrics && no_mana2_columns && (original_subset || !hidden[RANK_PRESET_START])
+}
+
+fn rank_catalog_for_selection(mana2: bool, hidden: &[bool; RANK_COUNT]) -> Vec<usize> {
+    rank_catalog(mana2 && !normal_preset_view(hidden))
+}
+
+fn mana2_rank_columns_with_presets(saved: &[bool; RANK_COUNT]) -> [bool; RANK_COUNT] {
+    if normal_preset_view(saved) {
+        return *saved;
+    }
+    let preset_only = RANK_ORDER.iter().all(|&id| id == RANK_SCORE || saved[id])
+        && saved[RANK_PRESET_START..].iter().any(|&hidden| !hidden);
+    let mut columns = if preset_only {
+        let mut columns = [true; RANK_COUNT];
+        columns[RANK_SCORE] = saved[RANK_SCORE];
+        columns
+    } else {
+        default_mana2_rank_columns()
+    };
+    columns[RANK_PRESET_START..].copy_from_slice(&saved[RANK_PRESET_START..]);
+    columns
+}
+
+fn four_to_one_preset_columns() -> [bool; RANK_COUNT] {
+    let mut hidden = [true; RANK_COUNT];
+    hidden[RANK_SCORE] = false;
+    hidden[RANK_PRESET_START..].fill(false);
+    hidden
+}
+
+#[derive(Clone, Copy)]
+enum RankViewPreset {
+    Normal,
+    FourToOne,
+}
+
+impl RankViewPreset {
+    fn columns(self) -> [bool; RANK_COUNT] {
+        match self {
+            Self::Normal => normal_preset_columns(),
+            Self::FourToOne => four_to_one_preset_columns(),
+        }
+    }
+}
+
+const RANK_VIEW_PRESETS: [RankViewPreset; 2] = [RankViewPreset::Normal, RankViewPreset::FourToOne];
 
 fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
     let mut hidden = [true; RANK_COUNT];
@@ -1288,21 +1498,35 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
                 continue;
             }
             let canonical = match name.to_ascii_uppercase().as_str() {
+                "SFB+SFS" | "SF-BS" => "SFBS",
+                "SKB+SKS" | "SK-BS" => "SKBS",
+                "FSB+FSS" | "FS-BS" => "FSBS",
+                "HSB+HSS" | "HS-BS" => "HSBS",
+                "FJB+FJS" | "FJ-BS" => "FJBS",
+                "HJB+HJS" | "HJ-BS" => "HJBS",
+                "LSB+LSS" | "LS-BS" => "LSBS",
+                "DAFJ-BS" => "daFJBS",
+                "CAFJ-BS" => "caFJBS",
+                "DNFJ-BS" => "dnFJBS",
+                "CNFJ-BS" => "cnFJBS",
+                "DAHJ-BS" => "daHJBS",
+                "CAHJ-BS" => "caHJBS",
+                "DNHJ-BS" => "dnHJBS",
+                "CNHJ-BS" => "cnHJBS",
                 "DFSB" | "CFSB" | "DFJB" | "CFJB" | "DFAB" | "CFAB" | "DSB" | "CSB" | "DFNB"
-                | "CFNB" | "DAFJB" | "CAFJB" | "DNFJB" | "CNFJB" => "FJB",
+                | "CFNB" => "FJB",
                 "DFSS" | "CFSS" | "DFJS" | "CFJS" | "DFAS" | "CFAS" | "DSS" | "CSS" | "DFNS"
-                | "CFNS" | "DAFJS" | "CAFJS" | "DNFJS" | "CNFJS" => "FJS",
+                | "CFNS" => "FJS",
                 _ => name,
             };
-            let metric = RANK_ORDER
-                .iter()
-                .copied()
+            let metric = rank_catalog(false)
+                .into_iter()
                 .find(|&metric| rank_name(metric).eq_ignore_ascii_case(canonical))
                 .ok_or_else(|| format!("unknown ranker column {name:?}"))?;
             hidden[metric] = false;
         }
     }
-    if RANK_ORDER.iter().all(|&id| hidden[id]) {
+    if rank_catalog(false).iter().all(|&id| hidden[id]) {
         return Err("select at least one ranker column".into());
     }
     Ok(hidden)
@@ -1310,9 +1534,8 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
 
 #[cfg(test)]
 fn rank_columns_text(hidden: &[bool; RANK_COUNT]) -> String {
-    let names: Vec<_> = RANK_ORDER
-        .iter()
-        .copied()
+    let names: Vec<_> = rank_catalog(false)
+        .into_iter()
         .filter(|&metric| !hidden[metric])
         .map(rank_name)
         .collect();
@@ -1324,7 +1547,7 @@ fn rank_columns_text(hidden: &[bool; RANK_COUNT]) -> String {
 
 fn toggle_rank_column(hidden: &mut [bool; RANK_COUNT], metric: usize, mana2: bool) {
     if hidden[metric]
-        || rank_catalog(mana2)
+        || rank_catalog_for_selection(mana2, hidden)
             .iter()
             .filter(|&&id| !hidden[id])
             .count()
@@ -1339,6 +1562,7 @@ enum RankTab {
     Rankings,
     Layouts,
     Columns,
+    Presets,
 }
 
 /// Options as "key Label value", each clickable as its key; they wrap onto
@@ -1363,8 +1587,18 @@ fn draw_rank_tabs(canvas: &mut Canvas, active: RankTab) {
         RankTab::Rankings => 0,
         RankTab::Layouts => 1,
         RankTab::Columns => 2,
+        RankTab::Presets => 3,
     };
-    workspace_tabs_at(canvas, index, &[" [1] Rankings ", " [2] Layouts ", " [3] Columns "]);
+    workspace_tabs_at(
+        canvas,
+        index,
+        &[
+            " [1] Rankings ",
+            " [2] Layouts ",
+            " [3] Columns ",
+            " [4] Presets ",
+        ],
+    );
 }
 
 #[derive(Clone)]
@@ -1372,6 +1606,7 @@ struct RankSelection {
     columns: [bool; RANK_COUNT],
     layouts: BTreeSet<PathBuf>,
     filters: RankFilters,
+    preset_applied: bool,
 }
 
 fn rank_layout_choices(rows: &[RankRow], filter: &str) -> Vec<usize> {
@@ -1453,23 +1688,37 @@ fn choose_rank_settings(
     let mut layout_scroll = (layout_selected + 6).saturating_sub(term.size.1.max(1));
     let mut column_selected = 0;
     let mut column_scroll = 0;
+    let mut preset_selected = usize::from(draft.columns == four_to_one_preset_columns());
+    let mut preset_scroll = 0;
     let mut status = String::new();
-    let order = rank_catalog(mana2);
+    let normal_catalog = !mana2 || normal_preset_view(&draft.columns);
+    let columns_order = rank_catalog(!normal_catalog);
     loop {
         let choices = rank_layout_choices(rows, &filter);
+        let order = &columns_order;
         layout_selected = layout_selected.min(choices.len().saturating_sub(1));
         let layout_capacity = term.size.1.saturating_sub(5).max(1);
         let column_capacity = term.size.1.saturating_sub(4).max(1);
         layout_scroll = layout_scroll.min(choices.len().saturating_sub(layout_capacity));
-        column_scroll = column_scroll.min(order.len().saturating_sub(column_capacity));
+        column_scroll = column_scroll.min(columns_order.len().saturating_sub(column_capacity));
         let mut canvas = match active {
             RankTab::Layouts => Canvas::new(term.width(), term.size.1.max(6)),
-            RankTab::Columns | RankTab::Rankings => Canvas::new(term.width(), term.size.1.max(5)),
+            RankTab::Columns | RankTab::Presets | RankTab::Rankings => {
+                Canvas::new(term.width(), term.size.1.max(5))
+            }
         };
         match active {
             RankTab::Layouts => {
                 draw_rank_tabs(&mut canvas, active);
-                canvas.text(0, 1, &short("Space toggle · / search · ? help · 1/q apply · Esc cancel", canvas.w), MUTED);
+                canvas.text(
+                    0,
+                    1,
+                    &short(
+                        "Space toggle · / search · ? help · 1/q apply · Esc cancel",
+                        canvas.w,
+                    ),
+                    MUTED,
+                );
                 let magic = format!(
                     "[m Magic hidden: {}]",
                     if draft.filters.hide_magic {
@@ -1563,7 +1812,15 @@ fn choose_rank_settings(
             }
             RankTab::Columns | RankTab::Rankings => {
                 draw_rank_tabs(&mut canvas, active);
-                canvas.text(0, 1, &short("Space toggle · d compact · a all · 1/q apply · Esc cancel", canvas.w), MUTED);
+                canvas.text(
+                    0,
+                    1,
+                    &short(
+                        "Space toggle · d compact · a all · 1/q apply · Esc cancel",
+                        canvas.w,
+                    ),
+                    MUTED,
+                );
                 for index in column_scroll..(column_scroll + column_capacity).min(order.len()) {
                     let metric = order[index];
                     canvas.text(
@@ -1589,9 +1846,60 @@ fn choose_rank_settings(
                 }
                 canvas.text(1, 3, &short(&status, canvas.w.saturating_sub(2)), CYAN);
             }
+            RankTab::Presets => {
+                draw_rank_tabs(&mut canvas, active);
+                canvas.text(
+                    0,
+                    1,
+                    &short("↑/↓ choose · Enter/Space/1/q apply · Esc cancel", canvas.w),
+                    MUTED,
+                );
+                for (index, label) in ["Normal  YOUR ORIGINAL COLUMNS", "4:1     SCORE + 4:1 STATS"]
+                    .iter()
+                    .enumerate()
+                {
+                    let choice = format!(
+                        "{} {label}",
+                        if index == preset_selected { '›' } else { ' ' }
+                    );
+                    canvas.text(
+                        1,
+                        3 + index,
+                        &choice,
+                        if index == preset_selected { YELLOW } else { FG },
+                    );
+                    canvas.hit(
+                        Rect {
+                            x: 1,
+                            y: 3 + index,
+                            w: choice.chars().count(),
+                            h: 1,
+                        },
+                        Action::Item(index),
+                    );
+                }
+                let preset = RANK_VIEW_PRESETS[preset_selected].columns();
+                let names: Vec<_> = rank_catalog(false)
+                    .into_iter()
+                    .filter(|&id| !preset[id])
+                    .map(rank_name)
+                    .collect();
+                for (row, group) in names.chunks(7).enumerate() {
+                    let names = group.join("  ");
+                    canvas.text(
+                        1,
+                        7 + row,
+                        &short(&names, canvas.w.saturating_sub(2)),
+                        MUTED,
+                    );
+                }
+                canvas.text(1, 10, &short(&status, canvas.w.saturating_sub(2)), CYAN);
+            }
         }
         let (scroll, total, capacity) = if active == RankTab::Layouts {
             (&mut layout_scroll, choices.len(), layout_capacity)
+        } else if active == RankTab::Presets {
+            (&mut preset_scroll, 0, column_capacity)
         } else {
             (&mut column_scroll, order.len(), column_capacity)
         };
@@ -1613,26 +1921,45 @@ fn choose_rank_settings(
                     column_selected = index;
                     toggle_rank_column(&mut draft.columns, order[index], mana2);
                 }
+                RankTab::Presets => {
+                    preset_selected = index;
+                    event = Event::Char('1');
+                }
             }
         } else if let Some(Action::Setting(setting)) = pressed {
             event = Event::Char(if setting == 0 { 'm' } else { 't' });
+        }
+        if active == RankTab::Presets && matches!(event, Event::Enter | Event::Char(' ')) {
+            event = Event::Char('1');
         }
         match event {
             Event::Escape | Event::Quit => return Ok(None),
             Event::Char('2') => active = RankTab::Layouts,
             Event::Char('3') => active = RankTab::Columns,
+            Event::Char('4') => active = RankTab::Presets,
             Event::Char('1') | Event::Char('q') => {
-                if order.iter().all(|&id| draft.columns[id]) {
+                let apply_preset = active == RankTab::Presets;
+                if apply_preset {
+                    draft.columns = RANK_VIEW_PRESETS[preset_selected].columns();
+                }
+                if rank_catalog_for_selection(mana2, &draft.columns)
+                    .iter()
+                    .all(|&id| draft.columns[id])
+                {
                     status = "Select at least one column".into();
                     continue;
                 }
                 let saved = save_rank_selection(
-                    (!mana2).then_some(&draft.columns),
+                    (normal_catalog || apply_preset).then_some(&draft.columns),
+                    (!normal_catalog && !apply_preset).then_some(&draft.columns),
                     draft.filters,
                     &draft.layouts,
                 );
                 match saved {
-                    Ok(()) => return Ok(Some(draft)),
+                    Ok(()) => {
+                        draft.preset_applied = apply_preset;
+                        return Ok(Some(draft));
+                    }
                     Err(error) => {
                         status = error.to_string();
                         continue;
@@ -1644,6 +1971,7 @@ fn choose_rank_settings(
                 RankTab::Columns | RankTab::Rankings => {
                     column_selected = column_selected.saturating_sub(1)
                 }
+                RankTab::Presets => preset_selected = preset_selected.saturating_sub(1),
             },
             Event::Down | Event::Char('j') => match active {
                 RankTab::Layouts => {
@@ -1652,16 +1980,21 @@ fn choose_rank_settings(
                 RankTab::Columns | RankTab::Rankings => {
                     column_selected = (column_selected + 1).min(order.len().saturating_sub(1))
                 }
+                RankTab::Presets => {
+                    preset_selected = (preset_selected + 1).min(RANK_VIEW_PRESETS.len() - 1)
+                }
             },
             Event::Home => match active {
                 RankTab::Layouts => layout_selected = 0,
                 RankTab::Columns | RankTab::Rankings => column_selected = 0,
+                RankTab::Presets => preset_selected = 0,
             },
             Event::End => match active {
                 RankTab::Layouts => layout_selected = choices.len().saturating_sub(1),
                 RankTab::Columns | RankTab::Rankings => {
                     column_selected = order.len().saturating_sub(1)
                 }
+                RankTab::Presets => preset_selected = RANK_VIEW_PRESETS.len() - 1,
             },
             Event::Char(' ') | Event::Enter => match active {
                 RankTab::Layouts => {
@@ -1672,6 +2005,7 @@ fn choose_rank_settings(
                 RankTab::Columns | RankTab::Rankings => {
                     toggle_rank_column(&mut draft.columns, order[column_selected], mana2)
                 }
+                RankTab::Presets => {}
             },
             Event::Char('a') if active == RankTab::Layouts => {
                 for &index in &choices {
@@ -1709,19 +2043,26 @@ fn choose_rank_settings(
                     "n\tHide all layouts matching the name filter".into(),
                     "/\tFilter names and paths".into(),
                     "1 or q\tApply settings and return to rankings".into(),
-                    "2 / 3\tSwitch between layouts and columns".into(),
+                    "2 / 3 / 4\tSwitch layouts / columns / presets".into(),
                     "Esc\tCancel changes".into(),
                 ],
             )?,
             Event::Char('d') if active == RankTab::Columns => {
-                draft.columns = if mana2 {
-                    default_mana2_rank_columns()
-                } else {
+                let mut defaults = if normal_catalog {
                     default_rank_columns()
+                } else {
+                    default_mana2_rank_columns()
                 };
+                if mana2 && normal_catalog {
+                    // Keep the normal catalog identifiable after compacting it.
+                    defaults[RANK_PRESET_START] = false;
+                }
+                for &metric in &columns_order {
+                    draft.columns[metric] = defaults[metric];
+                }
             }
             Event::Char('a') if active == RankTab::Columns => {
-                for &metric in &order {
+                for &metric in order {
                     draft.columns[metric] = false;
                 }
             }
@@ -1729,6 +2070,8 @@ fn choose_rank_settings(
         }
         let (selected, capacity, scroll) = if active == RankTab::Layouts {
             (layout_selected, layout_capacity, &mut layout_scroll)
+        } else if active == RankTab::Presets {
+            (0, column_capacity, &mut preset_scroll)
         } else {
             (column_selected, column_capacity, &mut column_scroll)
         };
@@ -1822,7 +2165,7 @@ fn rank_ranges(rows: &[RankRow], hidden: &BTreeSet<PathBuf>) -> [RankRange; RANK
 }
 
 fn rank_positive_for(m: usize, aklgg: bool) -> bool {
-    if aklgg && m >= RANK_MANA_START {
+    if aklgg && (RANK_MANA_START..RANK_PRESET_START).contains(&m) {
         let id = mana2_metrics::STAT_IDS[m - RANK_MANA_START];
         return id.starts_with("alt") || id.starts_with("roll")
             || id.starts_with("inroll") || id.starts_with("outroll");
@@ -2271,7 +2614,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                         rescore_rank_rows(&mut data.rows, &data.weights, mode);
                         data.scoring = mode.into();
                         columns.mana2 = data.physical_catalog();
-                        columns.hidden = if columns.mana2 { default_mana2_rank_columns() } else {
+                        columns.hidden = if columns.mana2 { mana2_rank_columns_with_presets(&columns.hidden) } else {
                             load_app_config().map(|config| config.rank_columns).unwrap_or_else(|_| default_rank_columns())
                         };
                         columns.history.retain(|item| matches!(item, Hidden::Row(_) | Hidden::Rows(_)));
@@ -2322,7 +2665,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                 }
             }
             Event::Char('1') => {}
-            Event::Char(ch @ ('2' | '3' | 'v' | 'V')) => {
+            Event::Char(ch @ ('2' | '3' | '4' | 'v' | 'V')) => {
                 let selected_path = order
                     .get(selected)
                     .map(|&index| rows[index].path().to_owned());
@@ -2330,11 +2673,12 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     columns: columns.hidden,
                     layouts: columns.rows.clone(),
                     filters: data.filters,
+                    preset_applied: false,
                 };
-                let tab = if matches!(ch, '2' | 'V') {
-                    RankTab::Layouts
-                } else {
-                    RankTab::Columns
+                let tab = match ch {
+                    '2' | 'V' => RankTab::Layouts,
+                    '4' => RankTab::Presets,
+                    _ => RankTab::Columns,
                 };
                 if let Some(next) = choose_rank_settings(
                     term,
@@ -2344,6 +2688,10 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     data.physical_catalog(),
                     tab,
                 )? {
+                    if next.preset_applied {
+                        metric = Some(RANK_SCORE);
+                        ascending = true;
+                    }
                     columns.hidden = next.columns;
                     columns.rows = next.layouts;
                     data.filters = next.filters;
@@ -2672,7 +3020,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
                     "u\tUndo hiding".into(),
                     "U\tRedo hiding".into(),
                     "H\tRestore manually hidden rows and columns".into(),
-                    "1/2/3\tRankings / Layouts / Columns".into(),
+                    "1/2/3/4\tRankings / Layouts / Columns / Presets".into(),
                     "m\tToggle hiding magic".into(),
                     "t\tToggle hiding layouts without thumb letters".into(),
                     "f\tToggle alternate fingers".into(),
@@ -2869,8 +3217,6 @@ mod ranker_tests {
         for &metric in &RANK_ORDER {
             all[metric] = false;
         }
-        // Only selectable columns can be emitted by rank_columns_text; legacy
-        // detailed full-jump source columns are accepted as aliases, not shown.
         let parsed_all = parse_rank_columns(&rank_columns_text(&all)).unwrap();
         for &metric in &RANK_ORDER {
             assert_eq!(
@@ -2879,9 +3225,6 @@ mod ranker_tests {
                 "{metric}: {}",
                 rank_name(metric)
             );
-        }
-        for metric in [DAFJB, CAFJB, DAFJS, CAFJS, DNFJB, CNFJB, DNFJS, CNFJS] {
-            assert!(parsed_all[metric]);
         }
         assert_eq!(
             parse_rank_columns("DFSB CFSS").unwrap(),
@@ -2922,6 +3265,353 @@ mod ranker_tests {
         toggle_rank_column(&mut one, RANK_SCORE, false);
         assert!(one[RANK_SCORE]);
         assert!(!one[SFB]);
+    }
+
+    #[test]
+    fn full_jump_columns_are_selectable_and_saved_individually() {
+        let detailed = [
+            (DAFJB, "daFJB"),
+            (CAFJB, "caFJB"),
+            (DNFJB, "dnFJB"),
+            (CNFJB, "cnFJB"),
+            (DAFJS, "daFJS"),
+            (CAFJS, "caFJS"),
+            (DNFJS, "dnFJS"),
+            (CNFJS, "cnFJS"),
+        ];
+        let catalog = rank_catalog(false);
+        let mut hidden = parse_rank_columns("SCORE FJB FJS").unwrap();
+        for &(metric, name) in &detailed {
+            assert_eq!(catalog.iter().filter(|&&item| item == metric).count(), 1);
+            assert_eq!(displayed_rank_name(metric, false), name);
+            assert!(hidden[metric]);
+            toggle_rank_column(&mut hidden, metric, false);
+            assert!(!hidden[metric]);
+        }
+
+        // Selecting just one detailed column must not silently select its
+        // aggregate or another category when the settings are saved and read.
+        for &(metric, name) in &detailed {
+            let selected = parse_rank_columns(&format!("SCORE {name}")).unwrap();
+            for &(other, _) in &detailed {
+                assert_eq!(selected[other], other != metric);
+            }
+            assert!(selected[RANK_FJB] && selected[RANK_FJS]);
+            let saved = format!(
+                "[ranker]\n{}",
+                rank_config_text(&selected, RankFilters::default())
+            );
+            assert_eq!(parse_app_config(&saved).unwrap().rank_columns, selected);
+        }
+        let saved = format!(
+            "[ranker]\n{}",
+            rank_config_text(&hidden, RankFilters::default())
+        );
+        assert_eq!(parse_app_config(&saved).unwrap().rank_columns, hidden);
+    }
+
+    #[test]
+    fn preset_selects_every_combined_column_and_round_trips() {
+        let names = [
+            "SFBS", "SKBS", "FSBS", "HSBS", "FJBS", "HJBS", "LSBS", "daFJBS", "caFJBS", "dnFJBS",
+            "cnFJBS", "daHJBS", "caHJBS", "dnHJBS", "cnHJBS",
+        ];
+        assert_eq!(names.len(), RANK_PRESETS.len());
+        let selected = four_to_one_preset_columns();
+        assert!(!selected[RANK_SCORE]);
+        for &id in &RANK_ORDER {
+            if id != RANK_SCORE {
+                assert!(selected[id], "ordinary column {} is visible", rank_name(id));
+            }
+        }
+        for (index, name) in names.iter().enumerate() {
+            let id = RANK_PRESET_START + index;
+            assert_eq!(rank_name(id), *name);
+            assert_eq!(displayed_rank_name(id, true), *name);
+            assert_eq!(displayed_rank_name(id, false), *name);
+            assert!(displayed_rank_name(id, false).chars().count() <= 9);
+            assert!(!rank_percent(id));
+            assert!(!rank_positive_for(id, true));
+            assert!(!selected[id]);
+            assert!(rank_catalog(false).contains(&id));
+            assert!(rank_catalog(true).contains(&id));
+        }
+        let saved = format!(
+            "[ranker]\n{}",
+            rank_config_text(&selected, RankFilters::default())
+        );
+        assert_eq!(parse_app_config(&saved).unwrap().rank_columns, selected);
+        assert_eq!(mana2_rank_columns_with_presets(&selected), selected);
+        for mana2 in [false, true] {
+            let mut columns = RankColumns::new(mana2);
+            columns.hidden = selected;
+            let visible: Vec<_> = columns.visible().into_iter().map(rank_name).collect();
+            assert_eq!(visible[0], "SCORE");
+            assert_eq!(&visible[1..], &names);
+        }
+        assert_eq!(
+            parse_rank_columns("SCORE SFB+SFS SKB+SKS FSB+FSS HSB+HSS FJB+FJS HJB+HJS LSB+LSS")
+                .unwrap(),
+            parse_rank_columns("SCORE SFBS SKBS FSBS HSBS FJBS HJBS LSBS").unwrap(),
+        );
+        assert_eq!(
+            parse_rank_columns("SCORE SF-BS SK-BS FS-BS HS-BS FJ-BS HJ-BS LS-BS daFJ-BS caFJ-BS dnFJ-BS cnFJ-BS daHJ-BS caHJ-BS dnHJ-BS cnHJ-BS").unwrap(),
+            selected,
+        );
+    }
+
+    #[test]
+    fn normal_preset_restores_previous_columns_in_both_scoring_modes() {
+        let normal = normal_preset_columns();
+        let expected =
+            parse_rank_columns("SCORE FSB HSB FJB daFJB caFJB dnFJB cnFJB FJS LSB RED SFBS")
+                .unwrap();
+        assert_eq!(normal, expected);
+        assert!(normal_preset_view(&normal));
+        assert_eq!(mana2_rank_columns_with_presets(&normal), normal);
+        let saved = format!(
+            "[ranker]\n{}",
+            rank_config_text(&normal, RankFilters::default())
+        );
+        assert_eq!(parse_app_config(&saved).unwrap().rank_columns, normal);
+
+        for mana2 in [false, true] {
+            let mut columns = RankColumns::new(mana2);
+            columns.hidden = normal;
+            let visible: Vec<_> = columns.visible().into_iter().map(rank_name).collect();
+            assert_eq!(
+                visible,
+                [
+                    "SCORE", "FSB", "HSB", "FJB", "daFJB", "caFJB", "dnFJB", "cnFJB", "FJS", "LSB",
+                    "RED", "SFBS"
+                ]
+            );
+            assert!(columns.hide(FSB));
+            assert!(!columns.visible().contains(&FSB));
+            assert!(columns.visible().contains(&HSB));
+            assert!(!columns.undo(8));
+            assert_eq!(columns.hidden, normal);
+        }
+        let mut customized = normal;
+        customized[SFB] = false;
+        assert!(normal_preset_view(&customized));
+        assert_eq!(mana2_rank_columns_with_presets(&customized), customized);
+        assert!(!normal_preset_view(&default_mana2_rank_columns()));
+        assert!(!normal_preset_view(&four_to_one_preset_columns()));
+    }
+
+    #[test]
+    fn presets_weight_each_population_for_plain_and_action_layouts() {
+        // q-a is an SFB and SFS; q-x is an FSB and x-a an HSB.
+        // The bigram population has three entries; the skipgram population
+        // has one, so 4 * (100/3) + 100 differs from weighting raw counts.
+        const PAIRS: &str = r#"{"monograms":{"q":2,"a":2,"x":1},"bigrams":{"qa":1,"qx":1,"xa":1},"trigrams":{"qxa":1}}"#;
+        let action_layout = format!("{}@ aa\n", NORMAL_LAYOUT.replace("o p", "o @"));
+        let layouts = [
+            (
+                PathBuf::from("plain.dat"),
+                parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.dat")).unwrap(),
+            ),
+            (
+                PathBuf::from("action.dat"),
+                parse_rank_layout(&action_layout, Path::new("action.dat")).unwrap(),
+            ),
+        ];
+        let stop = AtomicBool::new(false);
+        let prepared = RankCorpora::prepare(
+            &layouts,
+            PAIRS,
+            Path::new("pairs.json"),
+            NgramLimits::default(),
+            &stop,
+        );
+        let mut rows: Vec<_> = layouts
+            .into_iter()
+            .map(|(_, layout)| {
+                evaluate_rank_layout(layout, &prepared, &Weights::default(), &stop).unwrap()
+            })
+            .collect();
+        for row in &rows {
+            for (index, expected) in [
+                4.0 * 100.0 / 3.0 + 100.0, // SFBS
+                0.0,                       // SKBS
+                4.0 * 100.0 / 3.0,         // FSBS
+                4.0 * 100.0 / 3.0,         // HSBS
+                4.0 * 100.0 / 3.0,         // FJBS
+                4.0 * 100.0 / 3.0,         // HJBS
+                0.0,                       // LSBS
+                4.0 * 100.0 / 3.0,         // daFJBS
+                0.0,                       // caFJBS
+                0.0,                       // dnFJBS
+                0.0,                       // cnFJBS
+                4.0 * 100.0 / 3.0,         // daHJBS
+                0.0,                       // caHJBS
+                0.0,                       // dnHJBS
+                0.0,                       // cnHJBS
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let id = RANK_PRESET_START + index;
+                let actual = rank_value(row, id).unwrap();
+                assert!(
+                    (actual - expected).abs() < 1e-9,
+                    "{} {}: {actual} != {expected}",
+                    row.name(),
+                    rank_name(id)
+                );
+            }
+        }
+        let alternate = NORMAL_LAYOUT.replace("q w", "w q");
+        rows.push(
+            evaluate_rank_layout(
+                parse_rank_layout(&alternate, Path::new("alternate.dat")).unwrap(),
+                &prepared,
+                &Weights::default(),
+                &stop,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            rank_order(&rows, "", Some(RANK_PRESET_START), true, &BTreeSet::new())[0],
+            2
+        );
+        let before: Vec<_> = rows
+            .iter()
+            .map(|row| rank_value(row, RANK_PRESET_START))
+            .collect();
+        rescore_rank_rows(&mut rows, &Weights::default(), "aklgg");
+        assert_eq!(
+            rows.iter()
+                .map(|row| rank_value(row, RANK_PRESET_START))
+                .collect::<Vec<_>>(),
+            before
+        );
+
+        // A missing skipgram population must not silently become zero.
+        let short = r#"{"monograms":{"q":1,"a":1},"bigrams":{"qa":1},"trigrams":{}}"#;
+        let layout = parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.dat")).unwrap();
+        let layouts = [(PathBuf::from("plain.dat"), layout)];
+        let prepared = RankCorpora::prepare(
+            &layouts,
+            short,
+            Path::new("short.json"),
+            NgramLimits::default(),
+            &stop,
+        );
+        let row = evaluate_rank_layout(
+            layouts.into_iter().next().unwrap().1,
+            &prepared,
+            &Weights::default(),
+            &stop,
+        )
+        .unwrap();
+        for id in RANK_PRESET_START..RANK_COUNT {
+            assert_eq!(rank_value(&row, id), None, "{}", rank_name(id));
+        }
+    }
+
+    #[test]
+    fn full_jump_rank_columns_show_individual_values_for_plain_and_action_layouts() {
+        // Like Baris's my, m is on the top middle-finger key and y is on the
+        // bottom ring-finger key: an adjacent concordant full jump.
+        const LAYOUT: &str =
+            "q w e r t  . u m o p\na s d f g  h j k l ;\nz x c v b  n i , y /\nthumbs: space\n";
+        const ACTION: &str = "@ w e r t  . u m o p\na s d f g  h j k l ;\nz x c v b  n i , y /\nthumbs: space\n@ aa\n";
+        const JUMP_CORPUS: &str = r#"{"monograms":{"m":2,"h":1,"y":2},"bigrams":{"mh":1,"hy":1,"my":1},"trigrams":{"mhy":1}}"#;
+        let path = Path::new("jumps.json");
+        let stop = AtomicBool::new(false);
+        let layouts = [
+            (
+                PathBuf::from("plain.dat"),
+                parse_rank_layout(LAYOUT, Path::new("plain.dat")).unwrap(),
+            ),
+            (
+                PathBuf::from("action.dat"),
+                parse_rank_layout(ACTION, Path::new("action.dat")).unwrap(),
+            ),
+        ];
+        let prepared =
+            RankCorpora::prepare(&layouts, JUMP_CORPUS, path, NgramLimits::default(), &stop);
+        let rows: Vec<_> = layouts
+            .into_iter()
+            .map(|(_, layout)| {
+                evaluate_rank_layout(layout, &prepared, &Weights::default(), &stop).unwrap()
+            })
+            .collect();
+
+        for row in &rows {
+            for (metric, expected) in [
+                (DAFJB, 0.0),
+                (CAFJB, 100.0 / 3.0),
+                (DNFJB, 0.0),
+                (CNFJB, 0.0),
+                (RANK_FJB, 100.0 / 3.0),
+                (DAFJS, 0.0),
+                (CAFJS, 100.0),
+                (DNFJS, 0.0),
+                (CNFJS, 0.0),
+                (RANK_FJS, 100.0),
+                (FSB, 0.0),
+                (FSS, 0.0),
+            ] {
+                let actual = rank_value(row, metric).unwrap();
+                assert!(
+                    (actual - expected).abs() < 1e-9,
+                    "{} {}: {actual} != {expected}; totals {:?}",
+                    row.name(),
+                    rank_name(metric),
+                    row.totals()
+                );
+            }
+            // This also covers concordant half jumps in the HJB total.
+            assert!(
+                (rank_value(row, RANK_PRESET_START + 4).unwrap() - (4.0 * 100.0 / 3.0 + 100.0))
+                    .abs()
+                    < 1e-9
+            );
+            assert!(
+                (rank_value(row, RANK_PRESET_START + 5).unwrap() - 4.0 * 200.0 / 3.0).abs() < 1e-9
+            );
+        }
+
+        let mut columns = RankColumns::new(false);
+        columns.hidden = parse_rank_columns("SCORE FJB daFJB caFJB dnFJB cnFJB").unwrap();
+        let grid = RankGrid::new(120, 18, 10, &mut columns);
+        let mut canvas = Canvas::ranking(120, 1);
+        let ranges = rank_ranges(&rows, &BTreeSet::new());
+        draw_rank_table(
+            &mut canvas,
+            &grid,
+            &rows,
+            &[0, 1],
+            0,
+            0,
+            2,
+            Some(CAFJB),
+            true,
+            2,
+            &ranges,
+            false,
+            false,
+        );
+        let text: String = canvas.cells.iter().map(|cell| cell.ch).collect();
+        for label in ["FJB", "daFJB", "caFJB", "dnFJB", "cnFJB", "33.33%"] {
+            assert!(text.contains(label), "rank table is missing {label}");
+        }
+        let ca_fjb_column = grid.metrics.iter().position(|&id| id == CAFJB).unwrap();
+        for row in 0..rows.len() {
+            let start = (RANK_DATA + row) * canvas.w + grid.content_x(ca_fjb_column);
+            let value: String = canvas.cells[start..start + grid.cell]
+                .iter()
+                .map(|cell| cell.ch)
+                .collect();
+            assert!(value.contains("33.33%"), "incorrect caFJB cell: {value}");
+        }
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::Metric(CAFJB))));
     }
 
     #[test]

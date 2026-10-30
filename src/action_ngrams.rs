@@ -641,13 +641,21 @@ struct Window {
     weight: f64,
 }
 
+/// A window that corrects only a bigram's contextual fingers. It does not
+/// count its target character or add a second physical bigram.
+const ALT_BIGRAM_CORRECTION: u8 = 0x80;
+
 impl Window {
     fn len(&self) -> usize {
         self.len as usize
     }
 
     fn target(&self) -> usize {
-        self.target as usize
+        usize::from(self.target & !ALT_BIGRAM_CORRECTION)
+    }
+
+    fn alt_bigram_correction(&self) -> bool {
+        self.target & ALT_BIGRAM_CORRECTION != 0
     }
 
     fn end(&self) -> usize {
@@ -1081,12 +1089,14 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         order,
         warnings,
         exact_sums: exact_sums_of(&windows),
+        source_windows: Arc::clone(&windows),
         windows,
         postings: Postings::default(),
         // The centred contexts it was only kept for are in the cache.
         chord_source: None,
         chord_windows: Arc::new(chord_windows),
         alt_windows: Arc::new(alt_windows),
+        alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
         rule_candidates: Arc::default(),
         speed_populations,
     })
@@ -1100,6 +1110,8 @@ pub struct NgramCorpus {
     pub order: usize,
     pub warnings: Vec<String>,
     windows: Arc<[Window]>,
+    /// The original suffix windows, even on a corpus with centered contexts.
+    source_windows: Arc<[Window]>,
     /// `exact_sums_of(windows)`.
     exact_sums: bool,
     // Retain compact original counts only when caps remove context. Chord
@@ -1111,6 +1123,9 @@ pub struct NgramCorpus {
     chord_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// The same for alternate fingers, shortened from the left under caps.
     alt_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
+    /// Built only for eligible alternate-finger rules; ordinary searches do
+    /// not allocate or map the extra correction windows.
+    alt_bigram_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// `rule_candidates`, built on first use.
     rule_candidates: Arc<std::sync::OnceLock<Vec<(bool, u8, u8, f64)>>>,
     /// Whole-corpus bigram and skipgram masses, measured as ordinary corpora
@@ -1206,6 +1221,31 @@ impl NgramCorpus {
         })
     }
 
+    /// Extend the usual alternate-finger windows with existing source
+    /// contexts that can expose two keys after a bigram's second key.
+    fn alt_bigram_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
+        self.alt_bigram_windows.get_or_init(|| {
+            let early = self.alt_windows().clone()?;
+            let mut windows = Vec::with_capacity(early.0.len() + self.source_windows.len());
+            windows.extend(early.0.iter().cloned());
+            for window in self
+                .source_windows
+                .iter()
+                .filter(|window| window.end() >= 4)
+            {
+                let mut correction = window.clone();
+                correction.target = (window.end() - 3) as u8 | ALT_BIGRAM_CORRECTION;
+                windows.push(correction);
+            }
+            let windows: Arc<[Window]> = windows.into();
+            Ok((
+                windows.clone(),
+                exact_sums_of(&windows),
+                Postings::default(),
+            ))
+        })
+    }
+
     /// The contexts a layout counted with `program` is evaluated on. Without
     /// combos only alternate fingers need them. Rules up to three characters
     /// long decide a key's finger from up to two characters on either side;
@@ -1216,7 +1256,11 @@ impl NgramCorpus {
         if !program.ahead() {
             return self.chord_contexts();
         }
-        let windows = self.alt_windows().clone()?;
+        let windows = if program.alt_bigram_lookahead() {
+            self.alt_bigram_windows().clone()?
+        } else {
+            self.alt_windows().clone()?
+        };
         let mut result = self.clone();
         (result.windows, result.exact_sums, result.postings) = windows;
         result.rule_candidates = Arc::default();
@@ -1586,18 +1630,22 @@ impl NgramCorpus {
         }
         progress.store(100, Ordering::Relaxed);
         timing.mark("Sort contexts");
+        let exact_sums = exact_sums_of(&windows);
+        let windows: Arc<[Window]> = windows.into();
         Ok(Self {
             name: corpus_name(path),
             path: path.to_owned(),
             include_spacegrams: limits.include_spacegrams,
             order,
             warnings,
-            exact_sums: exact_sums_of(&windows),
-            windows: windows.into(),
+            exact_sums,
+            source_windows: Arc::clone(&windows),
+            windows,
             postings: Postings::default(),
             chord_source,
             chord_windows: Arc::new(std::sync::OnceLock::new()),
             alt_windows: Arc::new(std::sync::OnceLock::new()),
+            alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             speed_populations,
         })
@@ -2166,7 +2214,18 @@ impl NgramCorpus {
     }
 
     pub(crate) fn rule_window_count(&self) -> usize {
-        self.windows.len()
+        if self
+            .windows
+            .last()
+            .is_some_and(Window::alt_bigram_correction)
+        {
+            self.windows
+                .iter()
+                .filter(|window| !window.alt_bigram_correction())
+                .count()
+        } else {
+            self.windows.len()
+        }
     }
 
     /// Copy the compact source windows used by action-rule delta evaluation.
@@ -2178,10 +2237,13 @@ impl NgramCorpus {
             if index % 1024 == 0 && stop.load(Ordering::Relaxed) {
                 return Err("cancelled".into());
             }
+            if window.alt_bigram_correction() {
+                continue;
+            }
             result.push(RuleDeltaWindow {
                 bytes: window.bytes,
                 len: window.len,
-                target: window.target,
+                target: window.target() as u8,
                 weight: window.weight,
             });
         }
@@ -2385,14 +2447,16 @@ impl Accumulators {
         weight: f64,
     ) {
         let target = window.target();
-        if mapped[target].is_some() || plan.chorded(target) {
-            self.counts.characters += weight;
-        } else {
-            self.counts.ignored_characters += weight;
+        if !window.alt_bigram_correction() {
+            if mapped[target].is_some() || plan.chorded(target) {
+                self.counts.characters += weight;
+            } else {
+                self.counts.ignored_characters += weight;
+            }
         }
         let effective =
             alts.map(|alts| alts.resolve(window.text(), &mapped[..window.len()], default_fingers));
-        let grams = chord_grams(plan, &mapped, effective.as_ref(), target);
+        let grams = chord_grams(plan, &mapped, effective.as_ref(), window, alts, default_fingers);
         if grams.pressed().next().is_some() {
             self.counts.presses += weight;
             if grams
@@ -2482,7 +2546,7 @@ fn counted_press(
     window: &Window,
 ) -> [u8; 2] {
     match plan {
-        Some(plan) => chord_grams(plan, &decode_keys(keys), None, window.target()).pressed,
+        Some(plan) => chord_grams(plan, &decode_keys(keys), None, window, None, &[]).pressed,
         None => [keys[window.target()], GAP],
     }
 }
@@ -3108,8 +3172,11 @@ fn chord_grams(
     plan: &crate::combos::ChordPlan,
     mapped: &[Option<usize>; 5],
     fingers: Option<&[Option<usize>; 5]>,
-    target: usize,
+    window: &Window,
+    alts: Option<&crate::alt_fingers::Compiled>,
+    default_fingers: &[usize],
 ) -> ChordGrams {
+    let target = window.target();
     let element = |at: usize| {
         let key = mapped[at].map_or(GAP, |key| key as u8);
         let finger = fingers
@@ -3165,8 +3232,10 @@ fn chord_grams(
         press(c.checked_sub(1)),
         press(Some(c)),
     );
-    for (pressed, &(key, _)) in grams.pressed.iter_mut().zip(c) {
-        *pressed = key;
+    if !window.alt_bigram_correction() {
+        for (pressed, &(key, _)) in grams.pressed.iter_mut().zip(c) {
+            *pressed = key;
+        }
     }
     let mut push = |tail: Tail, fingers: Tail, weight: f64| {
         if weight != 0.0 && tail[2] != GAP {
@@ -3179,10 +3248,42 @@ fn chord_grams(
         // on either side, so each statistic is counted where the context
         // covers the most of them: the bigram ending on the counted key, the
         // unigram before it, and the skipgram and trigram ending on the key
-        // after it. A sequence's last key counts its own unigram.
+        // after it. A sequence's last window counts both its own unigram
+        // and the preceding key, which has no later window to count it.
         let ([(kb, fb)], [(kc, fc)]) = (b, c) else {
             unreachable!("presses without combos are single keys");
         };
+        if window.alt_bigram_correction() {
+            if *kb == GAP || *kc == GAP {
+                return grams;
+            }
+            let Some(alts) = alts.filter(|alts| {
+                alts.bigram_can_use_lookahead(
+                    window.text(),
+                    &mapped[..window.len()],
+                    target,
+                    default_fingers,
+                )
+            }) else {
+                return grams;
+            };
+            let short_end = target + 2;
+            let before = alts.resolve(
+                &window.text()[..short_end],
+                &mapped[..short_end],
+                default_fingers,
+            );
+            let old_b = before[target - 1].map_or(GAP, |finger| finger as u8);
+            let old_c = before[target].map_or(GAP, |finger| finger as u8);
+            if (*fb, *fc) != (old_b, old_c) {
+                // Replace the old bigram without changing either unigram.
+                push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
+                push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
+                push([GAP, *kb, *kc], [GAP, old_b, old_c], -1.0);
+                push([GAP, GAP, *kc], [GAP, GAP, old_c], 1.0);
+            }
+            return grams;
+        }
         push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
         if target + 1 < plan.len() {
             let (kd, fd) = element(target + 1);
@@ -3190,6 +3291,8 @@ fn chord_grams(
             push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
             push([*kb, *kc, kd], [*fb, *fc, fd], 1.0);
             push([GAP, *kc, kd], [GAP, *fc, fd], -1.0);
+        } else {
+            push([GAP, GAP, *kb], [GAP, GAP, *fb], 1.0);
         }
         return grams;
     }
@@ -4894,6 +4997,7 @@ impl Incremental {
         Self::new_with_policy(corpus, layout, geometry, stop, alt_fingers, true, effort)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_policy<F>(
         corpus: &NgramCorpus,
         layout: &ak::Layout,
@@ -4931,12 +5035,44 @@ impl Incremental {
     where
         F: Fn(Option<usize>, Option<usize>, usize) -> f64,
     {
+        Self::new_with_contexts(corpus, layout, geometry, stop, alt_fingers, combos, false, effort)
+    }
+
+    /// A second incremental evaluator for the same search, retaining the
+    /// contexts used by a full alternate-finger evaluation.
+    pub(crate) fn new_with_full_contexts<F>(
+        corpus: &NgramCorpus,
+        layout: &ak::Layout,
+        geometry: Arc<Geometry>,
+        stop: &AtomicBool,
+        alt_fingers: crate::alt_fingers::AltPolicy,
+        combos: impl Into<crate::combos::Policy>,
+        effort: F,
+    ) -> ak::Result<Self>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
+        Self::new_with_contexts(corpus, layout, geometry, stop, alt_fingers, combos, true, effort)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_contexts<F>(
+        corpus: &NgramCorpus,
+        layout: &ak::Layout,
+        geometry: Arc<Geometry>,
+        stop: &AtomicBool,
+        alt_fingers: crate::alt_fingers::AltPolicy,
+        combos: impl Into<crate::combos::Policy>,
+        full_contexts: bool,
+        effort: F,
+    ) -> ak::Result<Self>
+    where
+        F: Fn(Option<usize>, Option<usize>, usize) -> f64,
+    {
         let policy: crate::combos::Policy = combos.into();
-        // Searches count alternate fingers the faster way; evaluations for
-        // display count them exactly (`contexts_for`).
         let combos =
             crate::combos::Program::for_contexts(layout, policy, alt_fingers, corpus.order)?
-                .map(crate::combos::Program::for_search);
+                .map(|program| if full_contexts { program } else { program.for_search() });
         let corpus = if let Some(program) = &combos {
             corpus.contexts_for(program)?
         } else {
@@ -5058,7 +5194,11 @@ impl Incremental {
                             &cache.default_fingers,
                         )
                     });
-                    let grams = chord_grams(&plan, &mapped, fingers.as_ref(), window.target());
+                    let grams = chord_grams(
+                        &plan, &mapped, fingers.as_ref(), window,
+                        cache.finger_tails.as_ref().map(|_| &cache.alt_fingers),
+                        &cache.default_fingers,
+                    );
                     add_chord_grams(
                         &cache.contributions,
                         &mut cache.raw,
@@ -5428,7 +5568,11 @@ impl Incremental {
                         self.alt_fingers
                             .resolve(text, &mapped[..text.len()], &self.default_fingers)
                     });
-                    let grams = chord_grams(&plan, &mapped, fingers.as_ref(), window.target());
+                    let grams = chord_grams(
+                        &plan, &mapped, fingers.as_ref(), window,
+                        self.finger_tails.as_ref().map(|_| &self.alt_fingers),
+                        &self.default_fingers,
+                    );
                     if saved.is_none() {
                         add_chord_grams(
                             &self.contributions,
@@ -6090,7 +6234,9 @@ impl Incremental {
                                 &plan,
                                 &mapped,
                                 fingers.as_ref(),
-                                window.target(),
+                                window,
+                                self.finger_tails.as_ref().map(|_| &self.alt_fingers),
+                                &self.default_fingers,
                             ))
                         };
                         if aggregate && self.finite_effort && self.chord_direct[id] {
@@ -9303,18 +9449,22 @@ mod detailed_mapping_tests {
             })
             .collect();
 
+        let exact_sums = exact_sums_of(&windows);
+        let windows: Arc<[Window]> = windows.into();
         NgramCorpus {
             name: "inline".into(),
             path: PathBuf::from("inline.json"),
             include_spacegrams: true,
             order,
             warnings: Vec::new(),
-            exact_sums: exact_sums_of(&windows),
-            windows: windows.into(),
+            exact_sums,
+            source_windows: Arc::clone(&windows),
+            windows,
             postings: Postings::default(),
             chord_source: None,
             chord_windows: Arc::new(std::sync::OnceLock::new()),
             alt_windows: Arc::new(std::sync::OnceLock::new()),
+            alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             speed_populations: [0.0; 2],
         }

@@ -51,14 +51,15 @@ and t with the left index whenever r is followed by t, adjacent or one key
 apart. `.` keeps a key's normal finger. Row-staggered boards use `rowstag`;
 all others use `colstag`. A layout's own `alts` take precedence.
 
-Magic and action evaluation reads each key with three characters before it
-and one after. That context counts the bigram ending on the key, the previous
-key's usage, and the skipgram and trigram ending on the next key, so each key
-in them sees up to two characters on either side: rules that read the key
-after (`␣e`, `␣_e`) also move that key's own press. This needs an order-4
-corpus or better. Optimizer searches count each key at its own context
-instead, which is several times faster and slightly less exact; the stats
-they show are counted exactly.
+Magic and action evaluation uses centered contexts when the corpus has
+four-grams or better. For bigrams, it also uses longer contexts to recognize
+two-key lookahead when their key mappings and alternate rules make the result
+unambiguous. It retains the history-based estimate when the available context
+cannot determine both fingers. In particular, two ends can depend on a span
+of six or more keys, which a five-gram corpus cannot fully represent.
+Optimizer searches use a faster, approximate context for their objective
+score. They check limits and report statistics using the same contexts as
+evaluation, including these limits on the available information.
 
 The ordinary model applies them only within each bigram, skipgram or trigram,
 so it misses some same-finger pairs (about 15% of SFB on stray). Finger usage

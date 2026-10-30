@@ -557,14 +557,21 @@ impl AltPolicy {
         // magic key, or an adaptive swap) keeps its own finger.
         if !layout.alt_fingers.is_empty() {
             let rules = spot_rules(layout);
-            return (!rules.is_empty()).then(|| Compiled::new(rules, Some(codes())));
+            return (!rules.is_empty()).then(|| Compiled::new(rules, Some(codes()), layout));
         }
         let rules = self.positions?.for_layout(layout);
-        (!rules.is_empty()).then(|| Compiled::new(rules.to_vec(), Some(codes())))
+        (!rules.is_empty()).then(|| Compiled::new(rules.to_vec(), Some(codes()), layout))
     }
 
     pub(crate) fn active(self, layout: &action_keys::Layout) -> bool {
-        self.compile(layout).is_some()
+        if !self.enabled {
+            return false;
+        }
+        if !layout.alt_fingers.is_empty() {
+            return !spot_rules(layout).is_empty();
+        }
+        self.positions
+            .is_some_and(|rules| !rules.for_layout(layout).is_empty())
     }
 }
 
@@ -580,10 +587,16 @@ pub(crate) struct Compiled {
     /// Rules by their first key, when every rule names one: a window's
     /// matches can then only start where such a key is.
     by_first: Option<Vec<Vec<u16>>>,
+    /// Slots that no rule can move off their default finger.
+    fixed: Vec<bool>,
+    /// A three-key rule can actually change its first key's finger.
+    has_future_change: bool,
+    /// Bytes with exactly one literal root and no action that can emit them.
+    unique_bytes: [u64; 4],
 }
 
 impl Compiled {
-    fn new(rules: Vec<Rule>, codes: Option<Vec<u8>>) -> Self {
+    fn new(rules: Vec<Rule>, codes: Option<Vec<u8>>, layout: &action_keys::Layout) -> Self {
         let mut named = [0; 4];
         for &key in rules.iter().flat_map(|rule| &rule.ngram).flatten() {
             named[usize::from(key) / 64] |= 1 << (key % 64);
@@ -595,12 +608,131 @@ impl Compiled {
             }
             by_first
         });
+        let fixed: Vec<_> = layout
+            .slots
+            .iter()
+            .enumerate()
+            .map(|(slot, physical)| {
+                let code = codes.as_ref().and_then(|codes| codes.get(slot)).copied();
+                !rules.iter().any(|rule| {
+                    rule.ngram.iter().zip(&rule.fingers).any(|(key, finger)| {
+                        finger.is_some_and(|finger| finger != physical.finger)
+                            && key.map_or(true, |key| Some(key) == code)
+                    })
+                })
+            })
+            .collect();
+        let has_future_change = rules.iter().any(|rule| {
+            rule.ngram.len() == 3
+                && rule.fingers[0].is_some()
+                && fixed.iter().enumerate().any(|(slot, &fixed)| {
+                    let code = codes.as_ref().and_then(|codes| codes.get(slot)).copied();
+                    !fixed && rule.ngram[0].map_or(true, |key| Some(key) == code)
+                })
+        });
+        let mut unique_bytes = [0u64; 4];
+        if has_future_change {
+            if let Ok(program) = crate::action_fast::Program::new(layout, 5) {
+                let keys = crate::action_fast::KeyState::new(&program);
+                for byte in 0..=u8::MAX {
+                    if keys.unique(byte) {
+                        unique_bytes[usize::from(byte) / 64] |= 1 << (byte % 64);
+                    }
+                }
+            }
+        }
         Self {
             rules,
             codes,
             named,
             by_first,
+            fixed,
+            has_future_change,
+            unique_bytes,
         }
+    }
+
+    /// Whether a context can replace the old bigram's fingers without
+    /// needing an unrecorded key to either side. Otherwise retain the old
+    /// estimate: independent five-gram counts cannot determine that key.
+    pub(crate) fn bigram_can_use_lookahead(
+        &self,
+        text: &[u8],
+        mapped: &[Option<usize>],
+        target: usize,
+        defaults: &[usize],
+    ) -> bool {
+        if target == 0
+            || target + 2 >= text.len()
+            || text.len() != mapped.len()
+            || !text
+                .iter()
+                .all(|&byte| self.unique_bytes[usize::from(byte) / 64] & (1 << (byte % 64)) != 0)
+        {
+            return false;
+        }
+        let (Some(first), Some(_second)) = (mapped[target - 1], mapped[target]) else {
+            return false;
+        };
+        let fixed = |slot: Option<usize>| {
+            slot.is_some_and(|slot| self.fixed.get(slot).copied().unwrap_or(false))
+        };
+        // A mutable neighbor can itself need context beyond this window.
+        if !fixed(mapped[target + 1]) || !fixed(mapped[target + 2]) {
+            return false;
+        }
+        if !fixed(Some(first)) && (target < 2 || !fixed(mapped[target - 2])) {
+            return false;
+        }
+        let short_end = target + 2;
+        let code = |at: usize| match &self.codes {
+            Some(codes) => mapped[at].and_then(|slot| codes.get(slot).copied()),
+            None => mapped[at].map(|_| text[at].to_ascii_lowercase()),
+        };
+        for key_at in [target - 1, target] {
+            for rule in &self.rules {
+                for offset in 1..rule.ngram.len() {
+                    if rule.fingers[offset].is_none() {
+                        continue;
+                    }
+                    let start = key_at as isize - offset as isize;
+                    let matches = rule.ngram.iter().enumerate().all(|(index, expected)| {
+                        let at = start + index as isize;
+                        if at < 0 {
+                            return true; // An unseen key could match.
+                        }
+                        let at = at as usize;
+                        at < short_end
+                            && code(at).is_some_and(|actual| {
+                                expected.map_or(true, |expected| expected == actual)
+                            })
+                    });
+                    if !matches {
+                        continue;
+                    }
+                    if start < 0 {
+                        return false;
+                    }
+                    if start == 0 {
+                        if let (Some(assigned), Some(slot)) = (rule.fingers[0], mapped[0]) {
+                            if !fixed(Some(slot)) || assigned != defaults[slot] {
+                                // The first assignment's clash check would
+                                // read an unrecorded preceding key.
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Avoid constructing correction windows when none can change a bigram.
+    pub(crate) fn has_bigram_lookahead(&self) -> bool {
+        self.unique_bytes.iter().any(|&bits| bits != 0)
+            && self.fixed.iter().any(|fixed| *fixed)
+            && self.has_future_change
     }
 
     /// Whether rules match key positions rather than characters.

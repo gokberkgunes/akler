@@ -343,6 +343,11 @@ impl Caps<'_> {
     }
 }
 
+struct FullContext {
+    cache: ng::Incremental,
+    proposal: ng::Proposal,
+}
+
 struct Problem<'a> {
     seed: &'a ak::Layout,
     weights: &'a Weights,
@@ -352,6 +357,11 @@ struct Problem<'a> {
     effort: LocalEffort,
     caches: Vec<ng::Incremental>,
     proposals: Vec<ng::Proposal>,
+    /// Full-context counts for corpora whose alternate fingers require more
+    /// context than the fast search. Only candidate moves that may be kept
+    /// need to update them.
+    full: Vec<Option<FullContext>>,
+    full_pending: Option<Move>,
     /// Trials return screened scores (`Incremental::enable_aggregation`);
     /// decisions near a threshold call `exact` first.
     screening: bool,
@@ -372,6 +382,7 @@ fn near(a: f64, b: f64) -> bool {
 struct State {
     arr: Vec<usize>,
     numeric: Vec<ng::NumericState>,
+    full_numeric: Vec<Option<ng::NumericState>>,
     score: f64,
     violation: f64,
 }
@@ -382,6 +393,11 @@ impl Problem<'_> {
         let mut excess = 0.0;
         for (i, cache) in self.caches.iter().enumerate() {
             let metrics = cache.metrics();
+            let checked = self.full[i]
+                .as_ref()
+                .filter(|_| self.has_caps())
+                .map(|full| full.cache.metrics())
+                .unwrap_or_else(|| metrics.clone());
             let value = if self.settings.uses_mana2_stats() {
                 cache.physical_score(self.weights)
             } else {
@@ -392,9 +408,9 @@ impl Problem<'_> {
                 if self.soft_caps {
                     score += self.shares[i]
                         * SOFT_CAP_POINTS
-                        * overshoot(&metrics, &self.baseline[i], self.settings);
+                        * overshoot(&checked, &self.baseline[i], self.settings);
                 } else {
-                    excess += violation(&metrics, &self.baseline[i], self.settings);
+                    excess += violation(&checked, &self.baseline[i], self.settings);
                 }
             }
         }
@@ -405,25 +421,52 @@ impl Problem<'_> {
                 .iter()
                 .map(ng::Incremental::numeric_state)
                 .collect(),
+            full_numeric: self
+                .full
+                .iter()
+                .map(|full| {
+                    full.as_ref()
+                        .filter(|_| self.has_caps())
+                        .map(|full| full.cache.numeric_state())
+                })
+                .collect(),
             score,
             violation: excess,
         }
     }
 
     fn restore(&mut self, state: &State, control: &Control) -> ak::Result<()> {
-        for (cache, numeric) in self.caches.iter_mut().zip(&state.numeric) {
+        self.full_pending = None;
+        let track_full = self.has_caps();
+        for (i, (cache, numeric)) in self.caches.iter_mut().zip(&state.numeric).enumerate() {
             cache.restore(&state.arr, Some(numeric), &control.cancel, |a, b, key| {
                 self.effort.get(a, b, key)
             })?;
+            if let Some(full) = self.full[i].as_mut().filter(|_| track_full) {
+                full.cache.restore(
+                    &state.arr,
+                    state.full_numeric[i].as_ref(),
+                    &control.cancel,
+                    |a, b, key| self.effort.get(a, b, key),
+                )?;
+            }
         }
         Ok(())
     }
 
     fn fresh(&mut self, arr: Vec<usize>, control: &Control) -> ak::Result<State> {
-        for cache in &mut self.caches {
+        self.full_pending = None;
+        let track_full = self.has_caps();
+        for (i, cache) in self.caches.iter_mut().enumerate() {
             cache.restore(&arr, None, &control.cancel, |a, b, key| {
                 self.effort.get(a, b, key)
             })?;
+            if let Some(full) = self.full[i].as_mut().filter(|_| track_full) {
+                full.cache
+                    .restore(&arr, None, &control.cancel, |a, b, key| {
+                        self.effort.get(a, b, key)
+                    })?;
+            }
         }
         Ok(self.current(arr))
     }
@@ -434,6 +477,7 @@ impl Problem<'_> {
         control: &Control,
         profile: &mut Profile,
     ) -> ak::Result<(f64, f64)> {
+        self.full_pending = None;
         let previous_max = profile.affected_max;
         let previous_scans = profile.full_scans;
         for (cache, proposal) in self.caches.iter_mut().zip(&mut self.proposals) {
@@ -457,6 +501,11 @@ impl Problem<'_> {
                 + u64::from(self.proposals.iter().any(|proposal| proposal.all_contexts));
         }
 
+        // Joint searches include a soft cap penalty in every candidate's
+        // score, so that penalty needs the full counts before ranking it.
+        if self.soft_caps && self.has_caps() && self.has_full() {
+            self.verify_trial::<PROFILE>(movement, control, profile, 0.0)?;
+        }
         let mut result = self.proposal_scores::<PROFILE>(profile);
         if self.screening && self.near_cap() {
             result = self.exact();
@@ -465,6 +514,69 @@ impl Problem<'_> {
             profile.candidates += 1;
         }
         Ok(result)
+    }
+
+    fn has_full(&self) -> bool {
+        self.full.iter().any(Option::is_some)
+    }
+
+    fn has_caps(&self) -> bool {
+        [
+            self.settings.sfb_limit,
+            self.settings.sfs_limit,
+            self.settings.travel_limit,
+            self.settings.sftravel_limit,
+        ]
+        .iter()
+        .any(Option::is_some)
+    }
+
+    /// Recompute a candidate's full-context counters before it can be
+    /// committed. Fast scores can still screen candidates that cannot win.
+    fn verify_trial<const PROFILE: bool>(
+        &mut self,
+        movement: Move,
+        control: &Control,
+        profile: &mut Profile,
+        fallback: f64,
+    ) -> ak::Result<f64> {
+        if !self.has_full() || !self.has_caps() {
+            return Ok(fallback);
+        }
+        let started = clock::<PROFILE>();
+        if let Some(pending) = self.full_pending {
+            assert_eq!(pending.len, movement.len);
+            assert_eq!(pending.slots, movement.slots);
+        } else {
+            for full in self.full.iter_mut().flatten() {
+                full.cache.propose_move_profiled::<false, false, _>(
+                    movement,
+                    &control.cancel,
+                    |a, b, key| self.effort.get(a, b, key),
+                    &mut full.proposal,
+                    &mut Profile::default(),
+                )?;
+                full.cache.exact(&mut full.proposal);
+            }
+            self.full_pending = Some(movement);
+        }
+        let mut excess = 0.0;
+        if !self.soft_caps {
+            for (i, proposal) in self.proposals.iter().enumerate() {
+                if self.shares[i] == 0.0 {
+                    continue;
+                }
+                let metrics = self.full[i]
+                    .as_ref()
+                    .map(|full| full.proposal.metrics())
+                    .unwrap_or_else(|| scoring_metrics(proposal));
+                excess += violation(&metrics, &self.baseline[i], self.settings);
+            }
+        }
+        if PROFILE {
+            profile.checks += elapsed::<PROFILE>(started);
+        }
+        Ok(excess)
     }
 
     /// Whether a screened proposal's capped metric is close enough to its cap
@@ -483,7 +595,11 @@ impl Problem<'_> {
             if self.shares[i] == 0.0 {
                 return false;
             }
-            let metrics = scoring_metrics(proposal);
+            let metrics = self.full[i]
+                .as_ref()
+                .filter(|_| self.full_pending.is_some())
+                .map(|full| full.proposal.metrics())
+                .unwrap_or_else(|| scoring_metrics(proposal));
             limits.iter().any(|&(metric, limit)| {
                 limit.is_some_and(|increase| {
                     near(
@@ -510,6 +626,11 @@ impl Problem<'_> {
         for (i, proposal) in self.proposals.iter().enumerate() {
             let score_start = clock::<PROFILE>();
             let metrics = scoring_metrics(proposal);
+            let checked = self.full[i]
+                .as_ref()
+                .filter(|_| self.full_pending.is_some())
+                .map(|full| full.proposal.metrics())
+                .unwrap_or_else(|| metrics.clone());
             let value = if let Some((score, _)) = proposal.screened() {
                 score
             } else if self.settings.uses_mana2_stats() {
@@ -527,9 +648,9 @@ impl Problem<'_> {
                 if self.soft_caps {
                     score += self.shares[i]
                         * SOFT_CAP_POINTS
-                        * overshoot(&metrics, &self.baseline[i], self.settings);
+                        * overshoot(&checked, &self.baseline[i], self.settings);
                 } else {
-                    excess += violation(&metrics, &self.baseline[i], self.settings);
+                    excess += violation(&checked, &self.baseline[i], self.settings);
                 }
             }
             if PROFILE {
@@ -545,9 +666,23 @@ impl Problem<'_> {
         movement: Move,
         profile: &mut Profile,
     ) {
+        if self.has_full() && self.has_caps() {
+            let pending = self
+                .full_pending
+                .expect("full-context move was not verified");
+            assert_eq!(pending.len, movement.len);
+            assert_eq!(pending.slots, movement.slots);
+        }
         for (cache, proposal) in self.caches.iter_mut().zip(&mut self.proposals) {
             cache.commit_profiled::<PROFILE>(proposal, profile);
         }
+        if self.has_caps() {
+            for full in self.full.iter_mut().flatten() {
+                full.cache
+                    .commit_profiled::<false>(&mut full.proposal, &mut Profile::default());
+            }
+        }
+        self.full_pending = None;
         state.arr.swap(movement.slots[0], movement.slots[1]);
         if movement.len == 3 {
             state.arr.swap(movement.slots[1], movement.slots[2]);
@@ -599,15 +734,33 @@ impl Runtime<'_> {
         }
     }
 
-    fn frame(&mut self, force: bool) {
+    fn frame(&mut self, force: bool, problem: &mut Problem<'_>) -> ak::Result<()> {
         if force || self.last_frame.elapsed() >= Duration::from_millis(100) {
             self.progress.elapsed = self.started.elapsed().as_secs_f64();
             self.last_frame = Instant::now();
             let snapshot = self.snapshot();
             let baseline = self.baseline.clone();
-            let (raw, totals) = self.best.numeric[0].raw_totals();
+            if self.best.full_numeric[0].is_none() {
+                if let Some(full) = &mut problem.full[0] {
+                    // With no caps the full evaluator is only needed for a
+                    // displayed best, so don't update it for every move. A
+                    // final frame must still be available after cancellation.
+                    full.cache.restore(
+                        &self.best.arr,
+                        None,
+                        &AtomicBool::new(false),
+                        |a, b, key| problem.effort.get(a, b, key),
+                    )?;
+                    self.best.full_numeric[0] = Some(full.cache.numeric_state());
+                }
+            }
+            let numeric = self.best.full_numeric[0]
+                .as_ref()
+                .unwrap_or(&self.best.numeric[0]);
+            let (raw, totals) = numeric.raw_totals();
             (self.callback)(snapshot, baseline, raw.clone(), totals);
         }
+        Ok(())
     }
 
     fn keep(&mut self, state: &State, problem: &Problem<'_>) {
@@ -723,7 +876,7 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
                     return Ok(());
                 }
                 let movement = Move::pair(free[i], free[j]);
-                let (mut score, excess) =
+                let (mut score, mut excess) =
                     trial::<PROFILE, DETAIL>(problem, current, movement, runtime, profile)?;
                 // Improvements are ranked by their exact gain.
                 if problem.screening
@@ -731,14 +884,24 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
                 {
                     score = problem.exact().0;
                 }
-                if score < current.score - 1e-10 && excess == 0.0 {
-                    good.push((score - current.score, movement));
+                if score < current.score - 1e-10 {
+                    if problem.has_full() && problem.has_caps() && !problem.soft_caps {
+                        excess = problem.verify_trial::<PROFILE>(
+                            movement,
+                            runtime.control,
+                            profile,
+                            excess,
+                        )?;
+                    }
+                    if excess == 0.0 {
+                        good.push((score - current.score, movement));
+                    }
                 }
                 // This first pass ranks proposals; it never commits them.
                 if PROFILE {
                     profile.rejected += 1;
                 }
-                runtime.frame(false);
+                runtime.frame(false, problem)?;
             }
         }
         if good.is_empty() {
@@ -757,6 +920,11 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
             {
                 score = problem.exact().0;
             }
+            let excess = if score < current.score - 1e-10 {
+                problem.verify_trial::<PROFILE>(*movement, runtime.control, profile, excess)?
+            } else {
+                excess
+            };
             if score < current.score - 1e-10 && excess == 0.0 {
                 problem.commit::<PROFILE>(current, *movement, profile);
                 if PROFILE {
@@ -768,7 +936,7 @@ fn sweep<const PROFILE: bool, const DETAIL: bool>(
                 profile.rejected += 1;
             }
         }
-        runtime.frame(false);
+        runtime.frame(false, problem)?;
         if !changed {
             break;
         }
@@ -802,6 +970,8 @@ fn repair<const PROFILE: bool, const DETAIL: bool>(
                 if problem.screening {
                     excess = problem.exact().1;
                 }
+                excess =
+                    problem.verify_trial::<PROFILE>(movement, runtime.control, profile, excess)?;
                 if excess < best {
                     best = excess;
                     chosen = Some(movement);
@@ -809,13 +979,14 @@ fn repair<const PROFILE: bool, const DETAIL: bool>(
                 if PROFILE {
                     profile.rejected += 1;
                 }
-                runtime.frame(false);
+                runtime.frame(false, problem)?;
             }
         }
         let Some(movement) = chosen else {
             break;
         };
-        trial::<PROFILE, DETAIL>(problem, current, movement, runtime, profile)?;
+        let (_, excess) = trial::<PROFILE, DETAIL>(problem, current, movement, runtime, profile)?;
+        problem.verify_trial::<PROFILE>(movement, runtime.control, profile, excess)?;
         problem.commit::<PROFILE>(current, movement, profile);
         if PROFILE {
             profile.accepted += 1;
@@ -939,6 +1110,8 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                             &mut runtime,
                             profile,
                         )?;
+                        let excess =
+                            problem.verify_trial::<PROFILE>(movement, control, profile, excess)?;
                         if excess == 0.0 {
                             problem.commit::<PROFILE>(&mut current, movement, profile);
                             if PROFILE {
@@ -978,6 +1151,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                     if problem.screening && (delta < 0.0 || near(score, current.score)) {
                         delta = problem.exact().0 - current.score;
                     }
+                    let can_screen_limit = problem.has_full() || excess == 0.0;
                     let mut accept = |delta: &mut f64| {
                         let unit = rng.unit();
                         let mut threshold = (-*delta / temperature).exp();
@@ -987,7 +1161,13 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                         }
                         unit < threshold
                     };
-                    if excess == 0.0 && (delta < 0.0 || accept(&mut delta)) {
+                    let accepted_by_score = can_screen_limit && (delta < 0.0 || accept(&mut delta));
+                    let accepted = if accepted_by_score {
+                        problem.verify_trial::<PROFILE>(movement, control, profile, excess)? == 0.0
+                    } else {
+                        false
+                    };
+                    if accepted {
                         problem.commit::<PROFILE>(&mut current, movement, profile);
                         if PROFILE {
                             profile.accepted += 1;
@@ -999,12 +1179,12 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                     } else if PROFILE {
                         profile.rejected += 1;
                     }
-                    runtime.frame(false);
+                    runtime.frame(false, problem)?;
                 }
                 current = local;
                 if runtime.stop(problem.settings) {
                     runtime.keep(&current, problem);
-                    runtime.frame(true);
+                    runtime.frame(true, problem)?;
                     break;
                 }
                 problem.restore(&current, control)?;
@@ -1013,7 +1193,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                 sweep::<PROFILE, DETAIL>(problem, &mut current, &free, &mut runtime, profile)?;
             }
             runtime.keep(&current, problem);
-            runtime.frame(true);
+            runtime.frame(true, problem)?;
         }
         Ok(())
     })();
@@ -1047,7 +1227,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
     // Pair every returned best with an exact callback payload. Parallel
     // coordination relies on this final frame when cancellation lands between
     // the periodic frame interval and an accepted move.
-    runtime.frame(true);
+    runtime.frame(true, problem)?;
     Ok(runtime.snapshot())
 }
 
@@ -1096,18 +1276,19 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
     // A finite effort table lets trials remap only the contexts whose
     // dependencies a move touches; see `Incremental::enable_finite_effort`.
     let finite_effort = effort.all_finite();
-    // Screened scores and capped metrics are exact wherever a decision is
-    // close (`Problem::trial`).
+    // Use projected search scores, resolving numerical ties by replaying the
+    // proposal. Full-context limits are checked separately before a commit.
     let screening = true;
-    let geometry = Geometry::with_rolls(physical_keys(seed), weights.rolls());
+    let geometry = std::sync::Arc::new(Geometry::with_rolls(physical_keys(seed), weights.rolls()));
     let identity: Vec<_> = (0..seed.slots.len()).collect();
     let mut caches = Vec::with_capacity(corpora.len());
+    let mut full = Vec::with_capacity(corpora.len());
     let mut baseline = Vec::with_capacity(corpora.len());
     for (corpus_index, (corpus, _)) in corpora.iter().enumerate() {
-        let mut cache = ng::Incremental::new_with_policy(
+        let mut cache = ng::Incremental::new_with_shared_geometry(
             corpus,
             seed,
-            geometry.clone(),
+            std::sync::Arc::clone(&geometry),
             &control.cancel,
             weights.alts(),
             weights.combo_policy(),
@@ -1124,21 +1305,69 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
         } else if screening {
             cache.enable_score_projection(score_terms(weights));
         }
+        let needs_full = crate::combos::Program::for_contexts(
+            seed,
+            weights.combo_policy(),
+            weights.alts(),
+            corpus.order(),
+        )?
+        .is_some_and(|program| program.ahead());
+        let mut full_cache = if needs_full {
+            let mut full = ng::Incremental::new_with_full_contexts(
+                corpus,
+                seed,
+                std::sync::Arc::clone(&geometry),
+                &control.cancel,
+                weights.alts(),
+                weights.combo_policy(),
+                |a, b, key| effort.get(a, b, key),
+            )?;
+            if finite_effort {
+                full.enable_finite_effort();
+            }
+            if screening {
+                full.enable_aggregation();
+            }
+            if settings.uses_mana2_stats() {
+                full.enable_mana2();
+            }
+            Some(full)
+        } else {
+            None
+        };
         if let Some(metrics) = external_baseline {
             baseline.push(metrics[corpus_index].clone());
         } else if baseline_arr != identity {
             let saved = cache.numeric_state();
+            let full_saved = full_cache.as_ref().map(ng::Incremental::numeric_state);
             cache.restore(&baseline_arr, None, &control.cancel, |a, b, key| {
                 effort.get(a, b, key)
             })?;
-            baseline.push(cache.metrics());
+            if let Some(full) = &mut full_cache {
+                full.restore(&baseline_arr, None, &control.cancel, |a, b, key| {
+                    effort.get(a, b, key)
+                })?;
+            }
+            baseline.push(full_cache.as_ref().unwrap_or(&cache).metrics());
             cache.restore(&identity, Some(&saved), &control.cancel, |a, b, key| {
                 effort.get(a, b, key)
             })?;
+            if let Some(full) = &mut full_cache {
+                full.restore(
+                    &identity,
+                    full_saved.as_ref(),
+                    &control.cancel,
+                    |a, b, key| effort.get(a, b, key),
+                )?;
+            }
         } else {
-            baseline.push(cache.metrics());
+            baseline.push(full_cache.as_ref().unwrap_or(&cache).metrics());
         }
         caches.push(cache);
+        full.push(full_cache.map(|cache| FullContext {
+            cache,
+            proposal: ng::Proposal::new(),
+        }));
     }
     if PROFILE {
         profile.setup += elapsed::<PROFILE>(start);
@@ -1156,6 +1385,8 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
         effort,
         proposals: (0..caches.len()).map(|_| ng::Proposal::new()).collect(),
         caches,
+        full,
+        full_pending: None,
         screening,
         soft_caps: external_baseline.is_some(),
     };
@@ -1676,6 +1907,498 @@ mod tests {
 
     fn quiet(_: Snapshot, _: Metrics, _: Raw, _: [f64; 4]) {}
 
+    fn alternate_fixture(rule: &str, text: &[u8]) -> (ak::Layout, ng::NgramCorpus, Weights) {
+        let seed = ak::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+            Path::new("alternate-search.dat"),
+        )
+        .unwrap();
+        let rules = crate::alt_fingers::AltRules::parse(rule).unwrap();
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.1.alts = crate::alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern();
+        (seed, corpus("alternate-search.json", text), weights)
+    }
+
+    fn full_metrics(seed: &ak::Layout, corpus: &ng::NgramCorpus, weights: &Weights) -> Metrics {
+        crate::action_summary::evaluate_with_mode(
+            seed,
+            corpus,
+            weights,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            "normal",
+        )
+        .unwrap()
+        .metrics
+    }
+
+    #[test]
+    fn alternate_finger_limits_and_joint_penalties_use_full_contexts() {
+        let (mut seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let q = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "q")
+            .unwrap();
+        let e = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "e")
+            .unwrap();
+        seed.swap(q, e);
+        let settings = SearchSettings {
+            sfs_limit: Some(0.0),
+            ..settings()
+        };
+        let control = Control::new();
+        let initial = full_metrics(&seed, &corpus, &weights);
+        let mut changed = seed.clone();
+        changed.swap(q, e);
+        let changed_metrics = full_metrics(&changed, &corpus, &weights);
+        assert!((initial.v[SFS] - 0.0).abs() < 1e-9);
+        assert!((changed_metrics.v[SFS] - 20.0).abs() < 1e-9);
+
+        for soft_caps in [false, true] {
+            let effort = LocalEffort::new(&seed, &weights);
+            let geometry =
+                std::sync::Arc::new(Geometry::with_rolls(physical_keys(&seed), weights.rolls()));
+            let make_cache = |full| {
+                let constructor = if full {
+                    ng::Incremental::new_with_full_contexts
+                } else {
+                    ng::Incremental::new_with_shared_geometry
+                };
+                constructor(
+                    &corpus,
+                    &seed,
+                    geometry.clone(),
+                    &control.cancel,
+                    weights.alts(),
+                    weights.combo_policy(),
+                    |a, b, key| effort.get(a, b, key),
+                )
+                .unwrap()
+            };
+            let mut cache = make_cache(false);
+            let mut full = make_cache(true);
+            cache.enable_finite_effort();
+            cache.enable_aggregation();
+            cache.enable_score_projection(score_terms(&weights));
+            full.enable_finite_effort();
+            full.enable_aggregation();
+            let mut problem = Problem {
+                seed: &seed,
+                weights: &weights,
+                settings: &settings,
+                shares: vec![1.0],
+                baseline: vec![initial.clone()],
+                effort,
+                caches: vec![cache],
+                proposals: vec![ng::Proposal::new()],
+                full: vec![Some(FullContext {
+                    cache: full,
+                    proposal: ng::Proposal::new(),
+                })],
+                full_pending: None,
+                screening: true,
+                soft_caps,
+            };
+            let movement = Move::pair(q, e);
+            let (score, fast_excess) = problem
+                .trial::<false, false>(movement, &control, &mut Profile::default())
+                .unwrap();
+            assert_eq!(fast_excess, 0.0);
+            let exact_excess = problem
+                .verify_trial::<false>(movement, &control, &mut Profile::default(), fast_excess)
+                .unwrap();
+            if soft_caps {
+                assert!((score - SOFT_CAP_POINTS * 20.0).abs() < 1e-8);
+                assert_eq!(exact_excess, 0.0);
+            } else {
+                assert_eq!(score, 0.0);
+                assert!(exact_excess > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn alternate_finger_limits_and_live_metrics_match_evaluation_with_16_workers() {
+        let (mut seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let q = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "q")
+            .unwrap();
+        let e = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "e")
+            .unwrap();
+        seed.swap(q, e);
+        let mut locked = vec![true; seed.slots.len()];
+        locked[q] = false;
+        locked[e] = false;
+        let settings = SearchSettings {
+            workers: 16,
+            restarts: 16,
+            magic_anneal_steps: 1,
+            sfs_limit: Some(0.0),
+            cycle_probability: 0.0,
+            ..settings()
+        };
+        let expected_baseline = full_metrics(&seed, &corpus, &weights);
+        let mut frames = 0;
+        let result = run_parallel(
+            &seed,
+            &seed,
+            &[(corpus.clone(), 1.0)],
+            &weights,
+            &settings,
+            &locked,
+            &Control::new(),
+            &mut |snapshot, baseline, raw, totals| {
+                frames += 1;
+                let expected =
+                    full_metrics(&arrangement(&seed, &snapshot.best.arr), &corpus, &weights);
+                let actual = metrics_totals(&raw, &totals);
+                assert!((baseline.v[SFS] - expected_baseline.v[SFS]).abs() < 1e-9);
+                for (actual, expected) in actual.v.iter().zip(expected.v) {
+                    assert!((actual - expected).abs() < 1e-8 * (1.0 + expected.abs()));
+                }
+            },
+        )
+        .unwrap();
+        assert!(frames > 0 && result.has_best);
+        assert_eq!(result.progress.accepted, 0);
+        for candidate in std::iter::once(&result.best).chain(&result.archive) {
+            let metrics = full_metrics(&arrangement(&seed, &candidate.arr), &corpus, &weights);
+            assert!(metrics.v[SFS] <= expected_baseline.v[SFS] + 1e-9);
+        }
+    }
+
+    #[test]
+    fn alternate_finger_live_metrics_use_full_contexts_without_limits() {
+        let (seed, corpus, weights) = alternate_fixture("g_x (LM LR)", b"afgvx afgvx afgvx");
+        let expected = full_metrics(&seed, &corpus, &weights);
+        let mut observed = None;
+        run(
+            &seed,
+            &seed,
+            &[(corpus, 1.0)],
+            &weights,
+            &settings(),
+            &vec![true; seed.slots.len()],
+            &Control::new(),
+            &mut |_, _, raw, totals| observed = Some(metrics_totals(&raw, &totals)),
+        )
+        .unwrap();
+        assert!((expected.v[REDIR] - 100.0 / 3.0).abs() < 1e-8);
+        assert!((observed.unwrap().v[REDIR] - expected.v[REDIR]).abs() < 1e-8);
+    }
+
+    #[test]
+    fn uncapped_live_metrics_refresh_when_the_best_layout_changes() {
+        let (mut seed, corpus, mut weights) =
+            alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let q = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "q")
+            .unwrap();
+        let e = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "e")
+            .unwrap();
+        seed.swap(q, e);
+        let effort = LocalEffort::new(&seed, &weights);
+        let stop = AtomicBool::new(false);
+        let cache = ng::Incremental::new_with_policy(
+            &corpus,
+            &seed,
+            Geometry::with_rolls(physical_keys(&seed), weights.rolls()),
+            &stop,
+            weights.alts(),
+            weights.combo_policy(),
+            |a, b, key| effort.get(a, b, key),
+        )
+        .unwrap();
+        let mut proposal = ng::Proposal::new();
+        cache
+            .propose_swap(
+                q,
+                e,
+                &stop,
+                |a, b, key| effort.get(a, b, key),
+                &mut proposal,
+            )
+            .unwrap();
+        let difference = proposal.metrics().v[TRAVEL] - cache.metrics().v[TRAVEL];
+        assert!(difference.abs() > 1e-9);
+        weights.0[TRAVEL] = -difference.signum();
+        let mut locked = vec![true; seed.slots.len()];
+        locked[q] = false;
+        locked[e] = false;
+        let identity: Vec<_> = (0..seed.slots.len()).collect();
+        let mut changed = false;
+        let result = run(
+            &seed,
+            &seed,
+            &[(corpus.clone(), 1.0)],
+            &weights,
+            &SearchSettings {
+                hybrid: false,
+                restarts: 1,
+                ..settings()
+            },
+            &locked,
+            &Control::new(),
+            &mut |snapshot, _, raw, totals| {
+                changed |= snapshot.best.arr != identity;
+                let expected =
+                    full_metrics(&arrangement(&seed, &snapshot.best.arr), &corpus, &weights);
+                let actual = metrics_totals(&raw, &totals);
+                for (a, b) in actual.v.iter().zip(expected.v) {
+                    assert!((a - b).abs() < 1e-8 * (1.0 + b.abs()));
+                }
+            },
+        )
+        .unwrap();
+        assert!(changed && result.best.arr != identity);
+    }
+
+    #[test]
+    fn limits_use_full_metrics_for_a_separate_original_layout() {
+        let (original, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let mut seed = original.clone();
+        let q = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "q")
+            .unwrap();
+        let e = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "e")
+            .unwrap();
+        seed.swap(q, e);
+        let expected = full_metrics(&original, &corpus, &weights);
+        let mut baseline = None;
+        run(
+            &original,
+            &seed,
+            &[(corpus, 1.0)],
+            &weights,
+            &SearchSettings {
+                sfs_limit: Some(0.0),
+                ..settings()
+            },
+            &vec![true; seed.slots.len()],
+            &Control::new(),
+            &mut |_, metrics, _, _| baseline = Some(metrics),
+        )
+        .unwrap();
+        assert!((expected.v[SFS] - 20.0).abs() < 1e-9);
+        assert!((baseline.unwrap().v[SFS] - expected.v[SFS]).abs() < 1e-9);
+    }
+
+    #[test]
+    fn bigram_lookahead_corrections_survive_incremental_moves_and_restore() {
+        let (seed, corpus, weights) = alternate_fixture("g_x (LM LR)", b"afgvx afgvx fgvz");
+        let effort = LocalEffort::new(&seed, &weights);
+        let geometry =
+            std::sync::Arc::new(Geometry::with_rolls(physical_keys(&seed), weights.rolls()));
+        let stop = AtomicBool::new(false);
+        let mut cache = ng::Incremental::new_with_full_contexts(
+            &corpus,
+            &seed,
+            geometry,
+            &stop,
+            weights.alts(),
+            weights.combo_policy(),
+            |a, b, key| effort.get(a, b, key),
+        )
+        .unwrap();
+        cache.enable_finite_effort();
+        cache.enable_aggregation();
+        cache.enable_mana2();
+        let initial = cache.numeric_state();
+        let mut arr: Vec<_> = (0..seed.slots.len()).collect();
+        let slot = |name| {
+            seed.slots
+                .iter()
+                .position(|slot| slot.label == name)
+                .unwrap()
+        };
+        let moves = [
+            Move::pair(slot("g"), slot("x")),
+            Move::pair(slot("f"), slot("v")),
+            Move {
+                slots: [slot("x"), slot("e"), slot("g")],
+                len: 3,
+            },
+            Move::pair(slot("f"), slot("x")),
+        ];
+        for movement in moves {
+            let mut proposal = ng::Proposal::new();
+            cache
+                .propose_move_profiled::<false, false, _>(
+                    movement,
+                    &stop,
+                    |a, b, key| effort.get(a, b, key),
+                    &mut proposal,
+                    &mut Profile::default(),
+                )
+                .unwrap();
+            cache.exact(&mut proposal);
+            arr.swap(movement.slots[0], movement.slots[1]);
+            if movement.len == 3 {
+                arr.swap(movement.slots[1], movement.slots[2]);
+            }
+            let layout = arrangement(&seed, &arr);
+            let expected = full_metrics(&layout, &corpus, &weights);
+            for (actual, expected) in proposal.metrics().v.iter().zip(expected.v) {
+                assert!((actual - expected).abs() < 1e-8 * (1.0 + expected.abs()));
+            }
+            let physical = crate::action_summary::evaluate_with_mode(
+                &layout,
+                &corpus,
+                &weights,
+                &stop,
+                &AtomicU64::new(0),
+                "aklgg",
+            )
+            .unwrap()
+            .score;
+            assert!(
+                (proposal.physical_score(&weights) - physical).abs()
+                    < 1e-8 * (1.0 + physical.abs())
+            );
+            cache.commit(&mut proposal);
+        }
+        let identity: Vec<_> = (0..seed.slots.len()).collect();
+        cache
+            .restore(&identity, Some(&initial), &stop, |a, b, key| {
+                effort.get(a, b, key)
+            })
+            .unwrap();
+        for (actual, expected) in cache
+            .metrics()
+            .v
+            .iter()
+            .zip(full_metrics(&seed, &corpus, &weights).v)
+        {
+            assert!((actual - expected).abs() < 1e-8 * (1.0 + expected.abs()));
+        }
+    }
+
+    #[test]
+    fn full_context_incremental_moves_and_restore_match_fresh_evaluation() {
+        let (seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let effort = LocalEffort::new(&seed, &weights);
+        let geometry =
+            std::sync::Arc::new(Geometry::with_rolls(physical_keys(&seed), weights.rolls()));
+        let stop = AtomicBool::new(false);
+        let mut cache = ng::Incremental::new_with_full_contexts(
+            &corpus,
+            &seed,
+            geometry,
+            &stop,
+            weights.alts(),
+            weights.combo_policy(),
+            |a, b, key| effort.get(a, b, key),
+        )
+        .unwrap();
+        cache.enable_finite_effort();
+        cache.enable_aggregation();
+        cache.enable_mana2();
+        let initial = cache.numeric_state();
+        let mut arr: Vec<_> = (0..seed.slots.len()).collect();
+        let q = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "q")
+            .unwrap();
+        let e = seed
+            .slots
+            .iter()
+            .position(|slot| slot.label == "e")
+            .unwrap();
+        let compare = |actual: &Metrics, expected: &Metrics| {
+            for (name, a, b) in [
+                ("metric", actual.v.as_slice(), expected.v.as_slice()),
+                ("usage", actual.usage.as_slice(), expected.usage.as_slice()),
+                ("off", actual.off.as_slice(), expected.off.as_slice()),
+            ] {
+                for (index, (a, b)) in a.iter().zip(b).enumerate() {
+                    assert!(
+                        (a - b).abs() < 1e-8 * (1.0 + b.abs()),
+                        "{name} {index}: {a} versus {b}"
+                    );
+                }
+            }
+        };
+        let moves = [
+            Move::pair(q, e),
+            Move {
+                slots: [q, 9, 12],
+                len: 3,
+            },
+            Move::pair(12, 19),
+            Move::pair(e, 7),
+            Move::pair(q, e),
+        ];
+        for movement in moves {
+            let mut proposal = ng::Proposal::new();
+            cache
+                .propose_move_profiled::<false, false, _>(
+                    movement,
+                    &stop,
+                    |a, b, key| effort.get(a, b, key),
+                    &mut proposal,
+                    &mut Profile::default(),
+                )
+                .unwrap();
+            cache.exact(&mut proposal);
+            arr.swap(movement.slots[0], movement.slots[1]);
+            if movement.len == 3 {
+                arr.swap(movement.slots[1], movement.slots[2]);
+            }
+            let layout = arrangement(&seed, &arr);
+            compare(
+                &proposal.metrics(),
+                &full_metrics(&layout, &corpus, &weights),
+            );
+            let physical = crate::action_summary::evaluate_with_mode(
+                &layout,
+                &corpus,
+                &weights,
+                &stop,
+                &AtomicU64::new(0),
+                "aklgg",
+            )
+            .unwrap()
+            .score;
+            assert!(
+                (proposal.physical_score(&weights) - physical).abs()
+                    < 1e-8 * (1.0 + physical.abs())
+            );
+            cache.commit(&mut proposal);
+            compare(&cache.metrics(), &full_metrics(&layout, &corpus, &weights));
+        }
+        let identity: Vec<_> = (0..seed.slots.len()).collect();
+        cache
+            .restore(&identity, Some(&initial), &stop, |a, b, key| {
+                effort.get(a, b, key)
+            })
+            .unwrap();
+        compare(&cache.metrics(), &full_metrics(&seed, &corpus, &weights));
+    }
+
     fn assert_same(a: &Snapshot, b: &Snapshot) {
         assert_eq!(a.has_best, b.has_best);
         assert_eq!(a.best.arr, b.best.arr);
@@ -2097,6 +2820,8 @@ mod tests {
                 effort,
                 caches: vec![cache],
                 proposals: vec![ng::Proposal::new()],
+                full: vec![None],
+                full_pending: None,
                 screening: false,
                 soft_caps: false,
             };

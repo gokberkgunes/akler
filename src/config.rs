@@ -644,9 +644,8 @@ fn quoted_rank_path(path: &Path) -> AppResult<String> {
 }
 
 fn rank_config_text(hidden: &[bool; RANK_COUNT], filters: RankFilters) -> String {
-    let names: Vec<_> = RANK_ORDER
-        .iter()
-        .copied()
+    let names: Vec<_> = rank_catalog(false)
+        .into_iter()
         .filter(|&metric| !hidden[metric])
         .map(rank_name)
         .collect();
@@ -924,11 +923,15 @@ fn save_rank_filters(filters: RankFilters) -> AppResult<()> {
 
 fn save_rank_selection(
     columns: Option<&[bool; RANK_COUNT]>,
+    preset_columns: Option<&[bool; RANK_COUNT]>,
     filters: RankFilters,
     hidden: &BTreeSet<PathBuf>,
 ) -> AppResult<()> {
     let previous = read_optional_config(Path::new(APP_CONFIG_FILE))?;
-    let (text, saved_columns, _) = rank_settings_for_save()?;
+    let (text, mut saved_columns, _) = rank_settings_for_save()?;
+    if let Some(presets) = preset_columns {
+        saved_columns[RANK_PRESET_START..].copy_from_slice(&presets[RANK_PRESET_START..]);
+    }
     let text = replace_config_section(
         &text,
         "ranker",
