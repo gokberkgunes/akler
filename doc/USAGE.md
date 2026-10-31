@@ -191,7 +191,7 @@ logs, and a sorted `results.csv` under `bench/results/`. `--seconds` and
 | `--combos K`, `--fit-combos K` | Combo limit for a run / fit combos only. |
 | `--adaptive K`, `--fit-swaps K` | Swap limit for a run / fit swaps only. |
 | `--save DIR`, `--tag NAME` | Save each seed's result. |
-| `--show` | Print fitted rules, swaps and combos. |
+| `--show` | Print fitted rules, swaps and combos; for action layouts, also the start's and each result's exact score, SFB and SFS (next to the search's own score). |
 | `--ranker CORPUS` | Time three full ranker loads. |
 
 ## Profiling

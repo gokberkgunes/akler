@@ -70,6 +70,15 @@ counted in centred contexts, so they change no count. A combo the corpus does
 type still switches alternate fingers to combo contexts, which see one key
 less ahead; making both paths count alternate fingers alike remains open.
 
+**Follow-up (2026-10-31): fixed.** The remaining difference came from how
+each context set shortens contexts dropped by n-gram limits, not from the
+counting itself: without limits both agree exactly on SFB. Alternate-finger
+contexts, with or without combos, now keep up to six times as many four- and
+five-key contexts as the limits (only those whose counted trigrams are kept),
+and combos with alternate fingers use their own copy of those contexts. With
+5000/5000/5000 limits, a rare `x+j` combo on espr previously moved SFB from
+0.505% to 0.322%; now both read about 0.341%, against 0.335% without limits.
+
 **Priority: P2.** `Program::for_contexts` at [combos.rs:282](../src/combos.rs#L282) selects the combo context path whenever any combo is declared, even when its output never occurs. For the `g_x` / `afgvx` example, enabling an unused `q+p → qp` combo changed fresh REDIR from **33.33% to 66.67%**. Alternate-finger context treatment needs to remain consistent when combos are enabled.
 
 ## 6. Alternate-finger evaluation bypasses the trigram limit

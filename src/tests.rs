@@ -2689,6 +2689,73 @@ fn combos_the_corpus_never_types_leave_alternate_fingers_unchanged() {
 }
 
 #[test]
+fn capped_alternate_finger_contexts_keep_the_keys_rules_read() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("capped-alternates.dat"),
+    )
+    .unwrap();
+    let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
+    let input = b"qwer qwer qwer qwer asfg asfg";
+    let source = count_reader(
+        Cursor::new(input),
+        &CorpusConfig::default(),
+        input.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let text = counts_text(&source);
+    // f moves to LM two keys after a, which a capped "asfg" context drops.
+    let rules = alt_fingers::AltRules::parse("a_f (LP LM)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let pattern = action_ngrams::FingerPattern {
+        slots: vec![slot("s"), slot("f")],
+        fingers: vec![1, 2],
+    };
+    let capped = NgramLimits {
+        tetragrams: Some(1),
+        pentagrams: Some(1),
+        ..NgramLimits::default()
+    };
+    let mut with_combo = layout.clone();
+    with_combo.combos = vec![crate::parse_json(r#"{"keys":["q","w"],"output":"qw"}"#).unwrap()];
+    for layout in [&layout, &with_combo] {
+        for limits in [NgramLimits::default(), capped] {
+            let corpus = action_ngrams::NgramCorpus::from_text_with_limits(
+                &text,
+                Path::new("inline.json"),
+                limits,
+            )
+            .unwrap();
+            let result = corpus
+                .evaluate_with_policy(
+                    layout,
+                    &AtomicBool::new(false),
+                    &AtomicU64::new(0),
+                    alts,
+                    true,
+                    |_, _, _| 0.0,
+                )
+                .unwrap();
+            assert_eq!(
+                result.finger_tables.as_ref().unwrap()[1].get(&pattern),
+                Some(&2.0),
+                "{limits:?}, {} combos",
+                layout.combos.len()
+            );
+        }
+    }
+}
+
+#[test]
 fn alternate_bigram_lookahead_works_with_unrelated_action_keys() {
     let layout = action_keys::Layout::parse(
         "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = text \"h\"\n",

@@ -645,10 +645,16 @@ struct Window {
 /// count its target character or add a second physical bigram.
 const ALT_BIGRAM_CORRECTION: u8 = 0x80;
 
-/// An alternate-finger window whose trigram the trigram limit dropped. It
-/// keeps the keys around its counted one, which decide their fingers and
-/// whether a sequence ends there, but counts no trigram.
+/// An alternate-finger pair window whose centred trigram the trigram limit
+/// dropped: some key follows its counted one, so the sequence does not end
+/// there, but which key is unknown and no trigram is counted.
 const ALT_NO_TRIGRAM: u8 = 0x40;
+
+/// Alternate-finger contexts keep up to this many times as many four- and
+/// five-key contexts as the n-gram limits (`build_chord_windows`). On reddit
+/// with 5000 of each, 6 keeps espr's SFB within 2% of the unlimited value
+/// (2: 30%, 10: 0.2%); more makes capped searches check limits slower.
+const ALT_CONTEXT_FACTOR: usize = 6;
 
 impl Window {
     fn len(&self) -> usize {
@@ -891,7 +897,7 @@ type Postings = Arc<std::sync::OnceLock<WindowIndex>>;
 /// covers the JSON's contents, the limits, this format and the build, so any
 /// change misses and rewrites it.
 const CACHE_MAGIC: &[u8; 8] = b"AKLERNG1";
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 /// Keep a few configurations for each corpus without unbounded disk growth.
 const CACHE_FILES_PER_CORPUS: usize = 8;
 
@@ -1108,6 +1114,7 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
         rule_candidates: Arc::default(),
         pairs: Arc::default(),
+        combo_alt_windows: Arc::default(),
         speed_populations,
     })
 }
@@ -1133,6 +1140,9 @@ pub struct NgramCorpus {
     chord_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// The same for alternate fingers, shortened from the left under caps.
     alt_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
+    /// Chord windows that keep the alternate-finger windows' extra
+    /// four-key contexts, for combos with alternate fingers.
+    combo_alt_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// Built only for eligible alternate-finger rules; ordinary searches do
     /// not allocate or map the extra correction windows.
     alt_bigram_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
@@ -1221,7 +1231,7 @@ impl NgramCorpus {
     /// The chord windows, built on first use.
     fn chord_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
         self.chord_windows.get_or_init(|| {
-            self.build_chord_windows(false)
+            self.build_chord_windows(false, false)
                 .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
         })
     }
@@ -1229,7 +1239,16 @@ impl NgramCorpus {
     /// The alternate-finger windows, built on first use.
     fn alt_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
         self.alt_windows.get_or_init(|| {
-            self.build_chord_windows(true)
+            self.build_chord_windows(true, true)
+                .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
+        })
+    }
+
+    /// The chord windows for combos with alternate fingers, built on first
+    /// use.
+    fn combo_alt_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
+        self.combo_alt_windows.get_or_init(|| {
+            self.build_chord_windows(false, true)
                 .map(|windows| (windows.clone(), exact_sums_of(&windows), Postings::default()))
         })
     }
@@ -1266,8 +1285,18 @@ impl NgramCorpus {
     /// character after it, and a skipgram or trigram one key later, so its
     /// first key sees three before it.
     pub(crate) fn contexts_for(&self, program: &crate::combos::Program) -> ak::Result<Self> {
-        if !program.ahead() {
+        if !program.ahead() && !program.alt_contexts() {
             return self.chord_contexts();
+        }
+        if !program.ahead() {
+            // Combos with alternate fingers count each statistic where it
+            // ends, so shortened contexts keep their history, but they keep
+            // as many four-key contexts as alternate fingers alone.
+            let windows = self.combo_alt_windows().clone()?;
+            let mut result = self.clone();
+            (result.windows, result.exact_sums, result.postings) = windows;
+            result.rule_candidates = Arc::default();
+            return Ok(result);
         }
         let windows = if program.alt_bigram_lookahead() {
             self.alt_bigram_windows().clone()?
@@ -1299,7 +1328,7 @@ impl NgramCorpus {
     /// left-open), so every counted character keeps its full frequency.
     /// `ahead` (alternate fingers) drops the earliest character first
     /// instead: skipgrams are counted on the following one.
-    fn build_chord_windows(&self, ahead: bool) -> ak::Result<Arc<[Window]>> {
+    fn build_chord_windows(&self, ahead: bool, alt_fingers: bool) -> ak::Result<Arc<[Window]>> {
         // Contexts the capped tables kept, by length.
         let retained = self.chord_source.as_ref().map(|_| {
             let mut retained: [std::collections::HashSet<u64>; 5] = Default::default();
@@ -1317,6 +1346,37 @@ impl NgramCorpus {
             uncapped = compact_chord_source(&self.context_tables());
             &uncapped
         };
+        let mut retained = retained;
+        if let (true, Some(tables)) = (alt_fingers, retained.as_mut()) {
+            // A key's finger can read two keys to either side, which a
+            // dropped context loses: a rule like "␣_e" then goes unseen.
+            // Alternate fingers keep the most frequent four- and five-key
+            // contexts, up to `ALT_CONTEXT_FACTOR` times as many as the
+            // limits kept, whose counted trigrams the trigram limit kept.
+            // A four-key context counts its last three keys `ahead` and its
+            // first three otherwise (by target); a five-key one the trigram
+            // ending a key after the counted one `ahead`, or on it.
+            let checks: [&[std::ops::Range<usize>]; 2] = if ahead {
+                [&[1..4], &[2..5]]
+            } else {
+                [&[1..4, 0..3], &[1..4]]
+            };
+            for (n, counted) in [4, 5].into_iter().zip(checks) {
+                let mut grams: Vec<_> = source[n - 1]
+                    .iter()
+                    .filter(|(gram, _)| {
+                        counted
+                            .iter()
+                            .all(|range| tables[2].contains(&pack_gram(&gram[range.clone()])))
+                    })
+                    .collect();
+                grams.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let keep = tables[n - 1].len().saturating_mul(ALT_CONTEXT_FACTOR);
+                for (gram, _) in grams.into_iter().take(keep) {
+                    tables[n - 1].insert(pack_gram(&gram[..n]));
+                }
+            }
+        }
         // Two characters before the counted one feed trigram statistics; one
         // after shows whether a two-key combo starts on it. A third before,
         // when the corpus has it, settles whether the first of those two
@@ -1411,7 +1471,9 @@ impl NgramCorpus {
                 dropped.sort_unstable_by_key(|&(key, _)| key);
                 if ahead && n == 3 {
                     // A centred context counts its own text as a trigram;
-                    // one the limit dropped counts the rest without it.
+                    // one the limit dropped keeps its pair and the fact that
+                    // a key follows, so contexts differing only in that key
+                    // merge.
                     let mut capped: Vec<(u64, f64)> = levels[n]
                         .iter()
                         .filter(|&(&key, _)| {
@@ -1424,8 +1486,12 @@ impl NgramCorpus {
                     for (key, weight) in capped {
                         levels[n].remove(&key);
                         let (target, left_open, bytes) = unpack(key);
-                        *levels[n]
-                            .entry(pack(target | ALT_NO_TRIGRAM, left_open, &bytes))
+                        *levels[n - 1]
+                            .entry(pack(
+                                target | ALT_NO_TRIGRAM,
+                                left_open,
+                                &gram_slice(&bytes[..n - 1]),
+                            ))
                             .or_default() += weight;
                     }
                 }
@@ -1681,6 +1747,7 @@ impl NgramCorpus {
             alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             pairs: Arc::default(),
+            combo_alt_windows: Arc::default(),
             speed_populations,
         })
     }
@@ -3115,7 +3182,11 @@ impl Mappings {
         // fingers between centred and combo contexts, which counts every
         // window differently.
         let mode = |program: &crate::combos::Program| {
-            (program.ahead(), program.alt_bigram_lookahead())
+            (
+                program.ahead(),
+                program.alt_bigram_lookahead(),
+                program.alt_contexts(),
+            )
         };
         let combos = match (&self.combos, combos) {
             (None, None) => None,
@@ -3351,7 +3422,7 @@ fn chord_grams(
             return grams;
         }
         push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
-        if target + 1 < plan.len() {
+        if target + 1 < plan.len() || window.alt_no_trigram() {
             push([GAP, GAP, *kb], [GAP, GAP, *fb], 1.0);
             push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
             if !window.alt_no_trigram() {
@@ -9599,6 +9670,7 @@ mod detailed_mapping_tests {
             alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
             pairs: Arc::default(),
+            combo_alt_windows: Arc::default(),
             speed_populations: [0.0; 2],
         }
     }

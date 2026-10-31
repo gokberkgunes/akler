@@ -695,9 +695,16 @@ impl Problem<'_> {
     }
 }
 
+/// The longest a displayed best's full-context counts wait for a recount.
+const FULL_DISPLAY_INTERVAL: Duration = Duration::from_secs(1);
+
 struct Runtime<'a> {
     started: Instant,
     last_frame: Instant,
+    /// When the displayed best's full-context counts were last made, and
+    /// the counts.
+    last_full: Instant,
+    shown: Option<(Raw, [f64; 4])>,
     progress: Progress,
     control: &'a Control,
     callback: &'a mut dyn FnMut(Snapshot, Metrics, Raw, [f64; 4]),
@@ -741,25 +748,43 @@ impl Runtime<'_> {
             self.last_frame = Instant::now();
             let snapshot = self.snapshot();
             let baseline = self.baseline.clone();
+            let mut stale = false;
             if self.best.full_numeric[0].is_none() {
                 if let Some(full) = &mut problem.full[0] {
                     // With no caps the full evaluator is only needed for a
-                    // displayed best, so don't update it for every move. A
-                    // final frame must still be available after cancellation.
-                    full.cache.restore(
-                        &self.best.arr,
-                        None,
-                        &AtomicBool::new(false),
-                        |a, b, key| problem.effort.get(a, b, key),
-                    )?;
-                    self.best.full_numeric[0] = Some(full.cache.numeric_state());
+                    // displayed best, so don't update it for every move,
+                    // and recount it at most once a second: until then the
+                    // last counts stay shown. A final frame must still be
+                    // available after cancellation.
+                    if force
+                        || self.shown.is_none()
+                        || self.last_full.elapsed() >= FULL_DISPLAY_INTERVAL
+                    {
+                        full.cache.restore(
+                            &self.best.arr,
+                            None,
+                            &AtomicBool::new(false),
+                            |a, b, key| problem.effort.get(a, b, key),
+                        )?;
+                        self.best.full_numeric[0] = Some(full.cache.numeric_state());
+                        self.last_full = Instant::now();
+                    } else {
+                        stale = true;
+                    }
                 }
             }
-            let numeric = self.best.full_numeric[0]
-                .as_ref()
-                .unwrap_or(&self.best.numeric[0]);
-            let (raw, totals) = numeric.raw_totals();
-            (self.callback)(snapshot, baseline, raw.clone(), totals);
+            let (raw, totals) = match &self.shown {
+                Some((raw, totals)) if stale => (raw.clone(), *totals),
+                _ => {
+                    let numeric = self.best.full_numeric[0]
+                        .as_ref()
+                        .unwrap_or(&self.best.numeric[0]);
+                    let (raw, totals) = numeric.raw_totals();
+                    (raw.clone(), totals)
+                }
+            };
+            self.shown = Some((raw.clone(), totals));
+            (self.callback)(snapshot, baseline, raw, totals);
         }
         Ok(())
     }
@@ -1021,6 +1046,8 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
     let mut runtime = Runtime {
         started,
         last_frame: started,
+        last_full: started,
+        shown: None,
         progress: Progress {
             seed: problem.settings.seed,
             ..Progress::default()
@@ -1313,7 +1340,7 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
             corpus.order(),
             |pair| corpus.has_pair(pair),
         )?
-        .is_some_and(|program| program.ahead());
+        .is_some_and(|program| program.ahead() || program.alt_contexts());
         let mut full_cache = if needs_full {
             let mut full = ng::Incremental::new_with_full_contexts(
                 corpus,

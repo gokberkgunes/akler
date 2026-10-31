@@ -784,6 +784,20 @@ fn action_command(
             slot.col + 1,
         );
     }
+    if options.show {
+        let summary = crate::action_summary::evaluate_with_mode(
+            &original,
+            &corpora[0].0,
+            &config.weights,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            &settings.mode,
+        )?;
+        println!(
+            "start    exact {:.6}  SFB {:.6}%  SFS {:.6}%",
+            summary.score, summary.metrics.v[SFB], summary.metrics.v[SFS],
+        );
+    }
     let mut results = Vec::with_capacity(options.seeds);
     for seed in 0..options.seeds {
         let mut seeded = settings.clone();
@@ -844,16 +858,41 @@ fn action_command(
                 }
                 snapshot.1
             }
-            _ => crate::action_search::run_parallel(
-                &layout,
-                &layout,
-                &corpora,
-                &config.weights,
-                &seeded,
-                &locks,
-                &Control::new(),
-                &mut |_, _, _, _| {},
-            )?,
+            _ => {
+                let snapshot = crate::action_search::run_parallel(
+                    &layout,
+                    &layout,
+                    &corpora,
+                    &config.weights,
+                    &seeded,
+                    &locks,
+                    &Control::new(),
+                    &mut |_, _, _, _| {},
+                )?;
+                if options.show && snapshot.has_best {
+                    // The search's own score next to the exact one the
+                    // optimizer screen and ranker show for the result.
+                    let mut result =
+                        crate::action_search::arrangement(&layout, &snapshot.best.arr);
+                    crate::alt_fingers::unpin(&mut result);
+                    let summary = crate::action_summary::evaluate_with_mode(
+                        &result,
+                        &corpora[0].0,
+                        &config.weights,
+                        &AtomicBool::new(false),
+                        &AtomicU64::new(0),
+                        &settings.mode,
+                    )?;
+                    println!(
+                        "         search {:.6}  exact {:.6}  SFB {:.6}%  SFS {:.6}%",
+                        snapshot.best.score,
+                        summary.score,
+                        summary.metrics.v[SFB],
+                        summary.metrics.v[SFS],
+                    );
+                }
+                snapshot
+            }
         };
         let score = if snapshot.has_best {
             snapshot.best.score

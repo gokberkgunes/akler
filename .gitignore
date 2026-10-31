@@ -42,3 +42,7 @@ mana2/
 
 # Separate local Mana2 application
 /akler-mana2/
+
+# Optimizer output saved by the TUI and bench/magic_positions.py
+/layouts/optimized/
+/bench/results/

@@ -146,6 +146,9 @@ pub(crate) struct Program {
     /// Additional existing five-gram windows can correct unambiguous
     /// two-key lookahead in alternate-finger bigrams.
     alt_bigram_lookahead: bool,
+    /// Combos with alternate fingers: counted on the alternate-finger
+    /// contexts.
+    alt_contexts: bool,
 }
 
 fn has_byte(set: &[u64; 4], byte: u8) -> bool {
@@ -288,7 +291,10 @@ impl Program {
         if policy.enabled && !layout.combos.is_empty() {
             let program = Self::new(layout)?;
             if program.combos.iter().any(|combo| occurs(&combo.output)) {
-                return Ok(Some(program));
+                return Ok(Some(Self {
+                    alt_contexts: order >= 4 && alts.compile(layout).is_some(),
+                    ..program
+                }));
             }
         }
         if order >= 4 {
@@ -312,6 +318,12 @@ impl Program {
         self.alt_bigram_lookahead
     }
 
+    /// Whether combos count on the alternate-finger contexts
+    /// (`NgramCorpus::contexts_for`), as alternate fingers alone do.
+    pub(crate) fn alt_contexts(&self) -> bool {
+        self.alt_contexts
+    }
+
     /// This program for an optimizer search: alternate fingers then count
     /// each key at its own context, which is several times faster and
     /// slightly less exact.
@@ -319,6 +331,7 @@ impl Program {
         Self {
             ahead: false,
             alt_bigram_lookahead: false,
+            alt_contexts: false,
             ..self
         }
     }
@@ -339,6 +352,7 @@ impl Program {
             open_bytes,
             ahead: false,
             alt_bigram_lookahead: false,
+            alt_contexts: false,
         }
     }
 

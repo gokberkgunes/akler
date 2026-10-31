@@ -61,6 +61,17 @@ Optimizer searches use a faster, approximate context for their objective
 score. They check limits and report statistics using the same contexts as
 evaluation, including these limits on the available information.
 
+Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
+one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that
+`a_f` needs. Alternate fingers therefore keep up to six times as many four-
+and five-key contexts as the limits, the most frequent first, as long as
+every trigram they count is one the trigram limit kept. On reddit with
+5000/5000/5000 limits this brings espr's SFB from 0.505% to 0.341%, against
+0.335% with no limits; capped optimizer runs check their limits more slowly.
+Layouts with combos and alternate fingers use the same retained contexts, so
+a combo no longer changes how fingers are counted elsewhere. A combo whose
+output the corpus never types changes nothing at all.
+
 The ordinary model applies them only within each bigram, skipgram or trigram,
 so it misses some same-finger pairs (about 15% of SFB on stray). Finger usage
 still counts the normal finger.
