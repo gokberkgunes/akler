@@ -770,6 +770,12 @@ impl KeyState {
         self.actions_for(byte) == 0 && self.literals[byte as usize].is_power_of_two()
     }
 
+    /// The slots whose key can type `byte`, as a bit mask: literally, or as
+    /// some action's output.
+    pub(crate) fn typing_slots(&self, byte: u8) -> u64 {
+        self.literals[byte as usize] | self.actions_for(byte)
+    }
+
     pub(crate) fn terminal_dependency_start(
         &self,
         _program: &Program,

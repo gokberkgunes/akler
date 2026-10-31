@@ -3301,7 +3301,50 @@ impl PartialEq for ChordGrams {
     }
 }
 
+/// For one trial without combos: the slots that can type each character
+/// before or after the move, and each rule's named slots. A rule matches a
+/// context only if its keys can be on all of one rule's slots.
+struct RuleLetters {
+    typing: [u64; 256],
+    rules: Vec<u64>,
+}
+
+impl RuleLetters {
+    fn new(
+        alts: &crate::alt_fingers::Compiled,
+        before: &crate::action_fast::KeyState,
+        after: &crate::action_fast::KeyState,
+    ) -> Option<Self> {
+        let rules = alts.named_slot_masks()?;
+        let typing = std::array::from_fn(|byte| {
+            before.typing_slots(byte as u8) | after.typing_slots(byte as u8)
+        });
+        Some(Self { typing, rules })
+    }
+
+    /// Whether some rule could match within `text`.
+    fn reads(&self, text: &[u8]) -> bool {
+        let slots = text
+            .iter()
+            .fold(0, |slots, &byte| slots | self.typing[usize::from(byte)]);
+        self.rules.iter().any(|&rule| slots & rule == rule)
+    }
+}
+
 impl ChordGrams {
+    /// `moved` for grams counted on their keys' own fingers, which keep
+    /// them: a moved key takes its new slot's finger.
+    fn moved_default(&self, movement: Move, default_fingers: &[usize]) -> Self {
+        let mut grams = self.moved(movement);
+        for ((tail, fingers, _), (old, ..)) in grams.tails[..usize::from(grams.len)]
+            .iter_mut()
+            .zip(&self.tails)
+        {
+            *fingers = moved_fingers(*fingers, *old, *tail, default_fingers);
+        }
+        grams
+    }
+
     /// These grams after `movement`, for a context whose presses all follow
     /// their keys (`Incremental::chord_direct`).
     fn moved(&self, movement: Move) -> Self {
@@ -4902,6 +4945,10 @@ pub(crate) struct Incremental {
     /// every move keeps the same presses, which follow their keys, and only
     /// relabels the grams' slots (`ChordGrams::moved`).
     chord_direct: Vec<bool>,
+    /// `chord_direct` but for alternate fingers: such a context with no key
+    /// on a slot a rule names, before or after a move, keeps its keys' own
+    /// fingers, so the move only relabels it (`ChordGrams::moved_default`).
+    chord_free: Vec<bool>,
     /// Each combo context's plan with declared slots (`chord_plans` index
     /// by context).
     chord_plans: Vec<crate::combos::ChordPlan>,
@@ -5335,6 +5382,7 @@ impl Incremental {
             grouped_postings: std::array::from_fn(|_| Vec::new()),
             combo_contexts: Vec::with_capacity(context_count),
             chord_direct: Vec::with_capacity(context_count),
+            chord_free: Vec::with_capacity(context_count),
             chord_plans: Vec::new(),
             chord_plan_of: Vec::new(),
             chord_postings: Vec::new(),
@@ -5488,6 +5536,7 @@ impl Incremental {
             cache
                 .chord_direct
                 .push(!use_alt_fingers && combo_context && choice_free);
+            cache.chord_free.push(combo_context && choice_free);
             let bindings = statics
                 .as_ref()
                 .filter(|_| !direct && !combo_context)
@@ -6195,6 +6244,17 @@ impl Incremental {
             }
             positions(&arrangement)
         });
+        // A static context, or without combos a `chord_free` one, whose keys
+        // cannot cover any rule's named slots, before or after this move,
+        // keeps its keys' own fingers on both sides.
+        let ruled = self
+            .finger_tails
+            .as_ref()
+            .filter(|_| self.finite_effort)
+            .and_then(|_| RuleLetters::new(&self.alt_fingers, &self.keys, &keys));
+        let chords_ruled = ruled
+            .as_ref()
+            .filter(|_| self.combos.as_ref().is_some_and(|plan| plan.ahead()));
         let contexts_start = clock::<PROFILE>();
         let result = (|| -> ak::Result<()> {
             let mut mapper = crate::action_fast::Mapper::new(&self.program, &keys);
@@ -6497,6 +6557,16 @@ impl Incremental {
                             #[cfg(test)]
                             assert_eq!(grams, remap(&mut mapper, &mut profile.ops)?);
                             grams
+                        } else if self.chord_free[id]
+                            && chords_ruled.is_some_and(|ruled| !ruled.reads(window.text()))
+                        {
+                            let grams = self.chord_grams[id]
+                                .as_deref()
+                                .unwrap()
+                                .moved_default(movement, &self.default_fingers);
+                            #[cfg(test)]
+                            assert_eq!(grams, remap(&mut mapper, &mut profile.ops)?);
+                            grams
                         } else {
                             remap(&mut mapper, &mut profile.ops)?
                         };
@@ -6567,7 +6637,9 @@ impl Incremental {
                     }
                     let tail = terminal(mapped, window.end());
                     let fingers = self.finger_tails.as_ref().map(|tails| {
-                        if rules_unmoved {
+                        if rules_unmoved
+                            || ruled.as_ref().is_some_and(|ruled| !ruled.reads(window.text()))
+                        {
                             let fingers = moved_fingers(
                                 tails[id],
                                 self.tails[id],

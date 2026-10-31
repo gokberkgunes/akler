@@ -768,6 +768,28 @@ impl Compiled {
                 .all(|&byte| self.unique_bytes[usize::from(byte) / 64] & (1 << (byte % 64)) != 0)
     }
 
+    /// Per rule, the slots it names as a bit mask, without repeats: a
+    /// context without a key on each of one mask's slots matches no rule, so
+    /// each of its keys keeps its own finger. `None` when rules match text,
+    /// not slots, or a layout has more than 64 slots.
+    pub(crate) fn named_slot_masks(&self) -> Option<Vec<u64>> {
+        let codes = self.codes.as_ref().filter(|codes| codes.len() <= 64)?;
+        let mut masks: Vec<u64> = self
+            .rules
+            .iter()
+            .map(|rule| {
+                codes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, code)| rule.ngram.contains(&Some(**code)))
+                    .fold(0, |mask, (slot, _)| mask | 1 << slot)
+            })
+            .collect();
+        masks.sort_unstable();
+        masks.dedup();
+        Some(masks)
+    }
+
     /// Whether every arrangement that keeps the `locked` slots in place gets
     /// the same fingers from these rules: each slot a rule names or can move
     /// is locked, and no unlocked slot's finger is one a rule moves a key

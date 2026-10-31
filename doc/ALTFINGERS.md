@@ -74,7 +74,10 @@ every arrangement the same fingers: the evaluation contexts then differ from
 the search's by a constant, which the search measures once and checks limits
 with, confirming it exactly at the end of each restart. Capped esp-r runs on
 monkeyracer go from 12k to 36k trials/s this way. Rules on keys the search
-moves, magic keys and combos keep the exact check on every kept move.
+moves, magic keys and combos keep the exact check on every kept move. In
+every search, a context whose keys cannot cover all the keys some rule
+names, before or after a move, keeps its keys' own fingers, so the move
+only relabels it; that makes lyrebird's capped runs about a quarter faster.
 
 Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
 one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that
