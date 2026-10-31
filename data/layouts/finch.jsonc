@@ -1,0 +1,120 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// adaptive swaps
+//   after g, the next s and x trade places
+//   after g, the next y and d trade places
+//   after s, the next y and r trade places
+//   after r, the next h and l trade places
+//   after t, the next w and g trade places
+//   after u, the next ' and h trade places
+//   after l, the next w and l trade places
+//   after p, the next h and d trade places
+//   after n, the next ' and r trade places
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "v l y w j q f o . ;",
+      "c r s t m p n a i u",
+      "z x g d k b h ' , /"
+    ],
+    "thumbs": [
+      "space",
+      "e"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "gs",
+        "output": "gx"
+      },
+      {
+        "inputs": "gx",
+        "output": "gs"
+      },
+      {
+        "inputs": "gy",
+        "output": "gd"
+      },
+      {
+        "inputs": "gd",
+        "output": "gy"
+      },
+      {
+        "inputs": "sy",
+        "output": "sr"
+      },
+      {
+        "inputs": "sr",
+        "output": "sy"
+      },
+      {
+        "inputs": "rh",
+        "output": "rl"
+      },
+      {
+        "inputs": "rl",
+        "output": "rh"
+      },
+      {
+        "inputs": "tw",
+        "output": "tg"
+      },
+      {
+        "inputs": "tg",
+        "output": "tw"
+      },
+      {
+        "inputs": "u'",
+        "output": "uh"
+      },
+      {
+        "inputs": "uh",
+        "output": "u'"
+      },
+      {
+        "inputs": "lw",
+        "output": "ll"
+      },
+      {
+        "inputs": "ll",
+        "output": "lw"
+      },
+      {
+        "inputs": "ph",
+        "output": "pd"
+      },
+      {
+        "inputs": "pd",
+        "output": "ph"
+      },
+      {
+        "inputs": "n'",
+        "output": "nr"
+      },
+      {
+        "inputs": "nr",
+        "output": "n'"
+      }
+    ]
+  }
+}

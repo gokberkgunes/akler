@@ -1,0 +1,33 @@
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0.25,
+      0.75
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9 0",
+    "0 1 2 3 3 6 6 7 8 9 9",
+    "0 1 2 3 3 6 6 7 8 9 0"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "j o u r q f d l b g skip",
+      "e a i n x y h t s c '",
+      "/ . , z ; k p m v w skip"
+    ],
+    "thumbs": [
+      "space",
+      "skip"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": []
+  }
+}

@@ -1,0 +1,205 @@
+{
+    "layout": {
+        "fingers": [
+            "skip z l y w x skip p u o . skip",
+            "q t r s d g * n i a h '",
+            "skip k j v c m b f / ; , skip"
+        ],
+        "thumbs": ["space", "e"]
+    },
+    "fingermap": [
+        "0 0 1 2 3 3 0 6 7 8 9 0",
+        "0 0 1 2 3 3 6 6 7 8 9 9",
+        "0 0 1 2 3 3 6 6 7 8 9 0"
+    ],
+    "board": {
+        "isRowStaggered": false,
+        "isColumnStaggered": false,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "layers": null,
+    "magic": {
+        "keys": "*/alqsz",
+        "wildcards": "%",
+        "rules": [
+            {
+                "inputs": "%*",
+                "output": "%%"
+            },
+            {
+                "inputs": "%/",
+                "output": "%/"
+            },
+            {
+                "inputs": "%a",
+                "output": "%a"
+            },
+            {
+                "inputs": "%l",
+                "output": "%l"
+            },
+            {
+                "inputs": "%q",
+                "output": "%q"
+            },
+            {
+                "inputs": "%s",
+                "output": "%s"
+            },
+            {
+                "inputs": "%z",
+                "output": "%z"
+            },
+            {
+                "inputs": "'*",
+                "output": "''"
+            },
+            {
+                "inputs": ",*",
+                "output": ",,"
+            },
+            {
+                "inputs": ".*",
+                "output": ".."
+            },
+            {
+                "inputs": "/*",
+                "output": "//"
+            },
+            {
+                "inputs": ";*",
+                "output": ";;"
+            },
+            {
+                "inputs": "a*",
+                "output": "aa"
+            },
+            {
+                "inputs": "b*",
+                "output": "bb"
+            },
+            {
+                "inputs": "c*",
+                "output": "cc"
+            },
+            {
+                "inputs": "d*",
+                "output": "dd"
+            },
+            {
+                "inputs": "e*",
+                "output": "ee"
+            },
+            {
+                "inputs": "f*",
+                "output": "ff"
+            },
+            {
+                "inputs": "g*",
+                "output": "gg"
+            },
+            {
+                "inputs": "h*",
+                "output": "h."
+            },
+            {
+                "inputs": "i*",
+                "output": "ii"
+            },
+            {
+                "inputs": "j*",
+                "output": "jj"
+            },
+            {
+                "inputs": "k*",
+                "output": "kk"
+            },
+            {
+                "inputs": "l*",
+                "output": "ll"
+            },
+            {
+                "inputs": "m*",
+                "output": "mb"
+            },
+            {
+                "inputs": "n*",
+                "output": "nf"
+            },
+            {
+                "inputs": "o*",
+                "output": "oo"
+            },
+            {
+                "inputs": "o/",
+                "output": "oa"
+            },
+            {
+                "inputs": "oa",
+                "output": "o/"
+            },
+            {
+                "inputs": "p*",
+                "output": "pp"
+            },
+            {
+                "inputs": "q*",
+                "output": "qq"
+            },
+            {
+                "inputs": "r*",
+                "output": "rl"
+            },
+            {
+                "inputs": "rl",
+                "output": "rz"
+            },
+            {
+                "inputs": "rz",
+                "output": "rl"
+            },
+            {
+                "inputs": "s*",
+                "output": "ss"
+            },
+            {
+                "inputs": "t*",
+                "output": "tt"
+            },
+            {
+                "inputs": "u*",
+                "output": "ui"
+            },
+            {
+                "inputs": "v*",
+                "output": "vv"
+            },
+            {
+                "inputs": "w*",
+                "output": "ww"
+            },
+            {
+                "inputs": "x*",
+                "output": "xx"
+            },
+            {
+                "inputs": "y*",
+                "output": "ys"
+            },
+            {
+                "inputs": "yq",
+                "output": "ys"
+            },
+            {
+                "inputs": "ys",
+                "output": "yq"
+            },
+            {
+                "inputs": "z*",
+                "output": "zz"
+            }
+        ]
+    }
+}

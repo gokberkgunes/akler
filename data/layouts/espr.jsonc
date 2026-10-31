@@ -1,0 +1,597 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// chiral keys
+//   e   after same-hand key e · after other-hand key
+//   r   after same-hand key r · after other-hand key
+//   *   after same-hand key   · after other-hand key e
+//   @   after same-hand key   · after other-hand key r
+//
+// adaptive swaps
+//   after e, the next @ and * trade places
+//   after r, the next @ and * trade places
+//   after @, the next e and r trade places
+//   after *, the next e and r trade places
+//
+// alt fingers
+//   e* e_* (LT RT) · *e *_e (RT LT) · @r @_r (LT RT) · r@ r_@ (RT LT)
+//   *␣ (. RT)
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "b d l p w / ; ' u q",
+      "s t h c y f n a i o",
+      "z k j g v x m . , -"
+    ],
+    "thumbs": [
+      "e * space",
+      "@ r"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "ve",
+        "output": "ve"
+      },
+      {
+        "inputs": "pe",
+        "output": "pe"
+      },
+      {
+        "inputs": "he",
+        "output": "he"
+      },
+      {
+        "inputs": "ze",
+        "output": "ze"
+      },
+      {
+        "inputs": "we",
+        "output": "we"
+      },
+      {
+        "inputs": ";e",
+        "output": "; "
+      },
+      {
+        "inputs": ",e",
+        "output": ", "
+      },
+      {
+        "inputs": "fe",
+        "output": "f "
+      },
+      {
+        "inputs": "ue",
+        "output": "u "
+      },
+      {
+        "inputs": "qe",
+        "output": "q "
+      },
+      {
+        "inputs": "se",
+        "output": "se"
+      },
+      {
+        "inputs": "te",
+        "output": "te"
+      },
+      {
+        "inputs": "le",
+        "output": "le"
+      },
+      {
+        "inputs": "ce",
+        "output": "ce"
+      },
+      {
+        "inputs": "be",
+        "output": "be"
+      },
+      {
+        "inputs": "me",
+        "output": "m "
+      },
+      {
+        "inputs": "ne",
+        "output": "n "
+      },
+      {
+        "inputs": "ae",
+        "output": "a "
+      },
+      {
+        "inputs": "ie",
+        "output": "i "
+      },
+      {
+        "inputs": "oe",
+        "output": "o "
+      },
+      {
+        "inputs": "-e",
+        "output": "- "
+      },
+      {
+        "inputs": "de",
+        "output": "de"
+      },
+      {
+        "inputs": "ke",
+        "output": "ke"
+      },
+      {
+        "inputs": "ge",
+        "output": "ge"
+      },
+      {
+        "inputs": "xe",
+        "output": "x "
+      },
+      {
+        "inputs": "je",
+        "output": "je"
+      },
+      {
+        "inputs": "ye",
+        "output": "ye"
+      },
+      {
+        "inputs": "'e",
+        "output": "' "
+      },
+      {
+        "inputs": ".e",
+        "output": ". "
+      },
+      {
+        "inputs": "/e",
+        "output": "/ "
+      },
+      {
+        "inputs": "ee",
+        "output": "ee"
+      },
+      {
+        "inputs": "re",
+        "output": "r "
+      },
+      {
+        "inputs": "*e",
+        "output": "*r"
+      },
+      {
+        "inputs": "@e",
+        "output": "@r"
+      },
+      {
+        "inputs": "vr",
+        "output": "v "
+      },
+      {
+        "inputs": "pr",
+        "output": "p "
+      },
+      {
+        "inputs": "hr",
+        "output": "h "
+      },
+      {
+        "inputs": "zr",
+        "output": "z "
+      },
+      {
+        "inputs": "wr",
+        "output": "w "
+      },
+      {
+        "inputs": ";r",
+        "output": ";r"
+      },
+      {
+        "inputs": ",r",
+        "output": ",r"
+      },
+      {
+        "inputs": "fr",
+        "output": "fr"
+      },
+      {
+        "inputs": "ur",
+        "output": "ur"
+      },
+      {
+        "inputs": "qr",
+        "output": "qr"
+      },
+      {
+        "inputs": "sr",
+        "output": "s "
+      },
+      {
+        "inputs": "tr",
+        "output": "t "
+      },
+      {
+        "inputs": "lr",
+        "output": "l "
+      },
+      {
+        "inputs": "cr",
+        "output": "c "
+      },
+      {
+        "inputs": "br",
+        "output": "b "
+      },
+      {
+        "inputs": "mr",
+        "output": "mr"
+      },
+      {
+        "inputs": "nr",
+        "output": "nr"
+      },
+      {
+        "inputs": "ar",
+        "output": "ar"
+      },
+      {
+        "inputs": "ir",
+        "output": "ir"
+      },
+      {
+        "inputs": "or",
+        "output": "or"
+      },
+      {
+        "inputs": "-r",
+        "output": "-r"
+      },
+      {
+        "inputs": "dr",
+        "output": "d "
+      },
+      {
+        "inputs": "kr",
+        "output": "k "
+      },
+      {
+        "inputs": "gr",
+        "output": "g "
+      },
+      {
+        "inputs": "xr",
+        "output": "xr"
+      },
+      {
+        "inputs": "jr",
+        "output": "j "
+      },
+      {
+        "inputs": "yr",
+        "output": "y "
+      },
+      {
+        "inputs": "'r",
+        "output": "'r"
+      },
+      {
+        "inputs": ".r",
+        "output": ".r"
+      },
+      {
+        "inputs": "/r",
+        "output": "/r"
+      },
+      {
+        "inputs": "er",
+        "output": "e "
+      },
+      {
+        "inputs": "rr",
+        "output": "rr"
+      },
+      {
+        "inputs": "*r",
+        "output": "*e"
+      },
+      {
+        "inputs": "@r",
+        "output": "@e"
+      },
+      {
+        "inputs": "v*",
+        "output": "v "
+      },
+      {
+        "inputs": "p*",
+        "output": "p "
+      },
+      {
+        "inputs": "h*",
+        "output": "h "
+      },
+      {
+        "inputs": "z*",
+        "output": "z "
+      },
+      {
+        "inputs": "w*",
+        "output": "w "
+      },
+      {
+        "inputs": ";*",
+        "output": ";e"
+      },
+      {
+        "inputs": ",*",
+        "output": ",e"
+      },
+      {
+        "inputs": "f*",
+        "output": "fe"
+      },
+      {
+        "inputs": "u*",
+        "output": "ue"
+      },
+      {
+        "inputs": "q*",
+        "output": "qe"
+      },
+      {
+        "inputs": "s*",
+        "output": "s "
+      },
+      {
+        "inputs": "t*",
+        "output": "t "
+      },
+      {
+        "inputs": "l*",
+        "output": "l "
+      },
+      {
+        "inputs": "c*",
+        "output": "c "
+      },
+      {
+        "inputs": "b*",
+        "output": "b "
+      },
+      {
+        "inputs": "m*",
+        "output": "me"
+      },
+      {
+        "inputs": "n*",
+        "output": "ne"
+      },
+      {
+        "inputs": "a*",
+        "output": "ae"
+      },
+      {
+        "inputs": "i*",
+        "output": "ie"
+      },
+      {
+        "inputs": "o*",
+        "output": "oe"
+      },
+      {
+        "inputs": "-*",
+        "output": "-e"
+      },
+      {
+        "inputs": "d*",
+        "output": "d "
+      },
+      {
+        "inputs": "k*",
+        "output": "k "
+      },
+      {
+        "inputs": "g*",
+        "output": "g "
+      },
+      {
+        "inputs": "x*",
+        "output": "xe"
+      },
+      {
+        "inputs": "j*",
+        "output": "j "
+      },
+      {
+        "inputs": "y*",
+        "output": "y "
+      },
+      {
+        "inputs": "'*",
+        "output": "'e"
+      },
+      {
+        "inputs": ".*",
+        "output": ".e"
+      },
+      {
+        "inputs": "/*",
+        "output": "/e"
+      },
+      {
+        "inputs": "e*",
+        "output": "e@"
+      },
+      {
+        "inputs": "r*",
+        "output": "r@"
+      },
+      {
+        "inputs": "**",
+        "output": "* "
+      },
+      {
+        "inputs": "@*",
+        "output": "@e"
+      },
+      {
+        "inputs": "v@",
+        "output": "vr"
+      },
+      {
+        "inputs": "p@",
+        "output": "pr"
+      },
+      {
+        "inputs": "h@",
+        "output": "hr"
+      },
+      {
+        "inputs": "z@",
+        "output": "zr"
+      },
+      {
+        "inputs": "w@",
+        "output": "wr"
+      },
+      {
+        "inputs": ";@",
+        "output": "; "
+      },
+      {
+        "inputs": ",@",
+        "output": ", "
+      },
+      {
+        "inputs": "f@",
+        "output": "f "
+      },
+      {
+        "inputs": "u@",
+        "output": "u "
+      },
+      {
+        "inputs": "q@",
+        "output": "q "
+      },
+      {
+        "inputs": "s@",
+        "output": "sr"
+      },
+      {
+        "inputs": "t@",
+        "output": "tr"
+      },
+      {
+        "inputs": "l@",
+        "output": "lr"
+      },
+      {
+        "inputs": "c@",
+        "output": "cr"
+      },
+      {
+        "inputs": "b@",
+        "output": "br"
+      },
+      {
+        "inputs": "m@",
+        "output": "m "
+      },
+      {
+        "inputs": "n@",
+        "output": "n "
+      },
+      {
+        "inputs": "a@",
+        "output": "a "
+      },
+      {
+        "inputs": "i@",
+        "output": "i "
+      },
+      {
+        "inputs": "o@",
+        "output": "o "
+      },
+      {
+        "inputs": "-@",
+        "output": "- "
+      },
+      {
+        "inputs": "d@",
+        "output": "dr"
+      },
+      {
+        "inputs": "k@",
+        "output": "kr"
+      },
+      {
+        "inputs": "g@",
+        "output": "gr"
+      },
+      {
+        "inputs": "x@",
+        "output": "x "
+      },
+      {
+        "inputs": "j@",
+        "output": "jr"
+      },
+      {
+        "inputs": "y@",
+        "output": "yr"
+      },
+      {
+        "inputs": "'@",
+        "output": "' "
+      },
+      {
+        "inputs": ".@",
+        "output": ". "
+      },
+      {
+        "inputs": "/@",
+        "output": "/ "
+      },
+      {
+        "inputs": "e@",
+        "output": "e*"
+      },
+      {
+        "inputs": "r@",
+        "output": "r*"
+      },
+      {
+        "inputs": "*@",
+        "output": "*r"
+      },
+      {
+        "inputs": "@@",
+        "output": "@ "
+      }
+    ]
+  }
+}
