@@ -67,7 +67,14 @@ this puts akl.gg's espr at 4.11% SFS against akl.gg's 4.12% (4.05% before),
 and checking limits takes about 8% longer.
 Optimizer searches use a faster, approximate context for their objective
 score. They check limits and report statistics using the same contexts as
-evaluation, including these limits on the available information.
+evaluation, including these limits on the available information. When every
+key a rule names or moves is locked, and no free key sits on a finger a rule
+moves keys onto (thumb rules on locked thumbs, as in esp-r), the rules give
+every arrangement the same fingers: the evaluation contexts then differ from
+the search's by a constant, which the search measures once and checks limits
+with, confirming it exactly at the end of each restart. Capped esp-r runs on
+monkeyracer go from 12k to 36k trials/s this way. Rules on keys the search
+moves, magic keys and combos keep the exact check on every kept move.
 
 Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
 one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that

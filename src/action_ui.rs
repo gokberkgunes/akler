@@ -4353,7 +4353,6 @@ mod ngram_integration_tests {
     }
 
     #[test]
-    #[test]
     fn rule_reset_rows_clear_only_the_selected_category() {
         let mut layout = ak::Layout::parse(
             "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ou\nswap e dr\n",

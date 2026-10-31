@@ -768,6 +768,30 @@ impl Compiled {
                 .all(|&byte| self.unique_bytes[usize::from(byte) / 64] & (1 << (byte % 64)) != 0)
     }
 
+    /// Whether every arrangement that keeps the `locked` slots in place gets
+    /// the same fingers from these rules: each slot a rule names or can move
+    /// is locked, and no unlocked slot's finger is one a rule moves a key
+    /// onto, so no clash check reads a moving letter's finger. Fingers then
+    /// change with context alone, never with where the other letters go.
+    pub(crate) fn settled_by(&self, locked: &[bool], default_fingers: &[usize]) -> bool {
+        let Some(codes) = &self.codes else {
+            return false;
+        };
+        let targets = self
+            .rules
+            .iter()
+            .flat_map(|rule| rule.fingers.iter().flatten())
+            .fold(0u32, |mask, &finger| mask | 1 << finger);
+        codes.iter().enumerate().all(|(slot, &code)| {
+            locked.get(slot).copied().unwrap_or(false)
+                || self.fixed.get(slot).copied().unwrap_or(false)
+                    && self.named[usize::from(code) / 64] & (1 << (code % 64)) == 0
+                    && default_fingers
+                        .get(slot)
+                        .is_some_and(|&finger| targets & (1 << finger) == 0)
+        })
+    }
+
     /// Avoid constructing correction windows when none can change a bigram.
     pub(crate) fn has_bigram_lookahead(&self) -> bool {
         self.unique_bytes.iter().any(|&bits| bits != 0)

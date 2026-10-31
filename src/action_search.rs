@@ -363,6 +363,13 @@ struct Problem<'a> {
     /// need to update them.
     full: Vec<Option<FullContext>>,
     full_pending: Option<Move>,
+    /// When the alternate-finger rules give every reachable arrangement the
+    /// same fingers (`alt_fingers::Compiled::settled_by`), the full-context
+    /// counts of the capped metrics stay the fast counts plus a constant:
+    /// per corpus, that constant for `CAPPED`. Caps are then checked
+    /// without the full contexts, which only show the best and confirm each
+    /// restart's result.
+    settled: Option<Vec<[f64; 4]>>,
     /// Trials return screened scores (`Incremental::enable_aggregation`);
     /// decisions near a threshold call `exact` first.
     screening: bool,
@@ -370,6 +377,44 @@ struct Problem<'a> {
     /// rejecting the move.
     soft_caps: bool,
 }
+
+/// `Problem::settled` for a new problem at its seed arrangement: the
+/// offsets of the full-context capped metrics from the fast ones, when the
+/// alternate-finger rules cannot change with the arrangement. Magic and
+/// action keys, combos and joint searches keep the full-context checks.
+fn settled_offsets(problem: &Problem<'_>, locked: &[bool]) -> Option<Vec<[f64; 4]>> {
+    let seed = problem.seed;
+    if !problem.has_caps()
+        || !problem.has_full()
+        || problem.soft_caps
+        || !seed.combos.is_empty()
+        || seed
+            .slots
+            .iter()
+            .any(|slot| matches!(slot.binding, ak::Binding::Named(_)))
+    {
+        return None;
+    }
+    let fingers: Vec<_> = seed.slots.iter().map(|slot| slot.finger).collect();
+    if !problem.weights.alts().compile(seed)?.settled_by(locked, &fingers) {
+        return None;
+    }
+    Some(
+        problem
+            .caches
+            .iter()
+            .zip(&problem.full)
+            .map(|(cache, full)| {
+                let fast = cache.metrics();
+                let exact = full.as_ref().map_or_else(|| fast.clone(), |full| full.cache.metrics());
+                CAPPED.map(|metric| exact.v[metric] - fast.v[metric])
+            })
+            .collect(),
+    )
+}
+
+/// The metrics caps can limit, in `Problem::settled` order.
+const CAPPED: [usize; 4] = [SFB, SFS, TRAVEL, SFTRAVEL];
 
 /// Screened scores differ from exact ones in the last bits; any decision
 /// this close to its threshold is made on the exact score.
@@ -396,9 +441,9 @@ impl Problem<'_> {
             let metrics = cache.metrics();
             let checked = self.full[i]
                 .as_ref()
-                .filter(|_| self.has_caps())
+                .filter(|_| self.tracks_full())
                 .map(|full| full.cache.metrics())
-                .unwrap_or_else(|| metrics.clone());
+                .unwrap_or_else(|| self.settled_metrics(i, &metrics));
             let value = if self.settings.uses_mana2_stats() {
                 cache.physical_score(self.weights)
             } else {
@@ -427,7 +472,7 @@ impl Problem<'_> {
                 .iter()
                 .map(|full| {
                     full.as_ref()
-                        .filter(|_| self.has_caps())
+                        .filter(|_| self.tracks_full())
                         .map(|full| full.cache.numeric_state())
                 })
                 .collect(),
@@ -438,7 +483,7 @@ impl Problem<'_> {
 
     fn restore(&mut self, state: &State, control: &Control) -> ak::Result<()> {
         self.full_pending = None;
-        let track_full = self.has_caps();
+        let track_full = self.tracks_full();
         for (i, (cache, numeric)) in self.caches.iter_mut().zip(&state.numeric).enumerate() {
             cache.restore(&state.arr, Some(numeric), &control.cancel, |a, b, key| {
                 self.effort.get(a, b, key)
@@ -457,7 +502,7 @@ impl Problem<'_> {
 
     fn fresh(&mut self, arr: Vec<usize>, control: &Control) -> ak::Result<State> {
         self.full_pending = None;
-        let track_full = self.has_caps();
+        let track_full = self.tracks_full();
         for (i, cache) in self.caches.iter_mut().enumerate() {
             cache.restore(&arr, None, &control.cancel, |a, b, key| {
                 self.effort.get(a, b, key)
@@ -521,6 +566,53 @@ impl Problem<'_> {
         self.full.iter().any(Option::is_some)
     }
 
+    /// Whether caps are checked on the full-context counts, which must then
+    /// follow every committed move.
+    fn tracks_full(&self) -> bool {
+        self.has_caps() && self.has_full() && self.settled.is_none()
+    }
+
+    /// `fast` with the settled full-context offsets added to its capped
+    /// metrics, or `fast` itself.
+    fn settled_metrics(&self, i: usize, fast: &Metrics) -> Metrics {
+        let mut metrics = fast.clone();
+        if let Some(offsets) = &self.settled {
+            for (&metric, offset) in CAPPED.iter().zip(offsets[i]) {
+                metrics.v[metric] += offset;
+            }
+        }
+        metrics
+    }
+
+    /// Recount `state` on the full contexts and confirm the settled offsets
+    /// still hold; if not, check caps on the full contexts from here on,
+    /// with `state` re-scored on them.
+    fn confirm_settled(&mut self, state: &mut State, control: &Control) -> ak::Result<()> {
+        let Some(offsets) = self.settled.clone() else {
+            return Ok(());
+        };
+        self.restore(state, control)?;
+        let mut holds = true;
+        for (i, cache) in self.caches.iter().enumerate() {
+            let Some(full) = self.full[i].as_mut() else {
+                continue;
+            };
+            full.cache.restore(&state.arr, None, &control.cancel, |a, b, key| {
+                self.effort.get(a, b, key)
+            })?;
+            let (exact, fast) = (full.cache.metrics(), cache.metrics());
+            holds &= CAPPED.iter().zip(offsets[i]).all(|(&metric, offset)| {
+                let value = exact.v[metric];
+                (value - (fast.v[metric] + offset)).abs() <= 1e-9 * (1.0 + value.abs())
+            });
+        }
+        if !holds {
+            self.settled = None;
+            *state = self.current(state.arr.clone());
+        }
+        Ok(())
+    }
+
     fn has_caps(&self) -> bool {
         [
             self.settings.sfb_limit,
@@ -541,8 +633,18 @@ impl Problem<'_> {
         profile: &mut Profile,
         fallback: f64,
     ) -> ak::Result<f64> {
-        if !self.has_full() || !self.has_caps() {
-            return Ok(fallback);
+        if !self.tracks_full() {
+            if self.settled.is_none() || self.soft_caps {
+                return Ok(fallback);
+            }
+            let mut excess = 0.0;
+            for (i, proposal) in self.proposals.iter().enumerate() {
+                if self.shares[i] != 0.0 {
+                    let metrics = self.settled_metrics(i, &scoring_metrics(proposal));
+                    excess += violation(&metrics, &self.baseline[i], self.settings);
+                }
+            }
+            return Ok(excess);
         }
         let started = clock::<PROFILE>();
         if let Some(pending) = self.full_pending {
@@ -600,7 +702,7 @@ impl Problem<'_> {
                 .as_ref()
                 .filter(|_| self.full_pending.is_some())
                 .map(|full| full.proposal.metrics())
-                .unwrap_or_else(|| scoring_metrics(proposal));
+                .unwrap_or_else(|| self.settled_metrics(i, &scoring_metrics(proposal)));
             limits.iter().any(|&(metric, limit)| {
                 limit.is_some_and(|increase| {
                     near(
@@ -631,7 +733,7 @@ impl Problem<'_> {
                 .as_ref()
                 .filter(|_| self.full_pending.is_some())
                 .map(|full| full.proposal.metrics())
-                .unwrap_or_else(|| metrics.clone());
+                .unwrap_or_else(|| self.settled_metrics(i, &metrics));
             let value = if let Some((score, _)) = proposal.screened() {
                 score
             } else if self.settings.uses_mana2_stats() {
@@ -667,7 +769,7 @@ impl Problem<'_> {
         movement: Move,
         profile: &mut Profile,
     ) {
-        if self.has_full() && self.has_caps() {
+        if self.tracks_full() {
             let pending = self
                 .full_pending
                 .expect("full-context move was not verified");
@@ -677,7 +779,7 @@ impl Problem<'_> {
         for (cache, proposal) in self.caches.iter_mut().zip(&mut self.proposals) {
             cache.commit_profiled::<PROFILE>(proposal, profile);
         }
-        if self.has_caps() {
+        if self.tracks_full() {
             for full in self.full.iter_mut().flatten() {
                 full.cache
                     .commit_profiled::<false>(&mut full.proposal, &mut Profile::default());
@@ -1211,6 +1313,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
                 }
                 current = local;
                 if runtime.stop(problem.settings) {
+                    problem.confirm_settled(&mut current, control)?;
                     runtime.keep(&current, problem);
                     runtime.frame(true, problem)?;
                     break;
@@ -1220,6 +1323,7 @@ fn search<const PROFILE: bool, const DETAIL: bool>(
             if run_sweeps {
                 sweep::<PROFILE, DETAIL>(problem, &mut current, &free, &mut runtime, profile)?;
             }
+            problem.confirm_settled(&mut current, control)?;
             runtime.keep(&current, problem);
             runtime.frame(true, problem)?;
         }
@@ -1416,9 +1520,11 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
         caches,
         full,
         full_pending: None,
+        settled: None,
         screening,
         soft_caps: external_baseline.is_some(),
     };
+    problem.settled = settled_offsets(&problem, locked);
     let initial = problem.current(identity);
     let generation = settings.design != "refine";
     let mut known = vec![initial.arr.clone()];
@@ -1936,6 +2042,76 @@ mod tests {
 
     fn quiet(_: Snapshot, _: Metrics, _: Raw, _: [f64; 4]) {}
 
+    #[test]
+    fn locked_thumb_alternate_fingers_check_caps_on_settled_offsets() {
+        let mut seed = ak::Layout::parse(
+            "q w x d t | y u i o p\na s h f g | j k l n ;\nz c v b m | , . / ' -\nthumbs: e space | r\n",
+            Path::new("settled.dat"),
+        )
+        .unwrap();
+        seed.alt_fingers =
+            crate::alt_fingers::AltRules::parse_letters("e␣ e_␣ (LT RT) ␣e ␣_e (RT LT)").unwrap();
+        crate::alt_fingers::pin(&mut seed);
+        let corpus = corpus(
+            "settled.json",
+            b"they are here and there the tree we see the end she sent her best guess the rest",
+        );
+        let mut weights = Weights::default();
+        weights.3 = true;
+        let locked: Vec<_> = seed.slots.iter().map(|slot| !slot.main).collect();
+        let fingers: Vec<_> = seed.slots.iter().map(|slot| slot.finger).collect();
+        let compiled = weights.alts().compile(&seed).unwrap();
+        assert!(compiled.settled_by(&locked, &fingers));
+        // An unlocked rule key, or a free key on a finger rules move keys
+        // onto, can change the fingers with the arrangement.
+        let space = seed
+            .slots
+            .iter()
+            .position(|slot| slot.binding == ak::Binding::Text(vec![b' ']))
+            .unwrap();
+        let mut unlocked = locked.clone();
+        unlocked[space] = false;
+        assert!(!compiled.settled_by(&unlocked, &fingers));
+        let mut moved_finger = fingers.clone();
+        moved_finger[seed.slots.iter().position(|slot| slot.label == "a").unwrap()] = 9;
+        assert!(!compiled.settled_by(&locked, &moved_finger));
+
+        let settings = SearchSettings {
+            sfb_limit: Some(0.0),
+            sfs_limit: Some(0.0),
+            ..settings()
+        };
+        let baseline = full_metrics(&seed, &corpus, &weights);
+        // Shown stats are recounted at most once a second; the last frame's
+        // always are.
+        let mut last = None;
+        let result = run(
+            &seed,
+            &seed,
+            &[(corpus.clone(), 1.0)],
+            &weights,
+            &settings,
+            &locked,
+            &Control::new(),
+            &mut |snapshot, shown_baseline, raw, totals| {
+                assert!((shown_baseline.v[SFS] - baseline.v[SFS]).abs() < 1e-9);
+                last = Some((snapshot.best.arr.clone(), metrics_totals(&raw, &totals)));
+            },
+        )
+        .unwrap();
+        let (arr, shown) = last.unwrap();
+        let expected = full_metrics(&arrangement(&seed, &arr), &corpus, &weights);
+        for (actual, expected) in shown.v.iter().zip(expected.v) {
+            assert!((actual - expected).abs() < 1e-8 * (1.0 + expected.abs()));
+        }
+        assert!(result.has_best);
+        for candidate in std::iter::once(&result.best).chain(&result.archive) {
+            let metrics = full_metrics(&arrangement(&seed, &candidate.arr), &corpus, &weights);
+            assert!(metrics.v[SFS] <= baseline.v[SFS] + 1e-9);
+            assert!(metrics.v[SFB] <= baseline.v[SFB] + 1e-9);
+        }
+    }
+
     fn alternate_fixture(rule: &str, text: &[u8]) -> (ak::Layout, ng::NgramCorpus, Weights) {
         let seed = ak::Layout::parse(
             "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
@@ -2033,6 +2209,7 @@ mod tests {
                     proposal: ng::Proposal::new(),
                 })],
                 full_pending: None,
+                settled: None,
                 screening: true,
                 soft_caps,
             };
@@ -2853,6 +3030,7 @@ mod tests {
                 proposals: vec![ng::Proposal::new()],
                 full: vec![None],
                 full_pending: None,
+                settled: None,
                 screening: false,
                 soft_caps: false,
             };
