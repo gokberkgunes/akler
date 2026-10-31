@@ -20,7 +20,7 @@ fixed-seed benches natively and under the Wasmer CLI (`~/.wasmer/bin/wasmer`,
 or `$WASMER`), and lists any output that differs; timings are ignored.
 
 `npm run build` compiles `akler.wasm`, copies the page and its runtime into
-`web/dist`, and bundles the data: layouts, the reddit corpus (`CORPORA` in
+`web/dist`, and bundles the data: layouts, the monkeyracer corpus (`CORPORA` in
 `build.mjs`), the scissor test's word list (`akler scissor-words`) and
 `akler.conf` with `workers = 0`, so the optimizer uses one worker per core.
 
@@ -59,6 +59,6 @@ that branch; the site appears at `https://<user>.github.io/<repo>/`.
   zoom the terminal; Ctrl+L, Ctrl+R and Alt shortcuts go to the browser, not
   to akler.
 - `?args=...` runs a command instead of the menu, for example
-  `?args=bench layouts/night.jsonc corpus-reddit --seeds 2`.
+  `?args=bench layouts/night.jsonc corpus-monkeyracer --seeds 2`.
 - The home menu has no quit; `q`, Esc and Ctrl-C only go back.
 - Not available: building corpora from raw text unless you upload it.

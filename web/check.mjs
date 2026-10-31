@@ -13,7 +13,7 @@ const native = join(root, "target/release/akler");
 const wasm = join(root, "target/wasm32-wasip1-threads/release/akler.wasm");
 const wasmer = process.env.WASMER ?? join(homedir(), ".wasmer/bin/wasmer");
 const THREADS = "4";
-const CORPUS = "corpus-reddit";
+const CORPUS = "corpus-monkeyracer";
 const PARALLEL = 6;
 
 console.log("Building native and WebAssembly akler…");

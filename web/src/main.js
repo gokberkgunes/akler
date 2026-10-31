@@ -11,7 +11,7 @@ const HOME = "/workspace/akler";
 const SAVED = ["akler.conf", "ranker-hidden.json", "layouts", "scissors", "optimized"];
 const SAVE_EVERY_MS = 3000;
 
-/** Command-line arguments from `?args=...`, e.g. `?args=bench layouts/night.jsonc corpus-reddit`. */
+/** Command-line arguments from `?args=...`, e.g. `?args=bench layouts/night.jsonc corpus-monkeyracer`. */
 const commandArgs = (new URLSearchParams(location.search).get("args") ?? "").split(" ").filter(Boolean);
 
 const status = document.getElementById("status");

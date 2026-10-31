@@ -2929,7 +2929,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
             Event::Char('c') | Event::Char('C') => {
                 let path = if matches!(e, Event::Char('C')) {
                     let name = if data.name.eq_ignore_ascii_case("e200") {
-                        "reddit"
+                        "monkeyracer"
                     } else {
                         "e200"
                     };

@@ -929,7 +929,7 @@ fn run() -> AppResult<()> {
                 return Ok(());
             }
             "--help" | "-h" | "help" => {
-                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\nakler corpus prepare [NAME]\n\nDefault corpus: corpus-reddit.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\nakler corpus prepare [NAME]\n\nDefault corpus: corpus-monkeyracer.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(());
             }
             "corpus" => return corpus_command(&args[1..]),
@@ -948,7 +948,7 @@ fn run() -> AppResult<()> {
                     corpus_by_name(name)?
                 } else {
                     default_corpus_path()?
-                        .ok_or("corpus-reddit.json not found; provide a corpus path")?
+                        .ok_or("corpus-monkeyracer.json not found; provide a corpus path")?
                 };
                 return emit_evaluation(load_board(Path::new(&args[1]))?, Source::load(&corpus)?);
             }

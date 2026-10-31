@@ -1145,7 +1145,7 @@ fn default_corpus_path() -> AppResult<Option<PathBuf>> {
     }
     Ok(corpus_paths()?
         .into_iter()
-        .find(|p| corpus_name(p).eq_ignore_ascii_case("reddit")))
+        .find(|p| corpus_name(p).eq_ignore_ascii_case("monkeyracer")))
 }
 
 fn valid_corpus_stem(name: &str) -> bool {

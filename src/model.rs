@@ -10,7 +10,7 @@ const SEARCH_FILE: &str = "optimizer-search.conf";
 
 const MODEL_VERSION: &str = "ortholinear-custom-14-jump-label-case";
 
-const DEFAULT_CORPUS: &str = "corpus-reddit.json";
+const DEFAULT_CORPUS: &str = "corpus-monkeyracer.json";
 
 // Pinky, ring, middle, index: retained from the last agreed implementation.
 // This is a modeling assumption, not a universal anatomical measurement.

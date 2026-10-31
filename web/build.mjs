@@ -60,7 +60,7 @@ for (const path of tracked) {
   cpSync(join(root, path), join(data, path));
 }
 // Only the corpora listed here are served, to keep the first load small.
-const CORPORA = ["corpus-reddit.json"];
+const CORPORA = ["corpus-monkeyracer.json"];
 mkdirSync(join(data, "corpus/processed"), { recursive: true });
 for (const name of CORPORA) {
   cpSync(join(root, "corpus/processed", name), join(data, "corpus/processed", name));
