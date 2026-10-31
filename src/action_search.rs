@@ -1967,7 +1967,7 @@ mod tests {
 
     #[test]
     fn alternate_finger_limits_and_joint_penalties_use_full_contexts() {
-        let (mut seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let (mut seed, corpus, weights) = alternate_fixture("s_x (LP .)", b"qfsdx qfsdx qfsdx");
         let q = seed
             .slots
             .iter()
@@ -2056,7 +2056,7 @@ mod tests {
 
     #[test]
     fn alternate_finger_limits_and_live_metrics_match_evaluation_with_16_workers() {
-        let (mut seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let (mut seed, corpus, weights) = alternate_fixture("s_x (LP .)", b"qfsdx qfsdx qfsdx");
         let q = seed
             .slots
             .iter()
@@ -2125,14 +2125,16 @@ mod tests {
             &mut |_, _, raw, totals| observed = Some(metrics_totals(&raw, &totals)),
         )
         .unwrap();
-        assert!((expected.v[REDIR] - 100.0 / 3.0).abs() < 1e-8);
+        // g is on LM in every "afgvx": the skipgram correction settles "afg", while
+        // "fgv", whose middle key moves, keeps its counting context's fingers.
+        assert!((expected.v[REDIR] - 200.0 / 3.0).abs() < 1e-8);
         assert!((observed.unwrap().v[REDIR] - expected.v[REDIR]).abs() < 1e-8);
     }
 
     #[test]
     fn uncapped_live_metrics_refresh_when_the_best_layout_changes() {
         let (mut seed, corpus, mut weights) =
-            alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+            alternate_fixture("f_s (. LP)", b"dfqsx dfqsx dfqsx");
         let q = seed
             .slots
             .iter()
@@ -2202,7 +2204,7 @@ mod tests {
 
     #[test]
     fn limits_use_full_metrics_for_a_separate_original_layout() {
-        let (original, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let (original, corpus, weights) = alternate_fixture("s_x (LP .)", b"qfsdx qfsdx qfsdx");
         let mut seed = original.clone();
         let q = seed
             .slots
@@ -2327,7 +2329,7 @@ mod tests {
 
     #[test]
     fn full_context_incremental_moves_and_restore_match_fresh_evaluation() {
-        let (seed, corpus, weights) = alternate_fixture("a_s (LP LM)", b"aqsvd aqsvd aqsvd");
+        let (seed, corpus, weights) = alternate_fixture("s_x (LP .)", b"qfsdx qfsdx qfsdx");
         let effort = LocalEffort::new(&seed, &weights);
         let geometry =
             std::sync::Arc::new(Geometry::with_rolls(physical_keys(&seed), weights.rolls()));

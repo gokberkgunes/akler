@@ -650,6 +650,16 @@ const ALT_BIGRAM_CORRECTION: u8 = 0x80;
 /// there, but which key is unknown and no trigram is counted.
 const ALT_NO_TRIGRAM: u8 = 0x40;
 
+/// On a correction window of five keys, also correct the skipgram from its
+/// first key to its third, whose last key two keys after it can move: the
+/// context that counted it ends on that key and never sees them. Set only
+/// where that trigram was counted.
+const ALT_SKIP_CORRECTION: u8 = 0x20;
+
+/// A correction window for a skipgram alone, from a five-key context the
+/// alternate-finger windows kept beyond the capped source windows.
+const ALT_SKIP_ONLY: u8 = 0x10;
+
 /// Alternate-finger contexts keep up to this many times as many four- and
 /// five-key contexts as the n-gram limits (`build_chord_windows`). On reddit
 /// with 5000 of each, 6 keeps espr's SFB within 2% of the unlimited value
@@ -662,7 +672,10 @@ impl Window {
     }
 
     fn target(&self) -> usize {
-        usize::from(self.target & !(ALT_BIGRAM_CORRECTION | ALT_NO_TRIGRAM))
+        usize::from(
+            self.target
+                & !(ALT_BIGRAM_CORRECTION | ALT_NO_TRIGRAM | ALT_SKIP_CORRECTION | ALT_SKIP_ONLY),
+        )
     }
 
     fn alt_bigram_correction(&self) -> bool {
@@ -671,6 +684,14 @@ impl Window {
 
     fn alt_no_trigram(&self) -> bool {
         self.target & ALT_NO_TRIGRAM != 0
+    }
+
+    fn alt_skip_correction(&self) -> bool {
+        self.target & ALT_SKIP_CORRECTION != 0
+    }
+
+    fn alt_skip_only(&self) -> bool {
+        self.target & ALT_SKIP_ONLY != 0
     }
 
     fn end(&self) -> usize {
@@ -1254,10 +1275,28 @@ impl NgramCorpus {
     }
 
     /// Extend the usual alternate-finger windows with existing source
-    /// contexts that can expose two keys after a bigram's second key.
+    /// contexts that can expose two keys after a bigram's second key, and
+    /// five-key contexts that can after a skipgram's last.
     fn alt_bigram_windows(&self) -> &ak::Result<(Arc<[Window]>, bool, Postings)> {
         self.alt_bigram_windows.get_or_init(|| {
             let early = self.alt_windows().clone()?;
+            // The five-key contexts the alternate-finger windows count, with
+            // their exact counts: under caps, also the ones they keep beyond
+            // the limits. A skipgram whose trigram the limit dropped was not
+            // counted, so there is nothing to correct.
+            let trigrams: std::collections::HashSet<u64> = self
+                .windows
+                .iter()
+                .filter(|window| window.len() >= 3)
+                .map(|window| pack_gram(&window.text()[window.len() - 3..]))
+                .collect();
+            let mut skips: HashMap<u64, (SourceGram, f64), FastHash> = HashMap::default();
+            for window in early.0.iter().filter(|window| {
+                window.len() == 5 && trigrams.contains(&pack_gram(&window.text()[..3]))
+            }) {
+                skips.entry(pack_gram(window.text())).or_insert((window.bytes, 0.0)).1 +=
+                    window.weight;
+            }
             let mut windows = Vec::with_capacity(early.0.len() + self.source_windows.len());
             windows.extend(early.0.iter().cloned());
             for window in self
@@ -1267,8 +1306,20 @@ impl NgramCorpus {
             {
                 let mut correction = window.clone();
                 correction.target = (window.end() - 3) as u8 | ALT_BIGRAM_CORRECTION;
+                if window.len() == 5 && skips.remove(&pack_gram(window.text())).is_some() {
+                    correction.target |= ALT_SKIP_CORRECTION;
+                }
                 windows.push(correction);
             }
+            let mut skips: Vec<_> = skips.into_iter().collect();
+            skips.sort_unstable_by_key(|&(gram, _)| gram);
+            windows.extend(skips.into_iter().map(|(_, (bytes, weight))| Window {
+                bytes,
+                len: 5,
+                target: 2 | ALT_BIGRAM_CORRECTION | ALT_SKIP_CORRECTION | ALT_SKIP_ONLY,
+                left_open: false,
+                weight,
+            }));
             let windows: Arc<[Window]> = windows.into();
             Ok((
                 windows.clone(),
@@ -3391,33 +3442,52 @@ fn chord_grams(
             unreachable!("presses without combos are single keys");
         };
         if window.alt_bigram_correction() {
-            if *kb == GAP || *kc == GAP {
+            let Some(alts) = alts else {
                 return grams;
-            }
-            let Some(alts) = alts.filter(|alts| {
-                alts.bigram_can_use_lookahead(
+            };
+            let finger = |fingers: &[Option<usize>; 5], at: usize| {
+                fingers[at].map_or(GAP, |finger| finger as u8)
+            };
+            if !window.alt_skip_only()
+                && *kb != GAP
+                && *kc != GAP
+                && alts.bigram_can_use_lookahead(
                     window.text(),
                     &mapped[..window.len()],
                     target,
                     default_fingers,
                 )
-            }) else {
-                return grams;
-            };
-            let short_end = target + 2;
-            let before = alts.resolve(
-                &window.text()[..short_end],
-                &mapped[..short_end],
-                default_fingers,
-            );
-            let old_b = before[target - 1].map_or(GAP, |finger| finger as u8);
-            let old_c = before[target].map_or(GAP, |finger| finger as u8);
-            if (*fb, *fc) != (old_b, old_c) {
-                // Replace the old bigram without changing either unigram.
-                push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
-                push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
-                push([GAP, *kb, *kc], [GAP, old_b, old_c], -1.0);
-                push([GAP, GAP, *kc], [GAP, GAP, old_c], 1.0);
+            {
+                let short_end = target + 2;
+                let before = alts.resolve(
+                    &window.text()[..short_end],
+                    &mapped[..short_end],
+                    default_fingers,
+                );
+                let (old_b, old_c) = (finger(&before, target - 1), finger(&before, target));
+                if (*fb, *fc) != (old_b, old_c) {
+                    // Replace the old bigram without changing either unigram.
+                    push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
+                    push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
+                    push([GAP, *kb, *kc], [GAP, old_b, old_c], -1.0);
+                    push([GAP, GAP, *kc], [GAP, GAP, old_c], 1.0);
+                }
+            }
+            let (ka, fa) = element(0);
+            if window.alt_skip_correction()
+                && ka != GAP
+                && alts.skipgram_can_use_lookahead(window.text(), &mapped[..window.len()])
+            {
+                // The context that counted this trigram and its skipgram
+                // ended on its last key; replace only those two.
+                let before = alts.resolve(&window.text()[..3], &mapped[..3], default_fingers);
+                let old = [finger(&before, 0), finger(&before, 1), finger(&before, 2)];
+                if [fa, *fb, *fc] != old {
+                    push([ka, *kb, *kc], [fa, *fb, *fc], 1.0);
+                    push([GAP, *kb, *kc], [GAP, *fb, *fc], -1.0);
+                    push([ka, *kb, *kc], old, -1.0);
+                    push([GAP, *kb, *kc], [GAP, old[1], old[2]], 1.0);
+                }
             }
             return grams;
         }
@@ -3557,7 +3627,10 @@ fn add_pattern_with_fingers(
             raw.0[LTRAVEL] += travel[2] * f;
         }
         1 | 2 => {
-            let flags = pair_flags(keys[0], keys[1], slots[0] == slots[1]);
+            // A key pressed by two different fingers, like Space on either
+            // thumb, is no same-key repeat, as on akl.gg.
+            let same_key = slots[0] == slots[1] && keys[0].finger == keys[1].finger;
+            let flags = pair_flags(keys[0], keys[1], same_key);
             add_bits(raw, if kind == 1 { flags.bi } else { flags.sk }, f);
             if kind == 1 {
                 if flags.main {
@@ -7554,6 +7627,24 @@ mod tests {
         );
         assert_eq!(chord.0[CORNER_RAW], 2.0);
         assert_eq!(totals[0], 2.0);
+    }
+
+    #[test]
+    fn a_key_pressed_by_both_thumbs_is_no_same_key_repeat() {
+        let layout = plain();
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&layout));
+        let space = layout.slots.iter().position(|slot| !slot.main).unwrap();
+        let thumb = geometry.keys[space].finger;
+        let other = if thumb == 8 { 9 } else { 8 };
+        for (kind, same_key, same_finger) in [(1, SKB, SFB), (2, SKS, SFS)] {
+            let mut raw = Raw::default();
+            let fingers = [thumb, other];
+            add_pattern_with_fingers(&mut raw, kind, &[space, space], &fingers, 1.0, &geometry);
+            assert_eq!((raw.0[same_key], raw.0[same_finger]), (0.0, 0.0));
+            let fingers = [other, other];
+            add_pattern_with_fingers(&mut raw, kind, &[space, space], &fingers, 1.0, &geometry);
+            assert_eq!(raw.0[same_key], 1.0);
+        }
     }
 
     fn magic() -> ak::Layout {

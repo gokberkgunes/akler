@@ -21,7 +21,10 @@ alts: [{"ngram":["p",null,"g"],"fingers":["LM",null,"LI"]}]
 normal finger. Longer rules win, then rules with more literal characters, then
 the later rule. As on akl.gg, a rule is skipped where a key it moves would land
 on the finger of the key next to it: with r on RT, `e␣ (LT RT)` leaves Space on
-LT in "e␣r", and `e_␣` does in "er␣". A file without `alts` may instead keep
+LT in "e␣r", and `e_␣` does in "er␣". A three-key rule also checks the keys two
+away outside it, so `e_␣` leaves Space on LT in "ey␣ar". A key pressed by two
+different fingers, like Space on either thumb, is no same-key repeat. A file
+without `alts` may instead keep
 rules in a leading comment block, as stray's notes do:
 
 ```jsonc
@@ -57,6 +60,11 @@ two-key lookahead when their key mappings and alternate rules make the result
 unambiguous. It retains the history-based estimate when the available context
 cannot determine both fingers. In particular, two ends can depend on a span
 of six or more keys, which a five-gram corpus cannot fully represent.
+A skipgram is counted in a context that ends on its last key, so a key two
+after it that blocks a move goes unseen there; five-key contexts correct such
+skipgrams when every other key in them keeps its own finger. On monkeyracer
+this puts akl.gg's espr at 4.11% SFS against akl.gg's 4.12% (4.05% before),
+and checking limits takes about 8% longer.
 Optimizer searches use a faster, approximate context for their objective
 score. They check limits and report statistics using the same contexts as
 evaluation, including these limits on the available information.

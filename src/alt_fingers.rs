@@ -159,18 +159,22 @@ fn apply_rule(
         };
         // As on akl.gg, a key keeps its own finger rather than move onto the
         // finger a neighbouring key uses: "e␣ (LT RT)" leaves Space on LT in
-        // "e␣r" and "e_␣" in "er␣" when r is on RT.
+        // "e␣r" and "e_␣" in "er␣" when r is on RT. A three-key rule also
+        // checks keys two away outside it, so "e_␣" does in "ey␣ar".
         let finger_at = |position: usize| match position.checked_sub(start) {
             Some(offset) if offset < len => wins(offset).or(result[position]),
             _ => result[position],
         };
+        let reach = clash_reach(len);
         let clashes = (0..len).any(|offset| {
             let position = start + offset;
             wins(offset).is_some_and(|finger| {
                 Some(finger) != result[position]
-                    && [position.wrapping_sub(1), position + 1]
-                        .into_iter()
-                        .any(|next| next < text.len() && finger_at(next) == Some(finger))
+                    && (position.saturating_sub(reach)..(position + reach + 1).min(text.len()))
+                        .filter(|&next| {
+                            next.abs_diff(position) == 1 || !(start..start + len).contains(&next)
+                        })
+                        .any(|next| finger_at(next) == Some(finger))
             })
         });
         if clashes {
@@ -186,6 +190,12 @@ fn apply_rule(
             }
         }
     }
+}
+
+/// How far a rule of `len` keys looks for a clash on each side of a key it
+/// moves: one key for a bigram rule, two for a skipgram rule.
+pub(crate) fn clash_reach(len: usize) -> usize {
+    len.saturating_sub(1).max(1)
 }
 
 /// `[alts]`: rules like a layout's own `alts`, but naming key positions by
@@ -603,7 +613,9 @@ pub(crate) struct Compiled {
     by_first: Option<Vec<Vec<u16>>>,
     /// Slots that no rule can move off their default finger.
     fixed: Vec<bool>,
-    /// A three-key rule can actually change its first key's finger.
+    /// A rule can move some key, so keys after it can matter: a three-key
+    /// rule can move its first key, and any moved key's clash check reads
+    /// up to two keys after it.
     has_future_change: bool,
     /// Bytes with exactly one literal root and no action that can emit them.
     unique_bytes: [u64; 4],
@@ -636,14 +648,7 @@ impl Compiled {
                 })
             })
             .collect();
-        let has_future_change = rules.iter().any(|rule| {
-            rule.ngram.len() == 3
-                && rule.fingers[0].is_some()
-                && fixed.iter().enumerate().any(|(slot, &fixed)| {
-                    let code = codes.as_ref().and_then(|codes| codes.get(slot)).copied();
-                    !fixed && rule.ngram[0].map_or(true, |key| Some(key) == code)
-                })
-        });
+        let has_future_change = fixed.iter().any(|&fixed| !fixed);
         let mut unique_bytes = [0u64; 4];
         if has_future_change {
             if let Ok(program) = crate::action_fast::Program::new(layout, 5) {
@@ -727,11 +732,14 @@ impl Compiled {
                     if start < 0 {
                         return false;
                     }
-                    if start == 0 {
-                        if let (Some(assigned), Some(slot)) = (rule.fingers[0], mapped[0]) {
-                            if !fixed(Some(slot)) || assigned != defaults[slot] {
-                                // The first assignment's clash check would
-                                // read an unrecorded preceding key.
+                    let reach = clash_reach(rule.ngram.len());
+                    for (index, finger) in rule.fingers.iter().enumerate() {
+                        let at = start as usize + index;
+                        if let (Some(assigned), true) = (finger, at < reach) {
+                            let Some(slot) = mapped[at] else { continue };
+                            if !fixed(Some(slot)) || *assigned != defaults[slot] {
+                                // This assignment's clash check would read
+                                // an unrecorded preceding key.
                                 return false;
                             }
                         }
@@ -740,6 +748,24 @@ impl Compiled {
             }
         }
         true
+    }
+
+    /// Whether a five-key context fully determines its first-to-third
+    /// skipgram's fingers, and the context that counted it, which ended on
+    /// the skipgram's last key, its old ones. Its first two keys and the two
+    /// after it must stay on their own fingers, so neither keys before the
+    /// context nor ones after it can change the result.
+    pub(crate) fn skipgram_can_use_lookahead(&self, text: &[u8], mapped: &[Option<usize>]) -> bool {
+        let fixed = |slot: Option<usize>| {
+            slot.is_some_and(|slot| self.fixed.get(slot).copied().unwrap_or(false))
+        };
+        text.len() == 5
+            && mapped.len() == 5
+            && mapped[2].is_some()
+            && [0, 1, 3, 4].into_iter().all(|at| fixed(mapped[at]))
+            && text
+                .iter()
+                .all(|&byte| self.unique_bytes[usize::from(byte) / 64] & (1 << (byte % 64)) != 0)
     }
 
     /// Avoid constructing correction windows when none can change a bigram.
@@ -1020,5 +1046,35 @@ mod tests {
             &crate::parse_json(r#"[{"ngram":["p","g"],"fingers":["wat",null]}]"#).unwrap()
         )
         .is_err());
+    }
+
+    #[test]
+    fn skipgram_rules_do_not_move_a_key_onto_a_finger_two_keys_away() {
+        let layout = action_keys::Layout::parse(
+            "q w e - t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space | r\n",
+            std::path::Path::new("inline.dat"),
+        )
+        .unwrap();
+        let slot = |byte: u8| {
+            layout.slots.iter().position(|slot| {
+                matches!(&slot.binding, action_keys::Binding::Text(value) if value == &[byte])
+            })
+        };
+        let defaults: Vec<usize> = layout.slots.iter().map(|slot| slot.finger).collect();
+        let rules = AltRules::parse_letters("e_␣ (. RT)").unwrap();
+        let (lt, rt) = (defaults[slot(b' ').unwrap()], defaults[slot(b'r').unwrap()]);
+        let compiled = Compiled::new(rules.clone(), None, &layout);
+        let resolve_space = |text: &str| {
+            let mapped: Vec<_> = text.bytes().map(slot).collect();
+            let whole = resolve(&rules, text.as_bytes(), &mapped, &defaults);
+            let window = compiled.resolve(text.as_bytes(), &mapped, &defaults);
+            assert_eq!(window[..text.len()], whole[..], "{text}");
+            whole[2]
+        };
+        // As on akl.gg: "they are" keeps Space on LT because r is two keys on,
+        // while the rule's own e two keys back never blocks it.
+        assert_eq!(resolve_space("ey ad"), Some(rt));
+        assert_eq!(resolve_space("ey ar"), Some(lt));
+        assert_eq!(resolve_space("ey r"), Some(lt));
     }
 }

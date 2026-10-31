@@ -2756,6 +2756,59 @@ fn capped_alternate_finger_contexts_keep_the_keys_rules_read() {
 }
 
 #[test]
+fn skipgram_fingers_see_the_keys_after_their_last_key() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("skipgram-lookahead.dat"),
+    )
+    .unwrap();
+    let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
+    let input = b"awfgd awfgd awfgb";
+    let source = count_reader(
+        Cursor::new(input),
+        &CorpusConfig::default(),
+        input.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    // As on akl.gg, f stays on LI where d, two keys on, is on LM; the
+    // context counting "awf" ends on f and never sees d.
+    let rules = alt_fingers::AltRules::parse("a_f (. LM)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let corpus = action_ngrams::NgramCorpus::from_text_with_limits(
+        &counts_text(&source),
+        Path::new("inline.json"),
+        NgramLimits::default(),
+    )
+    .unwrap();
+    let result = corpus
+        .evaluate_with_policy(
+            &layout,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            alts,
+            true,
+            |_, _, _| 0.0,
+        )
+        .unwrap();
+    let trigrams = &result.finger_tables.as_ref().unwrap()[2];
+    let awf = |finger| action_ngrams::FingerPattern {
+        slots: vec![slot("a"), slot("w"), slot("f")],
+        fingers: vec![0, 1, finger],
+    };
+    assert_eq!(trigrams.get(&awf(3)), Some(&2.0));
+    assert_eq!(trigrams.get(&awf(2)), Some(&1.0));
+}
+
+#[test]
 fn alternate_bigram_lookahead_works_with_unrelated_action_keys() {
     let layout = action_keys::Layout::parse(
         "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = text \"h\"\n",
