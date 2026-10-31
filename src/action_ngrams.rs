@@ -3618,10 +3618,10 @@ fn add_pattern_with_fingers(
             let key = keys[0];
             raw.0[USAGE + key.finger] += f;
             if geometry.corner[slots[0]] { raw.0[CORNER_RAW] += f; }
-            if key.main && !HomeAnchors::new(&geometry.keys).contains(key) {
+            if key.main && !geometry.anchors.contains(key) {
                 raw.0[OFF + key.finger] += f;
             }
-            let travel = home_travel_for(key, &geometry.keys);
+            let travel = geometry.anchors.travel(key, &geometry.keys);
             raw.0[TRAVEL] += travel[0] * f;
             raw.0[VTRAVEL] += travel[1] * f;
             raw.0[LTRAVEL] += travel[2] * f;

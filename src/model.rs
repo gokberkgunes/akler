@@ -902,6 +902,17 @@ impl HomeAnchors {
     fn contains(self, k: Key) -> bool {
         k.main && self.slots[k.finger].is_some_and(|home| home.row == k.row && home.col == k.col)
     }
+
+    /// `k`'s distance from its finger's home (total, vertical, lateral).
+    fn travel(self, k: Key, keys: &[Key]) -> [f64; 3] {
+        if !k.main {
+            return [0.0; 3];
+        }
+        let home = self.anchor(k, keys);
+        let x = k.horizontal_delta(home).abs();
+        let y = k.vertical_delta(home).abs();
+        [x.hypot(y), y, x]
+    }
 }
 
 fn home_slot_mask(keys: &[Key]) -> Vec<bool> {
@@ -913,13 +924,7 @@ fn home_slot_mask(keys: &[Key]) -> Vec<bool> {
 }
 
 fn home_travel_for(k: Key, keys: &[Key]) -> [f64; 3] {
-    if !k.main {
-        return [0.0; 3];
-    }
-    let home = HomeAnchors::new(keys).anchor(k, keys);
-    let x = k.horizontal_delta(home).abs();
-    let y = k.vertical_delta(home).abs();
-    [x.hypot(y), y, x]
+    HomeAnchors::new(keys).travel(k, keys)
 }
 
 #[derive(Clone)]
@@ -931,6 +936,8 @@ struct Geometry {
     n: usize,
     /// Each key's distance from home (total, vertical, lateral).
     home: Vec<[f64; 3]>,
+    /// The home keys, for keys an alternate finger presses.
+    anchors: HomeAnchors,
     is_home: Vec<bool>,
     corner: Vec<bool>,
     sf_distance: Vec<f64>,
@@ -986,16 +993,7 @@ impl Geometry {
         let anchors = HomeAnchors::new(&keys);
         let home = keys
             .iter()
-            .copied()
-            .map(|key| {
-                if !key.main {
-                    return [0.0; 3];
-                }
-                let anchor = anchors.anchor(key, &keys);
-                let x = key.horizontal_delta(anchor).abs();
-                let y = key.vertical_delta(anchor).abs();
-                [x.hypot(y), y, x]
-            })
+            .map(|&key| anchors.travel(key, &keys))
             .collect();
         let is_home = keys
             .iter()
@@ -1025,6 +1023,7 @@ impl Geometry {
             tri,
             n,
             home,
+            anchors,
             is_home,
             corner,
             sf_distance,
