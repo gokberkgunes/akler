@@ -10,8 +10,10 @@ The search then moves letters and refits the magic rules together, scored
 with the current mode (`normal` or `aklgg`). An unlocked magic key can move.
 Caps stay relative to the original layout.
 
-Magic, Swaps, and Alts occupy three rows in one shared reset box. In optimizer setup and
-results, click a line's `↻` button to refresh its rules in memory. Magic
+Magic, Swaps, and Alts each take a row under the board, green while on and
+red while off; click a row to turn it on or off (Magic: `m`). In optimizer
+setup and results, click a row's `[↻ reset]` button to refresh its rules in
+memory. Magic
 keeps its physical key, fallback, and existing rule contexts: `___` marks each
 output queued for refitting. The working outputs stay active until replacements
 are evaluated. Press Space to refit outputs in those same slots; rules are
@@ -22,7 +24,7 @@ refits according to the current adaptive-swap limit.
 Clearing Alts removes the current layout's and session's configured alternate
 rules; alternate fingers are configured manually and are not fitted.
 
-The adjacent **Mirror** button reflects the layout left to right, including
+The **Mirror** button, at the board's right edge, reflects the layout left to right, including
 thumbs. Locks stay at their physical positions; layout-owned alternate-finger
 assignments switch hands along with their keys. Click Mirror again to undo it.
 

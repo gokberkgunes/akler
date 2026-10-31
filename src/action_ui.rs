@@ -406,10 +406,10 @@ fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
 }
 
 /// Draw `rules_and_combos` at `y`, returning the next free row.
-/// Under the optimizer's board: magic rules and combos, then the adaptive
-/// swaps and alternate fingers as lines a click turns off (red) or on (green)
-/// for this session. `stashed` holds the swaps while they are off; `fit` is
-/// how many swaps a run may fit.
+/// Under the optimizer's board: magic rules, adaptive swaps and alternate
+/// fingers as lines a click turns off (red) or on (green) for this session,
+/// each with a reset button, then combos. `stashed` holds the swaps while
+/// they are off; `fit` is how many swaps a run may fit.
 fn optimizer_toggle_rows(
     c: &mut Canvas,
     mut y: usize,
@@ -418,10 +418,22 @@ fn optimizer_toggle_rows(
     stashed: Option<&[crate::swap_fit::Swap]>,
     fit: usize,
     exact: bool,
+    magic_on: bool,
 ) -> usize {
     let mut rows = Vec::new();
     for (slot, line) in magic_rule_lines(l, true) {
-        rows.push((line, CYAN, Some(RuleReset::Magic(slot)), None));
+        let line = match line.split_once(": ") {
+            Some((name, rules)) => {
+                format!("{name} {}: {rules}", if magic_on { "on" } else { "off" })
+            }
+            None => line,
+        };
+        rows.push((
+            line,
+            if magic_on { GREEN } else { RED },
+            Some(RuleReset::Magic(slot)),
+            Some('m'),
+        ));
     }
     let swaps = stashed.map_or_else(|| crate::swap_fit::swaps_of(l), <[_]>::to_vec);
     if !swaps.is_empty() || fit > 0 || stashed.is_some() {
@@ -504,66 +516,70 @@ pub(crate) enum RuleReset {
 
 type RuleControl = (String, u8, Option<RuleReset>, Option<char>);
 
+/// The label of a rule line's reset button.
+const RESET_BUTTON: &str = "[↻ reset]";
+
+/// One line per rule kind: its text, which a click toggles, then a small
+/// reset button right after it.
 fn rule_controls(canvas: &mut Canvas, y: usize, rows: &[RuleControl]) -> usize {
-    let mirror_x = canvas.w.saturating_sub(12);
-    canvas.boxed(
-        Rect {
-            x: mirror_x,
-            y,
-            w: 12.min(canvas.w),
-            h: 3,
-        },
-        FG,
-    );
-    canvas.text(mirror_x + 2, y + 1, "⇆ Mirror", FG);
-    canvas.hit(
-        Rect {
-            x: mirror_x,
-            y,
-            w: 12.min(canvas.w),
-            h: 3,
-        },
-        Action::MirrorLayout,
-    );
-    if !rows.is_empty() {
-        canvas.boxed(
-            Rect {
-                x: 0,
-                y,
-                w: 5.min(canvas.w),
-                h: rows.len() + 2,
-            },
-            FG,
-        );
-    }
+    let button = RESET_BUTTON.chars().count();
     for (index, (text, color, reset, toggle)) in rows.iter().enumerate() {
-        let row = y + index + 1;
-        if let Some(reset) = reset {
-            canvas.put(2, row, '↻', FG);
+        let row = y + index;
+        let text = short(text, canvas.w.saturating_sub(button + 3));
+        let len = text.chars().count();
+        canvas.text(1, row, &text, *color);
+        if let Some(command) = toggle {
             canvas.hit(
                 Rect {
                     x: 1,
                     y: row,
-                    w: 3,
-                    h: 1,
-                },
-                Action::ResetRules(*reset),
-            );
-        }
-        canvas.text(6, row, &short(text, mirror_x.saturating_sub(7)), *color);
-        if let Some(command) = toggle {
-            canvas.hit(
-                Rect {
-                    x: 6,
-                    y: row,
-                    w: mirror_x.saturating_sub(7),
+                    w: len,
                     h: 1,
                 },
                 Action::Command(*command),
             );
         }
+        if let Some(reset) = reset {
+            let x = len + 3;
+            canvas.text(x, row, RESET_BUTTON, MUTED);
+            canvas.hit(
+                Rect {
+                    x,
+                    y: row,
+                    w: button,
+                    h: 1,
+                },
+                Action::ResetRules(*reset),
+            );
+        }
     }
-    y + (rows.len() + 2).max(3)
+    y + rows.len()
+}
+
+/// The Mirror button, against the board's right edge in its thumb row, or
+/// under the board when the thumbs reach that far. `end` is the row after
+/// the board; returns the row after the button.
+fn mirror_button(canvas: &mut Canvas, end: usize, l: &ak::Layout) -> usize {
+    const WIDTH: usize = 12;
+    let (x, width, kw) = keyboard_span(canvas.w, l);
+    let mirror_x = (x + width).saturating_sub(WIDTH);
+    let right_thumbs = l.slots.iter().filter(|slot| !slot.main && slot.hand == 1).count();
+    let thumbs_end = x + width / 2 + 1 + right_thumbs * (kw + 3);
+    let (y, next) = if l.slots.iter().any(|slot| !slot.main) && thumbs_end + 2 <= mirror_x {
+        (end.saturating_sub(4), end)
+    } else {
+        (end, end + 4)
+    };
+    let rect = Rect {
+        x: mirror_x,
+        y,
+        w: WIDTH.min(canvas.w),
+        h: 3,
+    };
+    canvas.boxed(rect, FG);
+    canvas.text(mirror_x + 2, y + 1, "⇆ Mirror", FG);
+    canvas.hit(rect, Action::MirrorLayout);
+    next
 }
 
 fn mirror_optimizer_layout(layout: &mut ak::Layout, root: &mut Option<usize>) {
@@ -685,6 +701,23 @@ fn rules_and_alts_rows(
     y + 1
 }
 
+/// Where `action_keyboard` draws `l` across a canvas `canvas_w` wide: its
+/// left edge, width and key width.
+fn keyboard_span(canvas_w: usize, l: &ak::Layout) -> (usize, usize, usize) {
+    let main = || l.slots.iter().filter(|slot| slot.main);
+    let min = main().map(|slot| slot.col).min().unwrap_or(0);
+    let max = main().map(|slot| slot.col).max().unwrap_or(9);
+    let cols = (max - min + 1) as usize;
+    let min_offset = main().map(|s| s.row_offset).min().unwrap_or(0).min(0);
+    let max_offset = main().map(|s| s.row_offset).max().unwrap_or(0).max(0);
+    let gap = 3;
+    let width = |kw: usize| {
+        cols * (kw + 1) - 1 + gap + stagger_cells(max_offset, min_offset, kw + 1)
+    };
+    let kw = [7, 5].into_iter().find(|&kw| width(kw) <= canvas_w).unwrap_or(4);
+    (canvas_w.saturating_sub(width(kw)) / 2, width(kw), kw)
+}
+
 pub(crate) fn action_keyboard(
     c: &mut Canvas,
     y: usize,
@@ -700,14 +733,6 @@ pub(crate) fn action_keyboard(
         .map(|slot| slot.col)
         .min()
         .unwrap_or(0);
-    let max = l
-        .slots
-        .iter()
-        .filter(|slot| slot.main)
-        .map(|slot| slot.col)
-        .max()
-        .unwrap_or(9);
-    let cols = (max - min + 1) as usize;
     let physical = physical_keys(l);
     let column_shift = i8::from(l.left_outer && !original.left_outer);
     let original_slot = |i: usize| {
@@ -729,14 +754,6 @@ pub(crate) fn action_keyboard(
         .min()
         .unwrap_or(0)
         .min(0);
-    let max_offset = l
-        .slots
-        .iter()
-        .filter(|s| s.main)
-        .map(|s| s.row_offset)
-        .max()
-        .unwrap_or(0)
-        .max(0);
     let min_column_offset = l
         .slots
         .iter()
@@ -755,19 +772,8 @@ pub(crate) fn action_keyboard(
         .max(0);
     let column_height = stagger_cells(max_column_offset, min_column_offset, 3);
     let gap = 3;
-    let fits = |kw: usize| {
-        cols * (kw + 1) - 1 + gap + stagger_cells(max_offset, min_offset, kw + 1) <= c.w
-    };
-    let kw: usize = if fits(7) {
-        7
-    } else if fits(5) {
-        5
-    } else {
-        4
-    };
+    let (x, width, kw) = keyboard_span(c.w, l);
     let step = kw + 1;
-    let width = cols * step - 1 + gap + stagger_cells(max_offset, min_offset, step);
-    let x = c.w.saturating_sub(width) / 2;
     let left_thumbs = l
         .slots
         .iter()
@@ -864,7 +870,7 @@ fn action_frame(
     status: &str,
     latest_comparison: Option<bool>,
     scoring_mode: Option<&str>,
-    toggles: Option<(Option<&[crate::swap_fit::Swap]>, usize, bool)>,
+    toggles: Option<(Option<&[crate::swap_fit::Swap]>, usize, bool, bool)>,
 ) -> Canvas {
     let mut c = Canvas::new(term.width(), 150);
     let controls = match latest_comparison {
@@ -882,7 +888,10 @@ fn action_frame(
     header(&mut c, title, &a.corpus.name, &l.name, "");
     let mut y = action_keyboard(&mut c, 2, l, base, locks, selected) + 1;
     y = match toggles {
-        Some((stashed, fit, exact)) => optimizer_toggle_rows(&mut c, y, l, w, stashed, fit, exact),
+        Some((stashed, fit, exact, magic_on)) => {
+            y = mirror_button(&mut c, y, l);
+            optimizer_toggle_rows(&mut c, y, l, w, stashed, fit, exact, magic_on)
+        }
         None => rules_and_alts_rows(&mut c, y, l, w, false),
     };
     let limited = if a.corpus.warnings.iter().any(|warning| {
@@ -2389,7 +2398,12 @@ fn action_optimizer_setup(
                 &lock_status,
                 None,
                 Some(&settings.mode),
-                Some((stashed_swaps.as_deref(), swaps, swaps_exact)),
+                Some((
+                    stashed_swaps.as_deref(),
+                    swaps,
+                    swaps_exact,
+                    magic_root.is_some(),
+                )),
             )
         };
         let active_tab = if settings_view {
@@ -2794,7 +2808,8 @@ fn action_optimizer_setup(
                     "o\tReset the layout to its loaded bindings.".into(),
                     "Click a key\tLock or unlock its physical slot.".into(),
                     "Drag a key\tSwap its binding with another key.".into(),
-                    "↻ box\tClear that line's rules in memory; Space refits Magic and Swaps.".into(),
+                    "[↻ reset]\tClear that line's rules in memory; Space refits Magic and Swaps.".into(),
+                    "Magic, Swaps or Alts line\tTurn magic search, adaptive swaps or alternate fingers on (green) or off (red).".into(),
                     "Click a stat\tShow its contributing patterns.".into(),
                     "H\tUse default locks.".into(),
                     "U\tUnlock all keys, including an active magic key.".into(),
@@ -3169,6 +3184,7 @@ fn action_result_frame(
         &format!("m stats: {} | ? help | q setup", term.stats_view_name()),
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
+    y = mirror_button(&mut frame, y, layout);
     y = rules_and_alts_rows(&mut frame, y, layout, weights, true);
     let aklgg_scoring = settings.mode == "aklgg";
     let physical_stats = settings.uses_mana2_stats().then(|| {
@@ -3566,7 +3582,7 @@ fn action_optimizer_session(
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
                             "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS.".into(),
                             "v shows current magic rules when magic optimization is enabled.".into(),
-                            "The ↻ box clears that line's rules and returns to setup; Space refits Magic and Swaps.".into(),
+                            "[↻ reset] clears that line's rules and returns to setup; Space refits Magic and Swaps.".into(),
                             ". toggles display precision.".into(),
                         ],
                     )?,
@@ -4337,6 +4353,7 @@ mod ngram_integration_tests {
     }
 
     #[test]
+    #[test]
     fn rule_reset_rows_clear_only_the_selected_category() {
         let mut layout = ak::Layout::parse(
             "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ou\nswap e dr\n",
@@ -4348,22 +4365,19 @@ mod ngram_integration_tests {
         let mut weights = Weights::default();
         let mut stashed = None;
         let mut canvas = Canvas::new(108, 20);
-        let bottom = optimizer_toggle_rows(&mut canvas, 0, &layout, &weights, None, 5, false);
-        assert_eq!(bottom, 6, "three rule rows share one five-row frame");
-        assert!(canvas
-            .hits
-            .iter()
-            .any(|(_, action)| matches!(action, Action::MirrorLayout)));
-        for (row, name) in [(1, "Magic *:"), (2, "Swaps:"), (3, "Alts on:")] {
+        let bottom = optimizer_toggle_rows(&mut canvas, 0, &layout, &weights, None, 5, false, true);
+        assert_eq!(bottom, 4, "three rule rows, then a blank one");
+        for (row, name) in [(0, "Magic * on:"), (1, "Swaps:"), (2, "Alts on:")] {
             let text: String = canvas.cells[row * canvas.w..(row + 1) * canvas.w]
                 .iter()
                 .map(|cell| cell.ch)
                 .collect();
-            assert!(text.starts_with(&format!("│ ↻ │ {name}")), "{text}");
-            assert!(canvas.hits.iter().any(|(rect, action)| rect.x == 1
+            assert!(text.starts_with(&format!(" {name}")), "{text}");
+            let button = text.find(RESET_BUTTON).expect("a reset button follows the rules");
+            let x = text[..button].chars().count();
+            assert!(canvas.hits.iter().any(|(rect, action)| rect.x == x
                 && rect.y == row
-                && rect.w == 3
-                && rect.h == 1
+                && rect.w == RESET_BUTTON.chars().count()
                 && matches!(action, Action::ResetRules(_))));
         }
         let fallback = crate::magic_design::original(&layout, root).unwrap().1;
