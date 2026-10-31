@@ -12,7 +12,7 @@ use super::*;
 use crate::action_keys as ak;
 use crate::action_ngrams as ng;
 
-const USAGE: &str = "bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--chain K [--move A=B]] [--hand left|right] [--keep-wred] [--fit-combos K] [--combos K] [--fit-swaps K] [--adaptive K] [--config FILE] [--save DIR [--tag NAME]]";
+const USAGE: &str = "bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--magic-at SLOT] [--show] [--swaps N] [--chain K [--move A=B]] [--hand left|right] [--keep-wred] [--fit-combos K] [--combos K] [--fit-swaps K] [--adaptive K] [--config FILE] [--save DIR [--tag NAME]]";
 
 struct Options {
     layout: PathBuf,
@@ -22,6 +22,9 @@ struct Options {
     full_ngrams: bool,
     rescore_full: bool,
     unlocked: bool,
+    /// Move the existing dedicated magic key to this zero-based physical
+    /// slot and lock it; caps remain relative to the unmodified input.
+    magic_at: Option<usize>,
     show: bool,
     /// List the best N one-swap and two-swap changes instead of searching.
     swaps: Option<usize>,
@@ -62,6 +65,7 @@ fn parse(args: &[String]) -> AppResult<Options> {
         tag: String::new(),
         show: false,
         unlocked: false,
+        magic_at: None,
         swaps: None,
         chain: None,
         required: None,
@@ -91,6 +95,12 @@ fn parse(args: &[String]) -> AppResult<Options> {
             "--rescore-full" => options.rescore_full = true,
             "--show" => options.show = true,
             "--unlocked" => options.unlocked = true,
+            "--magic-at" => {
+                let value = args
+                    .next()
+                    .ok_or("--magic-at needs a 1-based slot number")?;
+                options.magic_at = Some(bounded_usize(value, 256)? - 1);
+            }
             "--chain" => {
                 let value = args.next().ok_or("--chain needs a key count")?;
                 options.chain = Some(bounded_usize(value, 12)?.max(2));
@@ -693,6 +703,38 @@ fn swap_command(
     Ok(())
 }
 
+fn position_magic(
+    layout: &mut ak::Layout,
+    target: Option<usize>,
+    unlocked: bool,
+) -> AppResult<(Vec<bool>, Option<usize>)> {
+    let mut root = crate::magic_optimizer::existing_root(layout);
+    if let Some(target) = target {
+        let from = root.ok_or("--magic-at requires one existing dedicated magic key")?;
+        if target >= layout.slots.len() {
+            return Err(format!("--magic-at must be in 1..={}", layout.slots.len()).into());
+        }
+        layout.swap(from, target);
+        root = Some(target);
+    }
+    let mut locks = if unlocked {
+        vec![false; layout.slots.len()]
+    } else {
+        crate::action_ui::action_default_locks(layout)
+    };
+    if let Some(target) = target {
+        // Moving magic onto a thumb or an empty key can displace Space or
+        // leave an empty main key behind. Preserve the normal setup locks.
+        if !unlocked {
+            for (slot, spare) in layout.spare_slots().into_iter().enumerate() {
+                locks[slot] |= spare || layout.space(slot);
+            }
+        }
+        locks[target] = true;
+    }
+    Ok((locks, root))
+}
+
 fn action_command(
     options: &Options,
     config: &AppConfig,
@@ -702,14 +744,10 @@ fn action_command(
 ) -> AppResult<()> {
     // As the optimizer screen does: own alternate fingers stay on their keys.
     crate::alt_fingers::pin(&mut layout);
+    let original = layout.clone();
+    let (locks, root) = position_magic(&mut layout, options.magic_at, options.unlocked)?;
     let corpus = load_action_corpus(options, limits)?;
     let corpora = vec![(corpus, 1.0)];
-    let locks = if options.unlocked {
-        vec![false; layout.slots.len()]
-    } else {
-        crate::action_ui::action_default_locks(&layout)
-    };
-    let root = crate::magic_optimizer::existing_root(&layout);
     let combos = config.combos.active_max(&config.weights);
     let swaps = config.adaptive.max_swaps;
     println!(
@@ -737,6 +775,15 @@ fn action_command(
         temperature_label(&settings),
         settings.cooling_end,
     );
+    if let Some(target) = options.magic_at {
+        let slot = &layout.slots[target];
+        println!(
+            "magic locked at slot {} · row {} column {} · caps relative to original input",
+            target + 1,
+            slot.row + 1,
+            slot.col + 1,
+        );
+    }
     let mut results = Vec::with_capacity(options.seeds);
     for seed in 0..options.seeds {
         let mut seeded = settings.clone();
@@ -745,7 +792,7 @@ fn action_command(
         let snapshot = match root {
             _ if root.is_some() || combos > 0 || swaps > 0 => {
                 let snapshot = crate::magic_optimizer::run_controlled(
-                    &layout,
+                    &original,
                     &layout,
                     root,
                     &locks,
@@ -788,8 +835,11 @@ fn action_command(
                         &settings.mode,
                     )?;
                     println!(
-                        "         SFB {:.2}%  SFS {:.2}%  rescored {:.4}",
-                        summary.metrics.v[SFB], summary.metrics.v[SFS], summary.score
+                        "         SFB {:.6}%  SFS {:.6}%  WRED {:.6}%  rescored {:.6}",
+                        summary.metrics.v[SFB],
+                        summary.metrics.v[SFS],
+                        summary.metrics.v[WRED],
+                        summary.score
                     );
                 }
                 snapshot.1
@@ -830,6 +880,12 @@ fn ranker_command(args: &[String]) -> AppResult<()> {
         return Err("bench --ranker CORPUS".into());
     };
     let corpus = corpus_by_name(corpus)?;
+    // A name resolves to the raw text when both exist; the ranker reads JSON.
+    let corpus = if corpus_is_raw(&corpus)? {
+        ensure_corpus(&corpus, false, None)?
+    } else {
+        corpus
+    };
     let limits = load_app_config()?.ngrams;
     let cap = |limit: Option<usize>| limit.map_or("all".into(), |n| n.to_string());
     println!(
@@ -892,6 +948,7 @@ pub(crate) fn command(args: &[String]) -> AppResult<()> {
     // Combo and swap fitting need the action optimizer, plain layouts included.
     if let Ok(layout) = ak::Layout::load(&options.layout) {
         if layout.extended()
+            || options.magic_at.is_some()
             || config.combos.active_max(&config.weights) > 0
             || config.adaptive.max_swaps > 0
         {
@@ -1008,4 +1065,39 @@ pub(crate) fn command(args: &[String]) -> AppResult<()> {
         print_summary(&rescored);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod magic_position_tests {
+    use super::*;
+
+    #[test]
+    fn moving_magic_preserves_bindings_and_locks_every_physical_destination() {
+        let original = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . ~\nthumbs: e space\n* eo\n",
+            Path::new("positions.dat"),
+        ).unwrap();
+        let from = crate::magic_optimizer::existing_root(&original).unwrap();
+        for target in 0..original.slots.len() {
+            for unlocked in [false, true] {
+                let mut layout = original.clone();
+                let (locks, root) = position_magic(&mut layout, Some(target), unlocked).unwrap();
+                assert_eq!(root, Some(target));
+                assert!(locks[target]);
+                assert_eq!(layout.slots[target].binding, original.slots[from].binding);
+                assert_eq!(layout.slots[from].binding, original.slots[target].binding);
+                for slot in 0..layout.slots.len() {
+                    assert_eq!(layout.slots[slot].finger, original.slots[slot].finger);
+                    if !unlocked && (layout.space(slot) || !layout.slots[slot].main) {
+                        assert!(locks[slot]);
+                    }
+                    if slot != from && slot != target {
+                        assert_eq!(layout.slots[slot], original.slots[slot]);
+                    }
+                }
+                assert_eq!(layout.actions, original.actions);
+            }
+        }
+        assert!(position_magic(&mut original.clone(), Some(original.slots.len()), false).is_err());
+    }
 }

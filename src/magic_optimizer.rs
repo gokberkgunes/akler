@@ -99,6 +99,9 @@ fn evaluate_joint(
     known: Option<(usize, &summary::Summary)>,
     mut scorer: Option<&mut ExactScorer<'_>>,
 ) -> ak::Result<Option<(f64, Vec<summary::Summary>)>> {
+    if !design::rule_counts_satisfied(layout) {
+        return Ok(None);
+    }
     let progress = AtomicU64::new(0);
     let mut score = 0.0;
     let mut reports = Vec::with_capacity(corpora.len());
@@ -404,6 +407,8 @@ fn same_layout(a: &ak::Layout, b: &ak::Layout) -> bool {
         && a.right_outer == b.right_outer
         && a.row_stagger == b.row_stagger
         && a.action_mode == b.action_mode
+        && a.magic_rule_slots == b.magic_rule_slots
+        && a.magic_refit_pending == b.magic_refit_pending
         && a.alt_fingers == b.alt_fingers
         && a.alt_spots == b.alt_spots
         && crate::action_rule_delta::same_json_slice(&a.combos, &b.combos)
@@ -572,6 +577,7 @@ fn fitted_candidates(
     let mut seeds = vec![layout.clone()];
     let counter = AtomicU64::new(0);
     if include_repairs {
+        on_update(FitUpdate::Phase("Preparing magic-rule repair candidates".into()));
         if wait_if_paused(control, deadline) {
             return Err("cancelled".into());
         }
@@ -614,7 +620,7 @@ fn fitted_candidates(
                 return Err("cancelled".into());
             }
             on_update(FitUpdate::Phase(format!(
-                "candidate fit {}/{}",
+                "Fitting magic rules {}/{}",
                 completed + 1,
                 total
             )));
@@ -1337,11 +1343,49 @@ pub(crate) fn run_controlled(
     control: &Control,
     callback: &mut dyn FnMut(ak::Layout, Snapshot, Metrics, Raw, [f64; 4]),
 ) -> ak::Result<(ak::Layout, Snapshot)> {
+    run_controlled_with_status(
+        original,
+        seed,
+        root,
+        locks,
+        corpora,
+        weights,
+        settings,
+        magic,
+        combos,
+        swaps,
+        control,
+        callback,
+        &mut |_| {},
+    )
+}
+
+/// Status is independent of eligible candidates: refreshed rules can take
+/// time to fit before a layout satisfies every cap and retained rule count.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_controlled_with_status(
+    original: &ak::Layout,
+    seed: &ak::Layout,
+    root: Option<usize>,
+    locks: &[bool],
+    corpora: &[(ng::NgramCorpus, f64)],
+    weights: &Weights,
+    settings: &SearchSettings,
+    magic: &crate::MagicSettings,
+    combos: &crate::combo_fit::Settings,
+    swaps: &crate::swap_fit::Settings,
+    control: &Control,
+    callback: &mut dyn FnMut(ak::Layout, Snapshot, Metrics, Raw, [f64; 4]),
+    status: &mut dyn FnMut(&str),
+) -> ak::Result<(ak::Layout, Snapshot)> {
     crate::validate_search_settings(settings).map_err(|error| error.to_string())?;
     let settings = &settings.for_actions();
     if locks.len() != seed.slots.len() {
         return Err("Optimization requires one lock per physical slot.".into());
     }
+    let mut ready_seed = seed.clone();
+    ready_seed.magic_refit_pending.clear();
+    let seed = &ready_seed;
     let action_name = match root {
         Some(root) => {
             if root >= seed.slots.len() {
@@ -1357,6 +1401,7 @@ pub(crate) fn run_controlled(
     };
     let shares = normalized_shares(corpora)?;
     // Combo fits share one set of physical tables: keys move, the board does not.
+    status("Preparing physical geometry");
     let fit_physical = summary::PhysicalTables::with_mode(seed, weights, &settings.mode);
     // The combo and swap limits count every piece, the layout's own included:
     // start from, and measure the caps against, the layouts cut down to them.
@@ -1372,12 +1417,14 @@ pub(crate) fn run_controlled(
             &control.cancel,
         )
     };
+    status("Checking combo and adaptive-swap limits");
     let original = &limited(original)?;
     let seed = &limited(seed)?;
     let started = Instant::now();
     let deadline =
         (settings.seconds > 0.0).then(|| started + Duration::from_secs_f64(settings.seconds));
     let progress_counter = AtomicU64::new(0);
+    status("Evaluating the original layout");
     let mut baselines = Vec::with_capacity(corpora.len());
     for (corpus, _) in corpora {
         baselines.push(summary::evaluate_with_mode(
@@ -1421,6 +1468,7 @@ pub(crate) fn run_controlled(
         ..Progress::default()
     };
 
+    status("Evaluating the starting layout");
     let mut best = exact_candidate(
         seed.clone(),
         corpora,
@@ -1442,6 +1490,7 @@ pub(crate) fn run_controlled(
         let mut fit_error = None;
         let mut update = |update: FitUpdate| match update {
             FitUpdate::Phase(phase) => {
+                status(&phase);
                 if let Some(value) = &best {
                     let mut shown = value.clone();
                     shown.snapshot.progress.phase = phase;
@@ -1491,6 +1540,7 @@ pub(crate) fn run_controlled(
         }
         // Fit combos to the seed before annealing, starting from the best
         // seed so far.
+        status("Fitting combos");
         let start = best.as_ref().map_or(seed, |value| &value.layout);
         if let Some((_, Some(candidate))) = fitted_combos(
             start,
@@ -1517,6 +1567,7 @@ pub(crate) fn run_controlled(
                 emit(callback, value, &baselines[0]);
             }
         }
+        status("Fitting adaptive swaps");
         let start = best.as_ref().map_or(seed, |value| &value.layout);
         if let Some((_, Some(candidate))) = fitted_swaps(
             start,
@@ -1598,6 +1649,7 @@ pub(crate) fn run_controlled(
     let mut restart_evaluations = vec![0u64; settings.restarts];
     let mut restart_accepted = vec![0u64; settings.restarts];
     let evolve = settings.design == "evolve";
+    status("Preparing binding searches");
     let pool = RoundPool::new(
         (0..worker_count)
             .map(|worker| {
@@ -1712,6 +1764,7 @@ pub(crate) fn run_controlled(
                         started,
                         settings.seed,
                     );
+                    status(&snapshot.progress.phase);
                     let merged_progress = snapshot.progress.clone();
                     let candidate = JointResult {
                         layout,
@@ -1721,6 +1774,7 @@ pub(crate) fn run_controlled(
                         snapshot,
                     };
                     if within_caps
+                        && design::rule_counts_satisfied(&candidate.layout)
                         && best
                             .as_ref()
                             .is_none_or(|current| better(&candidate, current))
@@ -1734,6 +1788,7 @@ pub(crate) fn run_controlled(
                     }
                 }
                 JointMessage::Phase(mut progress) => {
+                    status(&progress.phase);
                     merge_progress(
                         &mut progress,
                         &mut restart_evaluations,

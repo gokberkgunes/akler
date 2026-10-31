@@ -10,6 +10,22 @@ The search then moves letters and refits the magic rules together, scored
 with the current mode (`normal` or `aklgg`). An unlocked magic key can move.
 Caps stay relative to the original layout.
 
+Magic, Swaps, and Alts occupy three rows in one shared reset box. In optimizer setup and
+results, click a line's `↻` button to refresh its rules in memory. Magic
+keeps its physical key, fallback, and existing rule contexts: `___` marks each
+output queued for refitting. The working outputs stay active until replacements
+are evaluated. Press Space to refit outputs in those same slots; rules are
+not deleted to make a smaller dictionary. If a search fails, the working
+magic outputs remain visible and the error is shown separately. Changing the
+Magic rules setting releases the retained slots. Swaps restores the affected keys' literal outputs and
+refits according to the current adaptive-swap limit.
+Clearing Alts removes the current layout's and session's configured alternate
+rules; alternate fingers are configured manually and are not fitted.
+
+The adjacent **Mirror** button reflects the layout left to right, including
+thumbs. Locks stay at their physical positions; layout-owned alternate-finger
+assignments switch hands along with their keys. Click Mirror again to undo it.
+
 ```ini
 [magic]
 allowed_fingers = LM LI RI RM LT RT   # where a magic key may go

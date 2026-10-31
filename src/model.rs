@@ -18,9 +18,10 @@ const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
 const N_METRICS: usize = 44;
 
-const N_WEIGHTS: usize = N_METRICS + 8;
+const N_WEIGHTS: usize = N_METRICS + 9;
 
 const USAGE_WEIGHT: usize = N_METRICS + 4;
+const CORNER_WEIGHT: usize = USAGE_WEIGHT + 4;
 
 const SFB: usize = 0;
 
@@ -125,7 +126,8 @@ const RAW_ALT: usize = RAW_SRAF + 1;
 
 const ROLL_DEN: usize = RAW_ALT + 1;
 
-const N_RAW: usize = ROLL_DEN + 1;
+const CORNER_RAW: usize = ROLL_DEN + 1;
+const N_RAW: usize = CORNER_RAW + 1;
 
 const METRIC_NAMES: [&str; N_METRICS] = [
     "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS", "dnFJB", "dnFJS", "RED",
@@ -188,6 +190,7 @@ const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "usage_ring",
     "usage_middle",
     "usage_index",
+    "corner",
 ];
 
 fn weight_display_name(i: usize) -> &'static str {
@@ -929,6 +932,7 @@ struct Geometry {
     /// Each key's distance from home (total, vertical, lateral).
     home: Vec<[f64; 3]>,
     is_home: Vec<bool>,
+    corner: Vec<bool>,
     sf_distance: Vec<f64>,
     /// `[alts]` rules for these keys.
     alts: crate::alt_fingers::Resolver,
@@ -953,7 +957,9 @@ impl Geometry {
     fn with_alts(keys: Vec<Key>, rolls: RollSettings) -> Self {
         let alts = rolls
             .alts
-            .map_or_else(crate::alt_fingers::Resolver::none, |rules| rules.resolver(&keys));
+            .map_or_else(crate::alt_fingers::Resolver::none, |rules| {
+                rules.resolver(&keys)
+            });
         Self::build(keys, rolls, alts)
     }
 
@@ -996,6 +1002,22 @@ impl Geometry {
             .copied()
             .map(|key| anchors.contains(key))
             .collect();
+        let inner = [
+            keys.iter()
+                .filter(|key| key.index() && key.hand == 0)
+                .map(|key| key.col)
+                .max(),
+            keys.iter()
+                .filter(|key| key.index() && key.hand == 1)
+                .map(|key| key.col)
+                .min(),
+        ];
+        let corner = keys
+            .iter()
+            .map(|key| {
+                key.main && matches!(key.row, 0 | 2) && inner[key.hand as usize] == Some(key.col)
+            })
+            .collect();
         Self {
             rolls,
             keys,
@@ -1004,6 +1026,7 @@ impl Geometry {
             n,
             home,
             is_home,
+            corner,
             sf_distance,
             alts,
             mana2: Arc::new(std::sync::OnceLock::new()),
@@ -2195,6 +2218,9 @@ fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f
         0 => {
             let key = geometry.keys[a];
             raw.0[USAGE + key.finger] += f;
+            if geometry.corner[a] {
+                raw.0[CORNER_RAW] += f;
+            }
             if key.main && !geometry.is_home[a] {
                 raw.0[OFF + key.finger] += f;
             }
@@ -2245,6 +2271,9 @@ fn move_gram(raw: &mut Raw, g: &Gram, old: &[usize], new: &[usize], geometry: &G
             for (a, f) in [(a0, -f), (a1, f)] {
                 let key = geometry.keys[a];
                 raw.0[USAGE + key.finger] += f;
+                if geometry.corner[a] {
+                    raw.0[CORNER_RAW] += f;
+                }
                 if key.main && !geometry.is_home[a] {
                     raw.0[OFF + key.finger] += f;
                 }
@@ -2296,6 +2325,7 @@ struct Metrics {
     v: [f64; N_METRICS],
     usage: [f64; 10],
     off: [f64; 8],
+    corner: f64,
 }
 
 fn denominator(m: usize, raw: &Raw, c: &Corpus) -> f64 {
@@ -2356,6 +2386,9 @@ fn score_terms(w: &Weights) -> Vec<(usize, usize, f64)> {
             terms.push((OFF + j, 0, w.0[N_METRICS + mirrored]));
         }
     }
+    if w.0[CORNER_WEIGHT] != 0.0 {
+        terms.push((CORNER_RAW, 0, w.0[CORNER_WEIGHT]));
+    }
     terms
 }
 
@@ -2368,6 +2401,7 @@ fn metrics_totals(raw: &Raw, totals: &[f64; 4]) -> Metrics {
         v: std::array::from_fn(|m| pct(raw.0[m].max(0.0), denominator_totals(m, raw, totals))),
         usage: std::array::from_fn(|i| pct(raw.0[USAGE + i].max(0.0), totals[0])),
         off: std::array::from_fn(|i| pct(raw.0[OFF + i].max(0.0), totals[0])),
+        corner: pct(raw.0[CORNER_RAW].max(0.0), totals[0]),
     }
 }
 
@@ -2455,7 +2489,7 @@ impl Default for Weights {
             12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25, 0.75, 2.5, 1.25, 0.0,
             0.0, 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15, 0.02, 0.0, 0.0, 0.10, 0.0, 0.0, 0.0, 0.0,
             0.25, 0.25, 0.25, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2, 0.60, 0.20, 0.05, 0.0,
-            0.06, 0.02, 0.005, 0.0,
+            0.06, 0.02, 0.005, 0.0, 0.0,
         ])
     }
 }
@@ -2492,6 +2526,7 @@ fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
     for i in 0..4 {
         b.contributions[USAGE_WEIGHT + i] = (m.usage[i] + m.usage[7 - i]) * w.0[USAGE_WEIGHT + i];
     }
+    b.contributions[CORNER_WEIGHT] = m.corner * w.0[CORNER_WEIGHT];
     for &v in &b.contributions {
         if v >= 0.0 {
             b.penalty += v;

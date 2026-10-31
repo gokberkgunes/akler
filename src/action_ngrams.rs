@@ -645,17 +645,26 @@ struct Window {
 /// count its target character or add a second physical bigram.
 const ALT_BIGRAM_CORRECTION: u8 = 0x80;
 
+/// An alternate-finger window whose trigram the trigram limit dropped. It
+/// keeps the keys around its counted one, which decide their fingers and
+/// whether a sequence ends there, but counts no trigram.
+const ALT_NO_TRIGRAM: u8 = 0x40;
+
 impl Window {
     fn len(&self) -> usize {
         self.len as usize
     }
 
     fn target(&self) -> usize {
-        usize::from(self.target & !ALT_BIGRAM_CORRECTION)
+        usize::from(self.target & !(ALT_BIGRAM_CORRECTION | ALT_NO_TRIGRAM))
     }
 
     fn alt_bigram_correction(&self) -> bool {
         self.target & ALT_BIGRAM_CORRECTION != 0
+    }
+
+    fn alt_no_trigram(&self) -> bool {
+        self.target & ALT_NO_TRIGRAM != 0
     }
 
     fn end(&self) -> usize {
@@ -882,7 +891,7 @@ type Postings = Arc<std::sync::OnceLock<WindowIndex>>;
 /// covers the JSON's contents, the limits, this format and the build, so any
 /// change misses and rewrites it.
 const CACHE_MAGIC: &[u8; 8] = b"AKLERNG1";
-const CACHE_VERSION: u32 = 4;
+const CACHE_VERSION: u32 = 5;
 /// Keep a few configurations for each corpus without unbounded disk growth.
 const CACHE_FILES_PER_CORPUS: usize = 8;
 
@@ -1042,7 +1051,7 @@ impl CacheReader<'_> {
                 left_open: raw[7] != 0,
                 weight: f64::from_le_bytes(raw[8..16].try_into().ok()?),
             };
-            if window.len == 0 || window.len > 5 || window.target >= window.len {
+            if window.len == 0 || window.len > 5 || window.target() >= window.len() {
                 return None;
             }
             windows.push(window);
@@ -1098,6 +1107,7 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         alt_windows: Arc::new(alt_windows),
         alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
         rule_candidates: Arc::default(),
+        pairs: Arc::default(),
         speed_populations,
     })
 }
@@ -1128,6 +1138,9 @@ pub struct NgramCorpus {
     alt_bigram_windows: Arc<std::sync::OnceLock<ak::Result<(Arc<[Window]>, bool, Postings)>>>,
     /// `rule_candidates`, built on first use.
     rule_candidates: Arc<std::sync::OnceLock<Vec<(bool, u8, u8, f64)>>>,
+    /// Bit `a * 256 + b` for each lowercase pair the corpus types, built on
+    /// first use.
+    pairs: Arc<std::sync::OnceLock<Box<[u64; 1024]>>>,
     /// Whole-corpus bigram and skipgram masses, measured as ordinary corpora
     /// measure them, for Fspeed normalization. Zero without stored tables.
     pub(crate) speed_populations: [f64; 2],
@@ -1396,6 +1409,26 @@ impl NgramCorpus {
                     .map(|(&key, &weight)| (key, weight))
                     .collect();
                 dropped.sort_unstable_by_key(|&(key, _)| key);
+                if ahead && n == 3 {
+                    // A centred context counts its own text as a trigram;
+                    // one the limit dropped counts the rest without it.
+                    let mut capped: Vec<(u64, f64)> = levels[n]
+                        .iter()
+                        .filter(|&(&key, _)| {
+                            let (target, _, bytes) = unpack(key);
+                            target == 1 && !tables[n - 1].contains(&pack_gram(&bytes[..n]))
+                        })
+                        .map(|(&key, &weight)| (key, weight))
+                        .collect();
+                    capped.sort_unstable_by_key(|&(key, _)| key);
+                    for (key, weight) in capped {
+                        levels[n].remove(&key);
+                        let (target, left_open, bytes) = unpack(key);
+                        *levels[n]
+                            .entry(pack(target | ALT_NO_TRIGRAM, left_open, &bytes))
+                            .or_default() += weight;
+                    }
+                }
                 for (key, weight) in dropped {
                     levels[n].remove(&key);
                     let (target, left_open, bytes) = unpack(key);
@@ -1647,6 +1680,7 @@ impl NgramCorpus {
             alt_windows: Arc::new(std::sync::OnceLock::new()),
             alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
+            pairs: Arc::default(),
             speed_populations,
         })
     }
@@ -1817,7 +1851,9 @@ impl NgramCorpus {
     {
         let (alt_fingers, policy, finite) = flags;
         let combos =
-            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order)?;
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order, |pair| {
+                self.has_pair(pair)
+            })?;
         let chord_corpus = combos.as_ref().map(|program| self.contexts_for(program)).transpose()?;
         let source = chord_corpus.as_ref().unwrap_or(self);
         let mut timing = crate::load_profile::LoadProfile::new("detailed physical mapping");
@@ -2101,7 +2137,9 @@ impl NgramCorpus {
         let mut mapper = ak::WindowMapper::new(layout, self.order)?;
         let policy: crate::combos::Policy = combos.into();
         let combos =
-            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order)?;
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, self.order, |pair| {
+                self.has_pair(pair)
+            })?;
         let chord_corpus = combos.as_ref().map(|program| self.contexts_for(program)).transpose()?;
         let source = chord_corpus.as_ref().unwrap_or(self);
         timing.mark("Validate and initialize reference mapper");
@@ -2191,6 +2229,26 @@ impl NgramCorpus {
             .collect()
     }
 
+    /// Whether the corpus types `pair`, ignoring case, as combos match it.
+    pub(crate) fn has_pair(&self, pair: &[u8]) -> bool {
+        let pairs = self.pairs.get_or_init(|| {
+            let mut pairs = Box::new([0u64; 1024]);
+            for window in self.source_windows.iter() {
+                for pair in window.text().windows(2) {
+                    let bit = usize::from(pair[0].to_ascii_lowercase()) << 8
+                        | usize::from(pair[1].to_ascii_lowercase());
+                    pairs[bit / 64] |= 1 << (bit % 64);
+                }
+            }
+            pairs
+        });
+        let [a, b] = pair else {
+            return true;
+        };
+        let bit = usize::from(a.to_ascii_lowercase()) << 8 | usize::from(b.to_ascii_lowercase());
+        pairs[bit / 64] & 1 << (bit % 64) != 0
+    }
+
     pub(crate) fn order(&self) -> usize {
         self.order
     }
@@ -2206,7 +2264,9 @@ impl NgramCorpus {
         policy: crate::combos::Policy,
         alts: crate::alt_fingers::AltPolicy,
     ) -> bool {
-        if let Ok(Some(program)) = crate::combos::Program::for_contexts(layout, policy, alts, self.order) {
+        if let Ok(Some(program)) = crate::combos::Program::for_contexts(layout, policy, alts, self.order, |pair| {
+            self.has_pair(pair)
+        }) {
             self.contexts_for(&program).is_ok_and(|contexts| contexts.exact_sums)
         } else {
             self.exact_sums
@@ -3051,9 +3111,15 @@ impl Mappings {
                 }
             }
         }
+        // Adding the first combo or removing the last switches alternate
+        // fingers between centred and combo contexts, which counts every
+        // window differently.
+        let mode = |program: &crate::combos::Program| {
+            (program.ahead(), program.alt_bigram_lookahead())
+        };
         let combos = match (&self.combos, combos) {
             (None, None) => None,
-            (Some(old), Some(new)) => old.changed(new),
+            (Some(old), Some(new)) if mode(old) == mode(new) => old.changed(new),
             _ => return None,
         };
         Some(Reuse {
@@ -3286,11 +3352,13 @@ fn chord_grams(
         }
         push([GAP, *kb, *kc], [GAP, *fb, *fc], 1.0);
         if target + 1 < plan.len() {
-            let (kd, fd) = element(target + 1);
             push([GAP, GAP, *kb], [GAP, GAP, *fb], 1.0);
             push([GAP, GAP, *kc], [GAP, GAP, *fc], -1.0);
-            push([*kb, *kc, kd], [*fb, *fc, fd], 1.0);
-            push([GAP, *kc, kd], [GAP, *fc, fd], -1.0);
+            if !window.alt_no_trigram() {
+                let (kd, fd) = element(target + 1);
+                push([*kb, *kc, kd], [*fb, *fc, fd], 1.0);
+                push([GAP, *kc, kd], [GAP, *fc, fd], -1.0);
+            }
         } else {
             push([GAP, GAP, *kb], [GAP, GAP, *fb], 1.0);
         }
@@ -3408,6 +3476,7 @@ fn add_pattern_with_fingers(
         0 => {
             let key = keys[0];
             raw.0[USAGE + key.finger] += f;
+            if geometry.corner[slots[0]] { raw.0[CORNER_RAW] += f; }
             if key.main && !HomeAnchors::new(&geometry.keys).contains(key) {
                 raw.0[OFF + key.finger] += f;
             }
@@ -4011,7 +4080,8 @@ impl TailContributions {
                 } else {
                     0
                 };
-                join(bit(USAGE + key.finger), off)
+                let corner = if g.corner[index] { bit(CORNER_RAW) } else { 0 };
+                join(join(bit(USAGE + key.finger), off), corner)
             })
             .collect();
         let mut pair = Vec::with_capacity(g.n * g.n);
@@ -4405,6 +4475,12 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
         } else {
             bonus -= contribution;
         }
+    }
+    let contribution = pct(raw.0[CORNER_RAW].max(0.0), totals[0]) * w.0[CORNER_WEIGHT];
+    if contribution >= 0.0 {
+        penalty += contribution;
+    } else {
+        bonus -= contribution;
     }
     CandidateScore {
         #[cfg(test)]
@@ -5071,7 +5147,9 @@ impl Incremental {
     {
         let policy: crate::combos::Policy = combos.into();
         let combos =
-            crate::combos::Program::for_contexts(layout, policy, alt_fingers, corpus.order)?
+            crate::combos::Program::for_contexts(layout, policy, alt_fingers, corpus.order, |pair| {
+                corpus.has_pair(pair)
+            })?
                 .map(|program| if full_contexts { program } else { program.for_search() });
         let corpus = if let Some(program) = &combos {
             corpus.contexts_for(program)?
@@ -7359,6 +7437,54 @@ mod tests {
         ak::Layout::parse(BASE, Path::new("plain.dat")).unwrap()
     }
 
+    #[test]
+    fn corner_weight_matches_fresh_projected_and_contextual_press_counts() {
+        let layout = plain();
+        let corpus = corpus(b"tqtybntqtybn", 5);
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&layout));
+        let stop = AtomicBool::new(false);
+        let weights = weights_from_text("corner = 3").unwrap();
+        let make = |layout: &ak::Layout| {
+            Incremental::new(&corpus, layout, geometry.clone(), &stop, |_, _, _| 0.0).unwrap()
+        };
+        let mut cache = make(&layout);
+        assert!((cache.metrics().corner - 100.0 * 10.0 / 12.0).abs() < 1e-10);
+        cache.enable_aggregation();
+        cache.enable_score_projection(score_terms(&weights));
+        let (t, q, y) = (key(&layout, "t"), key(&layout, "q"), key(&layout, "y"));
+        let mut proposal = Proposal::new();
+        cache
+            .propose_swap(t, q, &stop, |_, _, _| 0.0, &mut proposal)
+            .unwrap();
+        let mut moved = layout.clone();
+        moved.swap(t, q);
+        let fresh = make(&moved);
+        assert!((fresh.metrics().corner - 100.0 * 8.0 / 12.0).abs() < 1e-10);
+        assert!(
+            (proposal.screened().unwrap().0 - breakdown(&fresh.metrics(), &weights).net).abs()
+                < 1e-8
+        );
+        cache.commit(&mut proposal);
+        assert!((cache.metrics().corner - fresh.metrics().corner).abs() < 1e-10);
+
+        // Physical location determines the penalty, even with another finger.
+        let mut raw = Raw::default();
+        add_pattern_with_fingers(&mut raw, 0, &[t], &[0], 2.0, &geometry);
+        add_pattern_with_fingers(&mut raw, 0, &[q], &[3], 7.0, &geometry);
+        assert_eq!(raw.0[CORNER_RAW], 2.0);
+        let mut chord = Raw::default();
+        let mut totals = [0.0; 4];
+        contribute_combo_usage(
+            &mut chord,
+            &mut totals,
+            [t as u8, y as u8, GAP],
+            1.0,
+            &geometry,
+        );
+        assert_eq!(chord.0[CORNER_RAW], 2.0);
+        assert_eq!(totals[0], 2.0);
+    }
+
     fn magic() -> ak::Layout {
         ak::Layout::parse(
             crate::action_keys::test_layouts::SHORTHAND,
@@ -8762,7 +8888,13 @@ mod tests {
                     let (reused, _) = evaluate(&layout, Some(known));
                     super::detailed_mapping_tests::assert_counts_bits(&reused, &fresh);
                     let combos =
-                        crate::combos::Program::for_contexts(&layout, policy, alts, corpus.order)
+                        crate::combos::Program::for_contexts(
+                            &layout,
+                            policy,
+                            alts,
+                            corpus.order,
+                            |pair| corpus.has_pair(pair),
+                        )
                             .unwrap();
                     let source = if let Some(program) = &combos {
                         corpus.contexts_for(program).unwrap()
@@ -9466,6 +9598,7 @@ mod detailed_mapping_tests {
             alt_windows: Arc::new(std::sync::OnceLock::new()),
             alt_bigram_windows: Arc::new(std::sync::OnceLock::new()),
             rule_candidates: Arc::default(),
+            pairs: Arc::default(),
             speed_populations: [0.0; 2],
         }
     }
@@ -10058,6 +10191,75 @@ mod limit_tests {
             .windows
             .iter()
             .any(|window| window.text().contains(&0)));
+    }
+
+    #[test]
+    fn alternate_finger_contexts_respect_the_trigram_limit() {
+        let text = cached_text(b"asdf asdf qwer qwer jkl; jkl;");
+        let limits = NgramLimits {
+            trigrams: Some(1),
+            ..NgramLimits::default()
+        };
+        let corpus =
+            NgramCorpus::from_text_with_limits(&text, Path::new("inline.json"), limits).unwrap();
+        let kept: std::collections::HashSet<_> = corpus
+            .windows
+            .iter()
+            .filter(|window| window.len() >= 3)
+            .map(|window| window.text()[window.len() - 3..].to_vec())
+            .collect();
+        assert_eq!(kept.len(), 1);
+        let (windows, _, _) = corpus.alt_windows().clone().unwrap();
+        let mut total = 0.0;
+        for window in windows.iter() {
+            total += window.weight;
+            // A context with keys on both sides of the counted one counts
+            // the trigram around it, unless the limit dropped that trigram.
+            let target = window.target();
+            if !window.alt_no_trigram() && target >= 1 && target + 1 < window.len() {
+                let text = window.text();
+                assert!(kept.contains(&text[target - 1..=target + 1]), "{text:?}");
+            }
+        }
+        let presses: f64 = corpus.windows.iter().map(|window| window.weight).sum();
+        assert_eq!(total, presses);
+
+        // Counted trigrams match evaluation without alternate fingers.
+        let layout = ak::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+            Path::new("inline.dat"),
+        )
+        .unwrap();
+        let rules = crate::alt_fingers::AltRules::parse("ed e_d (LM LI)").unwrap();
+        let alts = crate::alt_fingers::AltPolicy {
+            enabled: true,
+            positions: crate::alt_fingers::AltRules {
+                rowstag: rules.clone(),
+                colstag: rules,
+            }
+            .intern(),
+        };
+        let none = crate::alt_fingers::AltPolicy::layout(false);
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        let trigrams = |alts| {
+            let flags = (alts, crate::combos::Policy::ALL, true);
+            let (counts, _) = corpus
+                .evaluate_reusing(
+                    &layout,
+                    &stop,
+                    &progress,
+                    flags,
+                    None,
+                    false,
+                    false,
+                    |_, _, _| 0.0,
+                )
+                .unwrap();
+            [1, 2].map(|n| counts.tables[n].values().sum::<f64>())
+        };
+        // Pairs are never capped: every counted key keeps the key before it.
+        assert_eq!(trigrams(alts), trigrams(none));
     }
 
     #[test]

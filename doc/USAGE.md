@@ -91,6 +91,12 @@ by stat.
 
 ## Ranker and editor
 
+The Normal weights' **Finger usage → CORNER** setting penalizes presses on
+the top/bottom keys of the inner index columns (QWERTY T, Y, B, N).
+`[weights] corner = 1` adds one score point per percentage point of presses
+on those physical positions; `0` disables the penalty. Home-row keys and
+thumbs are excluded.
+
 - **Ranker:** tabs `1` Rankings, `2` Layouts, `3` Columns, `4` Presets. `s` switches the
   scoring mode, `c` picks a corpus, `m`/`t` hide magic layouts / layouts
   without a thumb letter. Middle-click hides a layout or column; Ctrl+click
@@ -163,12 +169,19 @@ to use different settings, `--before` to compare an older executable, and
 `--caps` to override SFB/SFS limits. `--steps`, `--restarts`, `--passes`,
 and `--adaptive` control the workload.
 
+`python3 bench/magic_positions.py --layout layouts/baris.jsonc` runs a
+separate optimization with the existing magic key locked at each physical
+position. It snapshots the layout and configuration and saves the layouts,
+logs, and a sorted `results.csv` under `bench/results/`. `--seconds` and
+`--workers` default to 180 and 16; `--slots` selects specific 1-based slots.
+
 | Option | Effect |
 |---|---|
 | `--seeds N` | Number of seeds (default 6). |
 | `--set key=value` | Override one `[search]` setting for this run. |
 | `--config FILE` | Read FILE instead of `akler.conf`. `bench/akler.conf` is a frozen baseline. |
 | `--unlocked` | Free every key. |
+| `--magic-at SLOT` | Swap the existing magic key into a 1-based physical slot and lock it. Main rows come first, then thumbs. Caps stay relative to the input layout. |
 | `--full-ngrams` / `--rescore-full` | Search without caps / also print each score on all n-grams. |
 | `--swaps N` | No search: print the best N single and double swaps. |
 | `--chain K` | No search: print the best rotations of exactly K keys (2–12); `--swaps N` sets how many (default 15). |

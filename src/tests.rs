@@ -345,8 +345,9 @@ fn alt_rules_name_qwerty_positions_and_pick_the_rules_by_stagger() {
     };
     assert_eq!(fingers(b"cg"), [2, 3]);
     assert_eq!(fingers(b"gc"), [3, 2]);
-    // The wildcard w already uses LI, so the f_g rule would clash with it.
-    assert_eq!(fingers(b"cwg"), [3, 3, 3]);
+    // Only keys that move are checked for clashes: c moves to LM next to w
+    // on LI, and g keeps its own LI, so f_g applies despite w and g sharing it.
+    assert_eq!(fingers(b"cwg"), [2, 3, 3]);
     assert_eq!(fingers(b"cw"), [3, 3]);
     let staggered = format!("{PACKET}row-offsets: 0 0.25 0.75\n");
     let staggered = board_from_text(&staggered, Path::new("rowstag.dat")).unwrap();
@@ -1482,6 +1483,72 @@ fn config_round_trips_and_presets() {
 }
 
 #[test]
+fn corner_weight_counts_only_physical_inner_corners_and_updates_swaps() {
+    let text = "q w e r t y u i o p\na s d f g h j k l ;\nz x c v b n m , . /\nthumbs: space\n";
+    let board = board_from_text(text, Path::new("corner.dat")).unwrap();
+    let model = Model::new(with_spare_keys(board));
+    let selected: Vec<_> = model
+        .geometry
+        .corner
+        .iter()
+        .enumerate()
+        .filter(|(_, corner)| **corner)
+        .map(|(slot, _)| model.canonical[model.original[slot]])
+        .collect();
+    assert_eq!(selected, b"tybn");
+    let source = Source::from_text_with_limits(
+        r#"{"monograms":{"t":10,"q":1,"y":1,"b":1,"n":1," ":6},"bigrams":{"tq":1}}"#,
+        Path::new("corner.json"),
+        NgramLimits::default(),
+    )
+    .unwrap();
+    let corpus = model.corpus(&source).unwrap();
+    let mut raw = full_raw(&model.original, &corpus, &model.geometry);
+    let mut weights = Weights::new([0.0; N_WEIGHTS]);
+    weights.0[CORNER_WEIGHT] = 2.0;
+    close(metrics(&raw, &corpus).corner, 65.0);
+    close(breakdown(&metrics(&raw, &corpus), &weights).net, 130.0);
+    let slot = |byte| {
+        model
+            .original
+            .iter()
+            .position(|&id| model.canonical[id] == byte)
+            .unwrap()
+    };
+    let mut moved = model.original.clone();
+    moved.swap(slot(b't'), slot(b'q'));
+    for gram in &corpus.grams {
+        move_gram(
+            &mut raw,
+            gram,
+            &positions(&model.original),
+            &positions(&moved),
+            &model.geometry,
+        );
+    }
+    close(raw.0[CORNER_RAW], 4.0);
+    close(
+        raw.0[CORNER_RAW],
+        full_raw(&moved, &corpus, &model.geometry).0[CORNER_RAW],
+    );
+    let values = metrics(&raw, &corpus);
+    close(values.corner, 20.0);
+    close(breakdown(&values, &weights).net, 40.0);
+    assert_eq!(
+        weights_from_text("corner = 2\n").unwrap().0[CORNER_WEIGHT],
+        2.0
+    );
+    assert_eq!(
+        weights_from_text(&weights_text(&weights)).unwrap().0,
+        weights.0
+    );
+    let rows = metric_score_rows(&values, &values, &weights);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name, "corner");
+    close(rows[0].points.1, 40.0);
+}
+
+#[test]
 fn usage_penalty_pairs_hands_ignores_thumbs_and_round_trips() {
     let mut raw = Raw::default();
     raw.0[USAGE] = 20.0;
@@ -2562,6 +2629,66 @@ fn alternate_finger_bigrams_keep_both_lookahead_and_history() {
 }
 
 #[test]
+fn combos_the_corpus_never_types_leave_alternate_fingers_unchanged() {
+    let layout = action_keys::Layout::parse(
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
+        Path::new("unused-combo.dat"),
+    )
+    .unwrap();
+    let input = b"afgvx afgvx afgvx";
+    let source = count_reader(
+        Cursor::new(input),
+        &CorpusConfig::default(),
+        input.len() as u64,
+        &mut |_, _| {},
+    )
+    .unwrap()
+    .0;
+    let corpus =
+        action_ngrams::NgramCorpus::from_text(&counts_text(&source), Path::new("inline.json"))
+            .unwrap();
+    let rules = alt_fingers::AltRules::parse("g_x (LM LR)").unwrap();
+    let alts = alt_fingers::AltPolicy {
+        enabled: true,
+        positions: alt_fingers::AltRules {
+            rowstag: rules.clone(),
+            colstag: rules,
+        }
+        .intern(),
+    };
+    let with_combo = |combo: &str| {
+        let mut layout = layout.clone();
+        layout.combos = vec![crate::parse_json(combo).unwrap()];
+        layout
+    };
+    let evaluate = |layout: &action_keys::Layout| {
+        corpus
+            .evaluate_with_policy(
+                layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                alts,
+                true,
+                |_, _, _| 0.0,
+            )
+            .unwrap()
+    };
+    let plain = evaluate(&layout);
+    let unused = evaluate(&with_combo(r#"{"keys":["q","p"],"output":"qp"}"#));
+    assert_eq!(unused.tables, plain.tables);
+    assert_eq!(unused.finger_tables, plain.finger_tables);
+    // A combo the corpus types still counts with combo contexts.
+    let used = with_combo(r#"{"keys":["f","g"],"output":"fg"}"#);
+    let program = combos::Program::for_contexts(&used, true.into(), alts, corpus.order, |pair| {
+        corpus.has_pair(pair)
+    })
+    .unwrap()
+    .unwrap();
+    assert!(!program.ahead());
+    assert!(corpus.has_pair(b"FG") && !corpus.has_pair(b"qp"));
+}
+
+#[test]
 fn alternate_bigram_lookahead_works_with_unrelated_action_keys() {
     let layout = action_keys::Layout::parse(
         "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = text \"h\"\n",
@@ -2826,7 +2953,7 @@ fn alternate_bigram_lookahead_survives_corpus_cache_roundtrip() {
         }
         .intern(),
     };
-    let program = combos::Program::for_contexts(&layout, false.into(), earlier, 5)
+    let program = combos::Program::for_contexts(&layout, false.into(), earlier, 5, |_| true)
         .unwrap()
         .unwrap();
     let centered = load().contexts_for(&program).unwrap();

@@ -204,6 +204,7 @@ fn scoring_metrics(proposal: &ng::Proposal) -> Metrics {
                 v,
                 usage: [0.0; 10],
                 off: [0.0; 8],
+                corner: 0.0,
             }
         }
         None => proposal.metrics(),
@@ -1310,6 +1311,7 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
             weights.combo_policy(),
             weights.alts(),
             corpus.order(),
+            |pair| corpus.has_pair(pair),
         )?
         .is_some_and(|program| program.ahead());
         let mut full_cache = if needs_full {

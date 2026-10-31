@@ -5,8 +5,8 @@
 //!
 //! Candidates are screened by the same-finger bigrams they remove, and the
 //! best `shortlist` get exact evaluations. Each round tries removing every
-//! fitted swap and adding each shortlisted one (exchanging it for the least
-//! useful swap when the set is full), keeps the best improvement, and stops
+//! fitted swap and adding each shortlisted one (trying every single exchange
+//! when the set is full, or replacing conflicting swaps), keeps the best improvement, and stops
 //! when no trial improves the score. Adaptive rules that are not mirrored
 //! swap pairs are kept as they are and do not count toward the limit.
 
@@ -427,7 +427,8 @@ pub(crate) fn fit(
                 *best = Some((trial, summary, trial_mappings));
             }
         };
-        // Removals also rank the fitted swaps for exchanges.
+        // Try removals independently; a useful swap may still be the right
+        // one to replace when a candidate conflicts with it.
         let trials: Vec<Vec<Swap>> = (0..swaps.len())
             .map(|index| {
                 let mut trial = swaps.clone();
@@ -435,7 +436,7 @@ pub(crate) fn fit(
                 trial
             })
             .collect();
-        let (evaluated, cheapest) = screen_all(&trials, &current, None, true, mappings.as_ref())?;
+        let (evaluated, _) = screen_all(&trials, &current, None, false, mappings.as_ref())?;
         for (trial, evaluated) in trials.into_iter().zip(evaluated) {
             if let Some(evaluated) = evaluated {
                 consider(&mut best, trial, evaluated);
@@ -446,19 +447,22 @@ pub(crate) fn fit(
             if swaps.contains(&candidate) {
                 continue;
             }
-            let mut trial = swaps.clone();
-            if trial.len() >= settings.max_swaps {
-                let Some(cheapest) = cheapest else {
-                    continue;
-                };
-                trial.remove(cheapest);
+            let conflicting = swaps.iter().any(|&swap| conflicts(swap, candidate));
+            let removals: Vec<Option<usize>> = if conflicting || swaps.len() < settings.max_swaps {
+                vec![None]
+            } else {
+                (0..swaps.len()).map(Some).collect()
+            };
+            for remove in removals {
+                let mut trial = swaps.clone();
+                if let Some(index) = remove {
+                    trial.remove(index);
+                }
+                trial.retain(|&swap| !conflicts(swap, candidate));
+                trial.push(candidate);
+                trial.sort_unstable();
+                trials.push(trial);
             }
-            if trial.iter().any(|&swap| conflicts(swap, candidate)) {
-                continue;
-            }
-            trial.push(candidate);
-            trial.sort_unstable();
-            trials.push(trial);
         }
         let best_summary = best.as_ref().map(|(_, known, _)| known);
         let (evaluated, _) = screen_all(&trials, &current, best_summary, false, mappings.as_ref())?;
@@ -561,6 +565,49 @@ mod tests {
         )
         .unwrap();
         (fit, before)
+    }
+
+    #[test]
+    fn full_sets_can_replace_a_useful_conflicting_swap() {
+        let base = ak::Layout::parse(QWERTY, Path::new("replacement.dat")).unwrap();
+        let layout = install(
+            &base,
+            &[Swap::new(b'e', b'd', b'q'), Swap::new(b'u', b'j', b'p')],
+        );
+        let text = corpus(
+            format!(
+                "{}{}{}{}",
+                "ed ".repeat(100),
+                "eq ".repeat(20),
+                "uj ".repeat(5),
+                "up "
+            )
+            .as_bytes(),
+        );
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SFB] = 1.0;
+        let physical = summary::PhysicalTables::with_mode(&layout, &weights, "normal");
+        let fitted = fit(
+            &layout,
+            &text,
+            &weights,
+            &physical,
+            &Settings {
+                max_swaps: 2,
+                ..Default::default()
+            },
+            None,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            1,
+            None,
+        )
+        .unwrap();
+        // e:dq fixes many ed pairs, but creates SFBs on eq. Its replacement
+        // must remove that useful swap, although u:jp is cheaper to remove.
+        assert_eq!(fitted.summary.metrics.v[SFB], 0.0);
+        assert!(!fitted.swaps.contains(&Swap::new(b'e', b'd', b'q')));
+        assert_eq!(fitted.swaps.len(), 2);
     }
 
     #[test]

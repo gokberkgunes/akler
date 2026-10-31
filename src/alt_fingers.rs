@@ -100,16 +100,28 @@ pub(crate) fn resolve(
 
 /// Overwrite `result`, which starts as each key's own finger, with the
 /// fingers of matching rules: longer rules win, then more named keys, then
-/// later rules. Windows hold at most eight keys.
+/// later rules. Rules apply in that order, strongest first, so each clash
+/// check sees the fingers that win. Windows hold at most eight keys.
 fn apply(rules: &[Rule], text: &[u8], mapped: &[Option<usize>], result: &mut [Option<usize>]) {
     let mut priority = [None; 8];
     assert!(text.len() <= priority.len());
-    for (index, rule) in rules.iter().enumerate() {
-        apply_rule(index, rule, None, text, mapped, result, &mut priority);
+    let mut order: Vec<usize> = (0..rules.len()).collect();
+    order.sort_unstable_by_key(|&index| std::cmp::Reverse(weight(index, &rules[index])));
+    for index in order {
+        apply_rule(index, &rules[index], None, text, mapped, result, &mut priority);
     }
 }
 
 type Priority = Option<(usize, usize, usize)>;
+
+/// A rule's precedence: its length, its named keys, then its order.
+fn weight(index: usize, rule: &Rule) -> (usize, usize, usize) {
+    (
+        rule.ngram.len(),
+        rule.ngram.iter().filter(|entry| entry.is_some()).count(),
+        index,
+    )
+}
 
 /// `apply` for one rule, at `start` alone or at every start.
 fn apply_rule(
@@ -122,11 +134,7 @@ fn apply_rule(
     priority: &mut [Priority; 8],
 ) {
     let len = rule.ngram.len();
-    let weight = (
-        len,
-        rule.ngram.iter().filter(|entry| entry.is_some()).count(),
-        index,
-    );
+    let weight = weight(index, rule);
     if len > text.len() {
         return;
     }
@@ -143,16 +151,22 @@ fn apply_rule(
         }) {
             continue;
         }
+        // The rule's finger at an offset, where a stronger rule has not
+        // already assigned one.
+        let wins = |offset: usize| {
+            rule.fingers[offset]
+                .filter(|_| priority[start + offset].map_or(true, |previous| weight >= previous))
+        };
         // As on akl.gg, a key keeps its own finger rather than move onto the
         // finger a neighbouring key uses: "e␣ (LT RT)" leaves Space on LT in
         // "e␣r" and "e_␣" in "er␣" when r is on RT.
         let finger_at = |position: usize| match position.checked_sub(start) {
-            Some(offset) if offset < len => rule.fingers[offset].or(result[position]),
+            Some(offset) if offset < len => wins(offset).or(result[position]),
             _ => result[position],
         };
         let clashes = (0..len).any(|offset| {
             let position = start + offset;
-            rule.fingers[offset].is_some_and(|finger| {
+            wins(offset).is_some_and(|finger| {
                 Some(finger) != result[position]
                     && [position.wrapping_sub(1), position + 1]
                         .into_iter()
@@ -797,7 +811,10 @@ impl Compiled {
                     count += 1;
                 }
             }
-            candidates[..count].sort_unstable();
+            candidates[..count].sort_unstable_by_key(|&(rule, start)| {
+                let index = usize::from(rule);
+                (std::cmp::Reverse(weight(index, &self.rules[index])), start)
+            });
             let mut priority = [None; 8];
             for &(rule, start) in &candidates[..count] {
                 let index = usize::from(rule);
@@ -939,6 +956,31 @@ pub(crate) fn compact_json(value: &Json) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlapping_rules_resolve_the_same_in_either_order() {
+        let layout = action_keys::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n",
+            std::path::Path::new("inline.dat"),
+        )
+        .unwrap();
+        let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
+        let mapped = [Some(slot("a")), Some(slot("s")), Some(slot("f"))];
+        let defaults: Vec<usize> = layout.slots.iter().map(|slot| slot.finger).collect();
+        // The three-key rule wins s, so a may not move onto s's finger too.
+        let expected = [Some(0), Some(2), Some(3)];
+        for text in ["as (LM LR) asf (. LM .)", "asf (. LM .) as (LM LR)"] {
+            let rules = AltRules::parse_letters(text).unwrap();
+            assert_eq!(resolve(&rules, b"asf", &mapped, &defaults), expected, "{text}");
+            let compiled = Compiled::new(rules, None, &layout);
+            assert!(compiled.by_first.is_some());
+            assert_eq!(
+                compiled.resolve(b"asf", &mapped, &defaults)[..3],
+                expected,
+                "{text}"
+            );
+        }
+    }
 
     #[test]
     fn contextual_rules_preserve_slots_and_do_not_cross_gaps() {

@@ -115,7 +115,7 @@ pub(crate) struct RuleEffect {
 /// Rules that repeat their one-letter context under a repeat-output fallback,
 /// such as `e → e`. They type what the fallback would type after a literal
 /// key, so fixed-root fitting sets them aside rather than counting them.
-fn plain_repeats(layout: &ak::Layout, root: usize) -> BTreeMap<Vec<u8>, ak::Emission> {
+pub(crate) fn plain_repeats(layout: &ak::Layout, root: usize) -> BTreeMap<Vec<u8>, ak::Emission> {
     let ak::Binding::Named(name) = &layout.slots[root].binding else {
         return BTreeMap::new();
     };
@@ -140,7 +140,7 @@ fn plain_repeats(layout: &ak::Layout, root: usize) -> BTreeMap<Vec<u8>, ak::Emis
 }
 
 /// Rules of the root's dictionary excluding `plain_repeats`.
-fn genuine_rule_count(layout: &ak::Layout, root: usize) -> usize {
+pub(crate) fn genuine_rule_count(layout: &ak::Layout, root: usize) -> usize {
     let repeats = plain_repeats(layout, root);
     match &layout.slots[root].binding {
         ak::Binding::Named(name) => match layout.actions.get(name) {
@@ -152,6 +152,21 @@ fn genuine_rule_count(layout: &ak::Layout, root: usize) -> usize {
         },
         _ => 0,
     }
+}
+
+/// Refresh requests may keep rule slots empty during setup, but an optimized
+/// result must refill every requested slot with a genuine rule.
+pub(crate) fn rule_counts_satisfied(layout: &ak::Layout) -> bool {
+    layout.magic_refit_pending.is_empty()
+        && layout.magic_rule_slots.iter().all(|(name, slots)| {
+            layout.slots.iter().enumerate().any(|(root, slot)| {
+                matches!(&slot.binding, ak::Binding::Named(bound) if bound == name)
+                    && genuine_rule_count(layout, root) == slots.len()
+                    && original(layout, root).is_some_and(|(rules, _)| {
+                        slots.iter().all(|context| rules.contains_key(context))
+                    })
+            })
+        })
 }
 
 /// The layout with the root's `plain_repeats` removed: the dictionary that
@@ -1661,6 +1676,11 @@ impl<'a> FixedRootFitter<'a> {
             self.weights,
             Arc::clone(&self.physical),
         )?;
+        if let ak::Binding::Named(name) = &layout.slots[root].binding {
+            if let Some(slots) = layout.magic_rule_slots.get(name) {
+                return self.refit_outputs(layout, root, slots, &prepared, stop, progress);
+            }
+        }
         // A hand-made dictionary larger than `max_rules` is first trimmed to
         // it. Rules that are the only way to type a character stay, so the
         // limit can still exceed `max_rules`.
@@ -1804,7 +1824,7 @@ impl<'a> FixedRootFitter<'a> {
                 layout,
                 root,
                 &self.proposals,
-                self.settings.max_rules,
+                limit,
                 self.settings.shortlist,
                 self.corpus,
                 self.weights,
@@ -1820,6 +1840,105 @@ impl<'a> FixedRootFitter<'a> {
             return Err("Fixed-root magic rule fitting moved a physical binding.".into());
         }
         Ok((fitted, evaluated))
+    }
+
+    /// Refit outputs in the retained contexts. The existing complete dictionary
+    /// is a feasible starting point, so refresh never strands an empty root.
+    fn refit_outputs(
+        &self,
+        layout: &ak::Layout,
+        root: usize,
+        slots: &[Vec<u8>],
+        prepared: &summary::Prepared<'_>,
+        stop: &AtomicBool,
+        progress: &AtomicU64,
+    ) -> ak::Result<(ak::Layout, summary::Summary)> {
+        let mut fitted = layout.clone();
+        let ak::Binding::Named(name) = &layout.slots[root].binding else {
+            return Err("Magic root has no action".into());
+        };
+        fitted.magic_refit_pending.remove(name);
+        let (mut current, mut mappings) = prepared.evaluate_fresh(&fitted, None, stop, progress)?;
+        let rank = |value: &summary::Summary| {
+            let coverage = (value.counts.ignored_characters
+                - self.baseline.counts.ignored_characters)
+                .max(0.0);
+            let excess: f64 = [
+                (SFB, self.settings.sfb_limit),
+                (SFS, self.settings.sfs_limit),
+                (TRAVEL, self.settings.travel_limit),
+                (SFTRAVEL, self.settings.sftravel_limit),
+            ]
+            .into_iter()
+            .filter_map(|(metric, cap)| {
+                cap.map(|cap| {
+                    (value.metrics.v[metric] - self.baseline.metrics.v[metric] - cap).max(0.0)
+                })
+            })
+            .sum();
+            (coverage, excess, value.score)
+        };
+        for _ in 0..2 {
+            let mut changed = false;
+            for context in slots {
+                if stop.load(Ordering::Relaxed) {
+                    return Err("cancelled".into());
+                }
+                let Some(&byte) = context.first().filter(|_| context.len() == 1) else {
+                    continue;
+                };
+                let existing = original(&fitted, root)
+                    .ok_or("Unsupported magic fallback")?
+                    .0;
+                let mut outputs: Vec<_> = self
+                    .proposals
+                    .iter()
+                    .filter(|rule| rule.context == byte && rule.output != byte)
+                    .map(|rule| (rule.frequency, rule.output))
+                    .collect();
+                outputs.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+                outputs.dedup_by_key(|entry| entry.1);
+                let mut best: Option<(ak::Layout, summary::Summary, Option<ng::Mappings>)> = None;
+                let mut best_rank = rank(&current);
+                for (_, output) in outputs.into_iter().take(self.settings.shortlist.max(1)) {
+                    let emission = ak::Emission::Text(vec![output]);
+                    if existing.get(context) == Some(&emission) {
+                        continue;
+                    }
+                    let mut trial = fitted.clone();
+                    edit_rules(&mut trial, root, |rules| {
+                        rules.insert(context.clone(), emission);
+                    });
+                    let (evaluated, trial_mappings) =
+                        prepared.evaluate_from(&trial, mappings.as_ref(), stop, progress)?;
+                    if !evaluated.score.is_finite() {
+                        continue;
+                    }
+                    let candidate_rank = rank(&evaluated);
+                    if candidate_rank
+                        .0
+                        .total_cmp(&best_rank.0)
+                        .then(candidate_rank.1.total_cmp(&best_rank.1))
+                        .then(candidate_rank.2.total_cmp(&best_rank.2))
+                        .is_lt()
+                    {
+                        best_rank = candidate_rank;
+                        best = Some((trial, evaluated, trial_mappings));
+                    }
+                }
+                if let Some(best) = best {
+                    (fitted, current, mappings) = best;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        if !rule_counts_satisfied(&fitted) {
+            return Err("Magic refresh did not preserve its rule slots".into());
+        }
+        Ok((fitted, current))
     }
 }
 

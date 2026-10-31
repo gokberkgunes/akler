@@ -1,5 +1,5 @@
 //! Text-producing keyboard actions. This module never equates output bytes with physical presses.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use std::fs;
 
@@ -73,6 +73,10 @@ pub struct Layout {
     pub right_outer: bool,
     pub(crate) row_stagger: RowStagger,
     pub(crate) action_mode: bool,
+    /// Session-only contexts whose outputs refresh must refit in place.
+    pub(crate) magic_rule_slots: BTreeMap<String, Vec<Vec<u8>>>,
+    /// Presentation only: working outputs stay active until the refit starts.
+    pub(crate) magic_refit_pending: BTreeSet<String>,
     pub(crate) alt_fingers: Vec<crate::alt_fingers::Rule>,
     /// `alt_fingers` name key positions instead of letters while an
     /// optimizer runs; see `alt_fingers::pin`.
@@ -1462,6 +1466,8 @@ impl Layout {
             right_outer,
             row_stagger: stagger_mode.unwrap_or_default(),
             action_mode,
+            magic_rule_slots: BTreeMap::new(),
+            magic_refit_pending: BTreeSet::new(),
             alt_fingers: alt_fingers.unwrap_or_default(),
             alt_spots: false,
             source_warnings: if combos.as_ref().is_some_and(|values| !values.is_empty()) {
@@ -1534,6 +1540,34 @@ impl Layout {
         let (left, right) = self.slots.split_at_mut(hi);
         std::mem::swap(&mut left[lo].binding, &mut right[0].binding);
         std::mem::swap(&mut left[lo].label, &mut right[0].label);
+    }
+
+    /// Reflect bindings on the existing board, including the thumb row.
+    /// Geometry stays fixed; layout-owned alternate fingers change hands.
+    pub(crate) fn mirror(&mut self) {
+        let pinned = self.alt_spots;
+        crate::alt_fingers::unpin(self);
+        for row in 0..=3 {
+            let mut slots: Vec<_> = self
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.row == row)
+                .map(|(index, _)| index)
+                .collect();
+            slots.sort_by_key(|&index| self.slots[index].col);
+            for index in 0..slots.len() / 2 {
+                self.swap(slots[index], slots[slots.len() - index - 1]);
+            }
+        }
+        for rule in &mut self.alt_fingers {
+            for finger in rule.fingers.iter_mut().flatten() {
+                *finger = [7, 6, 5, 4, 3, 2, 1, 0, 9, 8][*finger];
+            }
+        }
+        if pinned {
+            crate::alt_fingers::pin(self);
+        }
     }
 
     pub fn text(&self) -> String {

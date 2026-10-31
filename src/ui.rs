@@ -183,6 +183,8 @@ enum Action {
     Setting(usize),
     Item(usize),
     Command(char),
+    ResetRules(crate::action_ui::RuleReset),
+    MirrorLayout,
 }
 
 struct Canvas {
@@ -1780,7 +1782,9 @@ fn optimizer_metric_weight(m: usize) -> Option<usize> {
 }
 
 fn weight_label(i: usize) -> &'static str {
-    if i < N_METRICS {
+    if i == CORNER_WEIGHT {
+        "CORNER"
+    } else if i < N_METRICS {
         METRIC_NAMES[i]
     } else {
         ["PINKY", "RING", "MIDDLE", "INDEX"][(i - N_METRICS) % 4]
@@ -2287,6 +2291,8 @@ pub(crate) fn metric_score_rows(before: &Metrics, after: &Metrics, w: &Weights) 
     let stat = |m: &Metrics, i: usize| {
         if i < N_METRICS {
             m.v[i]
+        } else if i == CORNER_WEIGHT {
+            m.corner
         } else if i < USAGE_WEIGHT {
             m.off[i - N_METRICS] + m.off[7 - (i - N_METRICS)]
         } else {
@@ -3715,7 +3721,9 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     if aggregate(i) {
         return Err("Display-only totals have no separate weight; edit their directional or D/C components.".into());
     }
-    let hint = if i < N_METRICS {
+    let hint = if i == CORNER_WEIGHT {
+        "Penalty per percentage point of presses on inner top/bottom corners (QWERTY T, Y, B, N). 0 disables it."
+    } else if i < N_METRICS {
         METRIC_HELP[i]
     } else if i < N_METRICS + 4 {
         "Extra penalty per percentage point of off-home use by this finger pair."

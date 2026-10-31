@@ -275,16 +275,23 @@ impl Program {
     /// The program a layout's contexts are counted with: its combos while
     /// the policy types them, or none at all when only alternate fingers
     /// need the centred windows, whose key after the counted one rules like
-    /// "␣e" read. Corpora below order 4 have no such windows.
+    /// "␣e" read. Corpora below order 4 have no such windows. Combos whose
+    /// output the corpus never types (`occurs` says which pairs it does)
+    /// change no count, so they leave alternate fingers counted as without.
     pub(crate) fn for_contexts(
         layout: &action_keys::Layout,
         policy: Policy,
         alts: crate::alt_fingers::AltPolicy,
         order: usize,
+        occurs: impl Fn(&[u8]) -> bool,
     ) -> Result<Option<Self>, String> {
         if policy.enabled && !layout.combos.is_empty() {
-            Self::new(layout).map(Some)
-        } else if order >= 4 {
+            let program = Self::new(layout)?;
+            if program.combos.iter().any(|combo| occurs(&combo.output)) {
+                return Ok(Some(program));
+            }
+        }
+        if order >= 4 {
             Ok(alts.compile(layout).map(|compiled| Self {
                 ahead: true,
                 alt_bigram_lookahead: compiled.has_bigram_lookahead(),

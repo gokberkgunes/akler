@@ -307,14 +307,14 @@ fn evaluate_tui_shared(
     )
 }
 
-/// One line naming a layout's magic rules, adaptive swaps and combos, if it
+/// Lines naming a layout's magic rules, adaptive swaps and combos, if it
 /// has any. Plain repeats such as `e→e` only restate the repeat fallback and
 /// are left out.
 pub(crate) fn rules_and_combos(layout: &ak::Layout) -> Option<String> {
     rules_line(layout, true)
 }
 
-fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
+fn magic_rule_lines(layout: &ak::Layout, include_empty: bool) -> Vec<(usize, String)> {
     let mut parts = Vec::new();
     for (slot, key) in layout.slots.iter().enumerate() {
         if !matches!(&key.binding, ak::Binding::Named(_))
@@ -325,10 +325,11 @@ fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
         let Some((rules, _)) = crate::magic_design::original(layout, slot) else {
             continue;
         };
-        let text: Vec<_> = rules
+        let repeats = crate::magic_design::plain_repeats(layout, slot);
+        let mut text: Vec<_> = rules
             .iter()
             .filter_map(|(context, emission)| match emission {
-                ak::Emission::Text(output) if output != context => Some(format!(
+                ak::Emission::Text(output) if !repeats.contains_key(context) => Some(format!(
                     "{}→{}",
                     String::from_utf8_lossy(context),
                     String::from_utf8_lossy(output)
@@ -336,10 +337,29 @@ fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
                 _ => None,
             })
             .collect();
-        if !text.is_empty() {
-            parts.push(format!("Magic {}: {}", key.label, text.join(" ")));
+        if let ak::Binding::Named(name) = &key.binding {
+            if layout.magic_refit_pending.contains(name) {
+                let count = layout.magic_rule_slots.get(name).map_or(0, Vec::len);
+                text = vec!["___".to_string(); count];
+            }
+        }
+        if include_empty || !text.is_empty() {
+            let text = if text.is_empty() {
+                "none".into()
+            } else {
+                text.join(" ")
+            };
+            parts.push((slot, format!("Magic {}: {text}", key.label)));
         }
     }
+    parts
+}
+
+fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
+    let mut parts: Vec<_> = magic_rule_lines(layout, false)
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect();
     let swaps: Vec<_> = crate::swap_fit::swaps_of(layout)
         .iter()
         .map(|swap| {
@@ -382,7 +402,7 @@ fn rules_line(layout: &ak::Layout, with_swaps: bool) -> Option<String> {
     if !combos.is_empty() {
         parts.push(format!("Combos: {}", combos.join(" ")));
     }
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    (!parts.is_empty()).then(|| parts.join("\n"))
 }
 
 /// Draw `rules_and_combos` at `y`, returning the next free row.
@@ -399,14 +419,9 @@ fn optimizer_toggle_rows(
     fit: usize,
     exact: bool,
 ) -> usize {
-    let toggle = |c: &mut Canvas, y: usize, text: &str, on: bool, command: char| {
-        c.text(0, y, &short(text, c.w), if on { GREEN } else { RED });
-        let w = text.chars().count().min(c.w);
-        c.hit(Rect { x: 0, y, w, h: 1 }, Action::Command(command));
-    };
-    if let Some(line) = rules_line(l, false) {
-        c.text(0, y, &short(&line, c.w), CYAN);
-        y += 1;
+    let mut rows = Vec::new();
+    for (slot, line) in magic_rule_lines(l, true) {
+        rows.push((line, CYAN, Some(RuleReset::Magic(slot)), None));
     }
     let swaps = stashed.map_or_else(|| crate::swap_fit::swaps_of(l), <[_]>::to_vec);
     if !swaps.is_empty() || fit > 0 || stashed.is_some() {
@@ -429,14 +444,27 @@ fn optimizer_toggle_rows(
             (None, 0) => format!("Swaps: {names}"),
             (None, fit) => format!("Swaps: {names} · fit {} {fit}", count_bound(exact)),
         };
-        toggle(c, y, &text, stashed.is_none(), 'a');
-        y += 1;
+        rows.push((
+            text,
+            if stashed.is_none() { GREEN } else { RED },
+            Some(RuleReset::Swaps),
+            Some('a'),
+        ));
     }
-    let alts = alts_text(l, w);
-    if let Some(alts) = alts {
-        let text = alts_label(w.3, &alts);
-        toggle(c, y, &text, w.3, 'f');
-        y += 1;
+    if let Some(alts) = alts_text(l, w) {
+        rows.push((
+            alts_label(w.3, &alts),
+            if w.3 { GREEN } else { RED },
+            Some(RuleReset::Alts),
+            Some('f'),
+        ));
+    }
+    y = rule_controls(c, y, &rows);
+    if let Some(lines) = rules_line(l, false) {
+        for line in lines.lines().filter(|line| line.starts_with("Combos:")) {
+            c.text(0, y, &short(line, c.w), CYAN);
+            y += 1;
+        }
     }
     y + 1
 }
@@ -467,36 +495,194 @@ pub(crate) fn alts_label(on: bool, source: &str) -> String {
     format!("Alts {}: {source}", if on { "on" } else { "off" })
 }
 
-fn rules_and_combos_row(canvas: &mut Canvas, y: usize, layout: &ak::Layout) -> usize {
-    match rules_and_combos(layout) {
-        Some(line) => {
-            canvas.text(0, y, &short(&line, canvas.w), CYAN);
-            y + 2
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RuleReset {
+    Magic(usize),
+    Swaps,
+    Alts,
+}
+
+type RuleControl = (String, u8, Option<RuleReset>, Option<char>);
+
+fn rule_controls(canvas: &mut Canvas, y: usize, rows: &[RuleControl]) -> usize {
+    let mirror_x = canvas.w.saturating_sub(12);
+    canvas.boxed(
+        Rect {
+            x: mirror_x,
+            y,
+            w: 12.min(canvas.w),
+            h: 3,
+        },
+        FG,
+    );
+    canvas.text(mirror_x + 2, y + 1, "⇆ Mirror", FG);
+    canvas.hit(
+        Rect {
+            x: mirror_x,
+            y,
+            w: 12.min(canvas.w),
+            h: 3,
+        },
+        Action::MirrorLayout,
+    );
+    if !rows.is_empty() {
+        canvas.boxed(
+            Rect {
+                x: 0,
+                y,
+                w: 5.min(canvas.w),
+                h: rows.len() + 2,
+            },
+            FG,
+        );
+    }
+    for (index, (text, color, reset, toggle)) in rows.iter().enumerate() {
+        let row = y + index + 1;
+        if let Some(reset) = reset {
+            canvas.put(2, row, '↻', FG);
+            canvas.hit(
+                Rect {
+                    x: 1,
+                    y: row,
+                    w: 3,
+                    h: 1,
+                },
+                Action::ResetRules(*reset),
+            );
         }
-        None => y,
+        canvas.text(6, row, &short(text, mirror_x.saturating_sub(7)), *color);
+        if let Some(command) = toggle {
+            canvas.hit(
+                Rect {
+                    x: 6,
+                    y: row,
+                    w: mirror_x.saturating_sub(7),
+                    h: 1,
+                },
+                Action::Command(*command),
+            );
+        }
+    }
+    y + (rows.len() + 2).max(3)
+}
+
+fn mirror_optimizer_layout(layout: &mut ak::Layout, root: &mut Option<usize>) {
+    let binding = root
+        .and_then(|root| layout.slots.get(root))
+        .map(|slot| slot.binding.clone());
+    layout.mirror();
+    if let Some(binding) = binding {
+        *root = layout.slots.iter().position(|slot| slot.binding == binding);
     }
 }
 
-/// `rules_and_combos_row` plus the alternate fingers the run scores with,
-/// for the running and result screens.
-fn rules_and_alts_rows(canvas: &mut Canvas, y: usize, layout: &ak::Layout, w: &Weights) -> usize {
-    let Some(alts) = alts_text(layout, w) else {
-        return rules_and_combos_row(canvas, y, layout);
-    };
-    let y = match rules_and_combos(layout) {
-        Some(line) => {
-            canvas.text(0, y, &short(&line, canvas.w), CYAN);
-            y + 1
+/// Drop this category's rules in memory, retaining physical keys and fallbacks.
+fn reset_rules(
+    layout: &mut ak::Layout,
+    weights: &mut Weights,
+    stashed_swaps: &mut Option<Vec<crate::swap_fit::Swap>>,
+    reset: RuleReset,
+) -> AppResult<&'static str> {
+    match reset {
+        RuleReset::Magic(slot) => {
+            let Some(ak::Binding::Named(name)) = layout.slots.get(slot).map(|slot| &slot.binding)
+            else {
+                return Err("The selected magic key no longer exists".into());
+            };
+            let name = name.clone();
+            let slots = layout
+                .magic_rule_slots
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| {
+                    let repeats = crate::magic_design::plain_repeats(layout, slot);
+                    crate::magic_design::original(layout, slot).map_or_else(
+                        Vec::new,
+                        |(rules, _)| {
+                            rules
+                                .into_keys()
+                                .filter(|context| !repeats.contains_key(context))
+                                .collect()
+                        },
+                    )
+                });
+            if !slots.is_empty() {
+                layout.magic_rule_slots.insert(name.clone(), slots);
+                layout.magic_refit_pending.insert(name);
+            }
+            Ok("Magic outputs queued for refit; Space runs it; working rules are retained")
         }
-        None => y,
-    };
-    canvas.text(
-        0,
-        y,
-        &short(&alts_label(w.3, &alts), canvas.w),
-        if w.3 { GREEN } else { RED },
-    );
-    y + 2
+        RuleReset::Swaps => {
+            *layout = crate::swap_fit::split(layout).0;
+            *stashed_swaps = None;
+            Ok("Adaptive swaps cleared; Space refits them when Adaptive swaps is above 0")
+        }
+        RuleReset::Alts => {
+            layout.alt_fingers.clear();
+            layout.alt_spots = false;
+            weights.1.alts = None;
+            Ok("Alternate-finger rules cleared for this session; alts are not fitted")
+        }
+    }
+}
+
+fn rules_and_combos_row(canvas: &mut Canvas, mut y: usize, layout: &ak::Layout) -> usize {
+    if let Some(lines) = rules_and_combos(layout) {
+        for line in lines.lines() {
+            canvas.text(0, y, &short(line, canvas.w), CYAN);
+            y += 1;
+        }
+        y += 1;
+    }
+    y
+}
+
+/// Rules on separate lines; reset controls belong to editable result screens.
+fn rules_and_alts_rows(
+    canvas: &mut Canvas,
+    mut y: usize,
+    layout: &ak::Layout,
+    w: &Weights,
+    editable: bool,
+) -> usize {
+    if editable {
+        let mut rows: Vec<RuleControl> = magic_rule_lines(layout, true)
+            .into_iter()
+            .map(|(slot, line)| (line, CYAN, Some(RuleReset::Magic(slot)), None))
+            .collect();
+        if let Some(lines) = rules_line(layout, true) {
+            for line in lines.lines().filter(|line| line.starts_with("Swaps:")) {
+                rows.push((line.to_string(), CYAN, Some(RuleReset::Swaps), None));
+            }
+        }
+        if let Some(alts) = alts_text(layout, w) {
+            rows.push((
+                alts_label(w.3, &alts),
+                if w.3 { GREEN } else { RED },
+                Some(RuleReset::Alts),
+                None,
+            ));
+        }
+        y = rule_controls(canvas, y, &rows);
+        if let Some(lines) = rules_line(layout, true) {
+            for line in lines.lines().filter(|line| line.starts_with("Combos:")) {
+                canvas.text(0, y, &short(line, canvas.w), CYAN);
+                y += 1;
+            }
+        }
+    } else {
+        y = rules_and_combos_row(canvas, y, layout);
+        if let Some(alts) = alts_text(layout, w) {
+            canvas.text(
+                0,
+                y,
+                &short(&alts_label(w.3, &alts), canvas.w),
+                if w.3 { GREEN } else { RED },
+            );
+            y += 1;
+        }
+    }
+    y + 1
 }
 
 pub(crate) fn action_keyboard(
@@ -697,7 +883,7 @@ fn action_frame(
     let mut y = action_keyboard(&mut c, 2, l, base, locks, selected) + 1;
     y = match toggles {
         Some((stashed, fit, exact)) => optimizer_toggle_rows(&mut c, y, l, w, stashed, fit, exact),
-        None => rules_and_combos_row(&mut c, y, l),
+        None => rules_and_alts_rows(&mut c, y, l, w, false),
     };
     let limited = if a.corpus.warnings.iter().any(|warning| {
         warning.starts_with("Approximate")
@@ -2298,6 +2484,25 @@ fn action_optimizer_setup(
         }
         if let Some(action) = action_press(term, &frame, &event, scroll) {
             match action {
+                Action::MirrorLayout => {
+                    mirror_optimizer_layout(layout, magic_root);
+                    *current_cache = None;
+                    *status = "Layout mirrored left to right, including thumbs".into();
+                    continue;
+                }
+                Action::ResetRules(reset) => {
+                    match reset_rules(layout, weights, stashed_swaps, reset) {
+                        Ok(message) => {
+                            *status = message.into();
+                            *current_cache = None;
+                            if matches!(reset, RuleReset::Alts) {
+                                *baseline_cache = None;
+                            }
+                        }
+                        Err(error) => *status = error.to_string(),
+                    }
+                    continue;
+                }
                 Action::Key(i) => {
                     locks[i] = !locks[i];
                     continue;
@@ -2328,7 +2533,15 @@ fn action_optimizer_setup(
                     let result = match i {
                         14 => action_choose_design(term, settings),
                         17 => choose_preset(term, settings),
-                        MAGIC_RULES_SETTING => edit_magic_rules(term, &mut magic_rules),
+                        MAGIC_RULES_SETTING => {
+                            let previous = magic_rules;
+                            let result = edit_magic_rules(term, &mut magic_rules);
+                            if magic_rules != previous {
+                                layout.magic_rule_slots.clear();
+                                layout.magic_refit_pending.clear();
+                            }
+                            result
+                        }
                         COMBOS_SETTING => {
                             // Setting a count scores combos too.
                             if combos.is_none() {
@@ -2581,6 +2794,7 @@ fn action_optimizer_setup(
                     "o\tReset the layout to its loaded bindings.".into(),
                     "Click a key\tLock or unlock its physical slot.".into(),
                     "Drag a key\tSwap its binding with another key.".into(),
+                    "↻ box\tClear that line's rules in memory; Space refits Magic and Swaps.".into(),
                     "Click a stat\tShow its contributing patterns.".into(),
                     "H\tUse default locks.".into(),
                     "U\tUnlock all keys, including an active magic key.".into(),
@@ -2640,6 +2854,7 @@ fn action_optimizer_search(
 ) -> AppResult<Option<(Snapshot, ak::Layout)>> {
     // Own alternate fingers stay on their keys while letters move; every
     // layout leaving the search names them by letter again.
+    seed.magic_refit_pending.clear();
     let mut original_owned = original.clone();
     let mut seed_owned = seed.clone();
     crate::alt_fingers::pin(&mut original_owned);
@@ -2661,6 +2876,7 @@ fn action_optimizer_search(
     let control = Arc::new(Control::new());
     let worker_control = Arc::clone(&control);
     let (updates_tx, updates_rx) = mpsc::sync_channel(2);
+    let (status_tx, status_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let result = if joint {
@@ -2668,7 +2884,7 @@ fn action_optimizer_search(
                 crate::alt_fingers::unpin(&mut layout);
                 let _ = updates_tx.try_send((snapshot, baseline, raw, totals, layout));
             };
-            crate::magic_optimizer::run_controlled(
+            crate::magic_optimizer::run_controlled_with_status(
                 &original_owned,
                 &seed_owned,
                 magic_root,
@@ -2681,6 +2897,9 @@ fn action_optimizer_search(
                 &worker_swaps,
                 &worker_control,
                 &mut callback,
+                &mut |status| {
+                    let _ = status_tx.send(status.to_string());
+                },
             )
             .map(|(layout, snapshot)| (snapshot, layout))
         } else {
@@ -2704,9 +2923,14 @@ fn action_optimizer_search(
     });
 
     let mut snapshot: Option<(Snapshot, Metrics, Raw, [f64; 4], ak::Layout)> = None;
+    let mut status = "Building incremental context caches".to_string();
+    let started = Instant::now();
     let mut scroll = 0;
     let result = (|| -> AppResult<Option<(Snapshot, ak::Layout)>> {
         loop {
+            while let Ok(update) = status_rx.try_recv() {
+                status = update;
+            }
             while let Ok(update) = updates_rx.try_recv() {
                 snapshot = Some(update);
             }
@@ -2736,11 +2960,13 @@ fn action_optimizer_search(
                 ),
             );
             let mut y = action_keyboard(&mut frame, 3, &layout, original, Some(locks), None) + 1;
-            y = rules_and_alts_rows(&mut frame, y, &layout, weights);
+            y = rules_and_alts_rows(&mut frame, y, &layout, weights, false);
             if let Some((snapshot, baseline, raw, totals, _)) = &snapshot {
                 let progress = &snapshot.progress;
                 let phase = if control.pause.load(Ordering::Relaxed) {
                     "paused"
+                } else if joint {
+                    &status
                 } else {
                     &progress.phase
                 };
@@ -2849,7 +3075,14 @@ fn action_optimizer_search(
                     CYAN,
                 );
             } else {
-                frame.text(0, y, "Building incremental context caches", CYAN);
+                let phase = if control.pause.load(Ordering::Relaxed) {
+                    "paused"
+                } else {
+                    &status
+                };
+                frame.text(
+                    0, y, &format!("{phase} · {:.1}s", started.elapsed().as_secs_f64()), CYAN,
+                );
             }
             frame.h = y + 3;
             term.present(&frame, scroll)?;
@@ -2936,7 +3169,7 @@ fn action_result_frame(
         &format!("m stats: {} | ? help | q setup", term.stats_view_name()),
     );
     let mut y = action_keyboard(&mut frame, 2, layout, original, Some(locks), None) + 1;
-    y = rules_and_alts_rows(&mut frame, y, layout, weights);
+    y = rules_and_alts_rows(&mut frame, y, layout, weights, true);
     let aklgg_scoring = settings.mode == "aklgg";
     let physical_stats = settings.uses_mana2_stats().then(|| {
         (
@@ -3196,6 +3429,10 @@ fn action_optimizer_session(
                 Err(error) => {
                     setup_current = None;
                     status = format!("Search failed: {error}");
+                    info_page(term, "Optimizer could not finish", &[
+                        error.to_string(),
+                        "Your layout is unchanged by the failed search.".into(),
+                    ])?;
                     break 'runs;
                 }
             };
@@ -3264,6 +3501,25 @@ fn action_optimizer_session(
                 }
                 if let Some(action) = action_press(term, &frame, &event, scroll) {
                     match action {
+                        Action::MirrorLayout => {
+                            mirror_optimizer_layout(&mut layout, &mut magic_root);
+                            setup_current = None;
+                            status = "Layout mirrored left to right, including thumbs".into();
+                            break 'runs;
+                        }
+                        Action::ResetRules(reset) => {
+                            match reset_rules(&mut layout, &mut weights, &mut stashed_swaps, reset) {
+                                Ok(message) => {
+                                    status = message.into();
+                                    setup_current = None;
+                                    if matches!(reset, RuleReset::Alts) {
+                                        setup_baseline = None;
+                                    }
+                                    break 'runs;
+                                }
+                                Err(error) => status = error.to_string(),
+                            }
+                        }
                         Action::Metric(metric) => action_contributors(
                             term, metric, &layout, &original, baseline, current,
                         )?,
@@ -3310,6 +3566,7 @@ fn action_optimizer_session(
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
                             "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS.".into(),
                             "v shows current magic rules when magic optimization is enabled.".into(),
+                            "The ↻ box clears that line's rules and returns to setup; Space refits Magic and Swaps.".into(),
                             ". toggles display precision.".into(),
                         ],
                     )?,
@@ -4033,6 +4290,325 @@ mod ngram_integration_tests {
         }
     }
     #[test]
+    fn mirror_preserves_geometry_and_rules_and_is_reversible() {
+        let mut layout = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: e | space\n* ou\nswap e dr\n",
+            Path::new("mirror.dat"),
+        ).unwrap().with_spare_keys();
+        layout.alt_fingers = vec![crate::alt_fingers::Rule {
+            ngram: vec![Some(b'f'), Some(b'g')],
+            fingers: vec![Some(2), Some(3)],
+        }];
+        crate::alt_fingers::pin(&mut layout);
+        let original = layout.clone();
+        let mut root = crate::magic_optimizer::existing_root(&layout);
+        let original_root = root;
+        mirror_optimizer_layout(&mut layout, &mut root);
+        assert_eq!(layout.actions, original.actions);
+        for row in 0..=3 {
+            let mut slots: Vec<_> = original
+                .slots
+                .iter()
+                .enumerate()
+                .filter(|(_, slot)| slot.row == row)
+                .map(|(index, _)| index)
+                .collect();
+            slots.sort_by_key(|&index| original.slots[index].col);
+            for (at, &index) in slots.iter().enumerate() {
+                assert_eq!(
+                    layout.slots[index].binding,
+                    original.slots[slots[slots.len() - 1 - at]].binding
+                );
+                assert_eq!(layout.slots[index].finger, original.slots[index].finger);
+                assert_eq!(layout.slots[index].row, original.slots[index].row);
+                assert_eq!(layout.slots[index].col, original.slots[index].col);
+            }
+        }
+        assert_ne!(root, original_root);
+        let mut letters = layout.clone();
+        crate::alt_fingers::unpin(&mut letters);
+        assert_eq!(letters.alt_fingers[0].fingers, vec![Some(5), Some(4)]);
+        mirror_optimizer_layout(&mut layout, &mut root);
+        assert_eq!(root, original_root);
+        assert_eq!(layout.slots, original.slots);
+        assert_eq!(layout.actions, original.actions);
+        assert_eq!(layout.alt_fingers, original.alt_fingers);
+        assert_eq!(layout.alt_spots, original.alt_spots);
+    }
+
+    #[test]
+    fn rule_reset_rows_clear_only_the_selected_category() {
+        let mut layout = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ou\nswap e dr\n",
+            Path::new("reset.dat"),
+        ).unwrap();
+        layout.alt_fingers = crate::alt_fingers::AltRules::parse("fg (LM LI)").unwrap();
+        let original = layout.clone();
+        let root = crate::magic_optimizer::existing_root(&layout).unwrap();
+        let mut weights = Weights::default();
+        let mut stashed = None;
+        let mut canvas = Canvas::new(108, 20);
+        let bottom = optimizer_toggle_rows(&mut canvas, 0, &layout, &weights, None, 5, false);
+        assert_eq!(bottom, 6, "three rule rows share one five-row frame");
+        assert!(canvas
+            .hits
+            .iter()
+            .any(|(_, action)| matches!(action, Action::MirrorLayout)));
+        for (row, name) in [(1, "Magic *:"), (2, "Swaps:"), (3, "Alts on:")] {
+            let text: String = canvas.cells[row * canvas.w..(row + 1) * canvas.w]
+                .iter()
+                .map(|cell| cell.ch)
+                .collect();
+            assert!(text.starts_with(&format!("│ ↻ │ {name}")), "{text}");
+            assert!(canvas.hits.iter().any(|(rect, action)| rect.x == 1
+                && rect.y == row
+                && rect.w == 3
+                && rect.h == 1
+                && matches!(action, Action::ResetRules(_))));
+        }
+        let fallback = crate::magic_design::original(&layout, root).unwrap().1;
+        reset_rules(
+            &mut layout,
+            &mut weights,
+            &mut stashed,
+            RuleReset::Magic(root),
+        )
+        .unwrap();
+        let (rules, after_fallback) = crate::magic_design::original(&layout, root).unwrap();
+        assert_eq!(
+            rules,
+            crate::magic_design::original(&original, root).unwrap().0
+        );
+        assert!(!layout.magic_refit_pending.is_empty());
+        assert_eq!(fallback, after_fallback);
+        assert_eq!(layout.slots, original.slots);
+        assert_eq!(
+            crate::swap_fit::swaps_of(&layout),
+            crate::swap_fit::swaps_of(&original)
+        );
+        assert_eq!(layout.alt_fingers, original.alt_fingers);
+        assert_eq!(crate::magic_optimizer::existing_root(&layout), Some(root));
+
+        stashed = Some(crate::swap_fit::swaps_of(&layout));
+        reset_rules(&mut layout, &mut weights, &mut stashed, RuleReset::Swaps).unwrap();
+        assert!(crate::swap_fit::swaps_of(&layout).is_empty());
+        assert!(stashed.is_none());
+        assert_eq!(layout.alt_fingers, original.alt_fingers);
+        // Clearing adaptive actions restores their literal fallbacks, with
+        // their physical positions and labels unchanged.
+        assert_eq!(
+            layout
+                .slots
+                .iter()
+                .map(|slot| (&slot.label, slot.row, slot.col, slot.finger))
+                .collect::<Vec<_>>(),
+            original
+                .slots
+                .iter()
+                .map(|slot| (&slot.label, slot.row, slot.col, slot.finger))
+                .collect::<Vec<_>>()
+        );
+        let plain = layout.clone();
+        weights.1.alts = crate::alt_fingers::AltRules {
+            colstag: original.alt_fingers.clone(),
+            ..Default::default()
+        }
+        .intern();
+        reset_rules(&mut layout, &mut weights, &mut stashed, RuleReset::Alts).unwrap();
+        assert!(layout.alt_fingers.is_empty());
+        assert!(weights.1.alts.is_none());
+        assert_eq!(layout.actions, plain.actions);
+        assert_eq!(layout.slots, plain.slots);
+    }
+
+    #[test]
+    fn magic_refresh_retains_unseen_slots_and_working_outputs() {
+        let mut layout = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ae ce ne re ue\n",
+            Path::new("unfillable.dat"),
+        ).unwrap();
+        let root = crate::magic_optimizer::existing_root(&layout).unwrap();
+        let mut weights = Weights::default();
+        reset_rules(&mut layout, &mut weights, &mut None, RuleReset::Magic(root)).unwrap();
+        let corpus = history_corpus(b"red red red ");
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        let baseline =
+            crate::action_summary::evaluate(&layout, &corpus, &weights, &stop, &progress).unwrap();
+        let fitter = crate::magic_design::FixedRootFitter::new(
+            &layout,
+            &corpus,
+            &weights,
+            &crate::magic_design::Settings::default(),
+            baseline,
+            "normal",
+        );
+        let (fitted, _) = fitter.refit(&layout, root, 1, &stop, &progress).unwrap();
+        assert_eq!(crate::magic_design::genuine_rule_count(&fitted, root), 5);
+        assert_eq!(
+            crate::magic_design::original(&fitted, root).unwrap().0,
+            crate::magic_design::original(&layout, root).unwrap().0
+        );
+        assert!(crate::magic_design::rule_counts_satisfied(&fitted));
+        assert!(!magic_rule_lines(&fitted, true)[0].1.contains("___"));
+    }
+
+    #[test]
+    fn magic_refresh_preserves_slots_through_a_complete_optimizer_run() {
+        let original = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ae ce ne re ue\n",
+            Path::new("five-slots.dat"),
+        ).unwrap();
+        let root = crate::magic_optimizer::existing_root(&original).unwrap();
+        let mut cleared = original.clone();
+        let mut weights = Weights::default();
+        let mut stashed = None;
+        for _ in 0..2 {
+            reset_rules(
+                &mut cleared,
+                &mut weights,
+                &mut stashed,
+                RuleReset::Magic(root),
+            )
+            .unwrap();
+            let lines = magic_rule_lines(&cleared, true);
+            assert_eq!(lines[0].1.matches("___").count(), 5);
+            assert!(!crate::magic_design::rule_counts_satisfied(&cleared));
+        }
+        let corpus = history_corpus(b"red bed fed led wed ted ed deer seed need deed sea fun ");
+        let mut locks = action_default_locks(&cleared);
+        locks[root] = true;
+        for (slot, key) in cleared.slots.iter().enumerate() {
+            locks[slot] |= key.main && key.row == 1;
+        }
+        let search = SearchSettings {
+            workers: 1,
+            restarts: 1,
+            passes: 1,
+            anneal_steps: 1,
+            magic_anneal_steps: 1,
+            seconds: 0.0,
+            sfb_limit: None,
+            sfs_limit: None,
+            ..Default::default()
+        };
+        for mode in ["normal", "aklgg"] {
+            let mut displayed = 0;
+            let fitting_reported = std::cell::Cell::new(false);
+            let (fitted, _) = crate::magic_optimizer::run_controlled_with_status(
+                &original,
+                &cleared,
+                Some(root),
+                &locks,
+                &[(corpus.clone(), 1.0)],
+                &weights,
+                &SearchSettings {
+                    mode: mode.into(),
+                    ..search.clone()
+                },
+                &MagicSettings {
+                    max_rules: 1,
+                    ..Default::default()
+                },
+                &crate::combo_fit::Settings {
+                    max_combos: 0,
+                    ..Default::default()
+                },
+                &crate::swap_fit::Settings {
+                    max_swaps: 0,
+                    ..Default::default()
+                },
+                &Control::new(),
+                &mut |layout, _, _, _, _| {
+                    assert!(crate::magic_design::rule_counts_satisfied(&layout));
+                    displayed += 1;
+                },
+                &mut |phase| {
+                    if phase.starts_with("Fitting magic rules") {
+                        fitting_reported.set(true);
+                    }
+                },
+            )
+            .unwrap();
+            assert!(displayed > 0);
+            assert!(
+                fitting_reported.get(),
+                "fitting must be visible during the refit"
+            );
+            assert_eq!(crate::magic_design::genuine_rule_count(&fitted, root), 5);
+            assert_eq!(fitted.slots[root], original.slots[root]);
+            assert!(crate::magic_design::rule_counts_satisfied(&fitted));
+            assert!(!magic_rule_lines(&fitted, true)[0].1.contains("___"));
+        }
+    }
+
+    #[test]
+    fn cleared_magic_and_swaps_can_be_fitted_again() {
+        let mut layout = ak::Layout::parse(
+            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ou\nswap e dr\n",
+            Path::new("refit.dat"),
+        ).unwrap();
+        let root = crate::magic_optimizer::existing_root(&layout).unwrap();
+        let mut weights = Weights::default();
+        let mut stashed = None;
+        reset_rules(
+            &mut layout,
+            &mut weights,
+            &mut stashed,
+            RuleReset::Magic(root),
+        )
+        .unwrap();
+        reset_rules(&mut layout, &mut weights, &mut stashed, RuleReset::Swaps).unwrap();
+        let corpus = history_corpus(b"red bed fed led wed ted ed deer seed need deed sea fun ");
+        let stop = AtomicBool::new(false);
+        let progress = AtomicU64::new(0);
+        let before =
+            crate::action_summary::evaluate(&layout, &corpus, &weights, &stop, &progress).unwrap();
+        let physical =
+            crate::action_summary::PhysicalTables::with_mode(&layout, &weights, "normal");
+        let fitted = crate::swap_fit::fit(
+            &layout,
+            &corpus,
+            &weights,
+            &physical,
+            &crate::swap_fit::Settings {
+                max_swaps: 1,
+                ..Default::default()
+            },
+            None,
+            &stop,
+            &progress,
+            1,
+            None,
+        )
+        .unwrap();
+        assert!(!fitted.swaps.is_empty());
+        assert!(fitted.summary.score < before.score);
+        let magic_settings = crate::magic_design::Settings {
+            roots: vec![root],
+            max_rules: 5,
+            shortlist: 24,
+            sfb_limit: None,
+            sfs_limit: None,
+            ..Default::default()
+        };
+        let fitter = crate::magic_design::FixedRootFitter::new(
+            &layout,
+            &corpus,
+            &weights,
+            &magic_settings,
+            before,
+            "normal",
+        );
+        let (fitted_magic, _) = fitter.refit(&layout, root, 1, &stop, &progress).unwrap();
+        assert!(!crate::magic_design::original(&fitted_magic, root)
+            .unwrap()
+            .0
+            .is_empty());
+        assert_eq!(fitted_magic.slots[root], layout.slots[root]);
+    }
+
+    #[test]
     fn result_line_names_genuine_rules_and_combos() {
         let mut layout = ak::Layout::parse(
             r#"{"layout": {"fingers": ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
@@ -4055,7 +4631,7 @@ mod ngram_integration_tests {
         layout.combos = combos;
         assert_eq!(
             rules_and_combos(&layout).as_deref(),
-            Some("Magic *: o→u · Combos: e+d=ed r+f=rf")
+            Some("Magic *: o→u\nCombos: e+d=ed r+f=rf")
         );
         layout.combos.clear();
         let plain = ak::Layout::parse(
