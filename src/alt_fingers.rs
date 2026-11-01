@@ -1134,11 +1134,12 @@ pub(crate) fn to_json(rules: &[Rule]) -> Json {
     )
 }
 
+#[cfg(test)]
 pub(crate) fn json_text(rules: &[Rule]) -> String {
     compact_json(&to_json(rules))
 }
 
-// DAT directives occupy one line. Reuse the application's string escaping.
+// One-line JSON for display. Reuse the application's string escaping.
 pub(crate) fn compact_json(value: &Json) -> String {
     match value {
         Json::Object(fields) => format!(

@@ -6,8 +6,7 @@ context. The key and its geometry stay put. Rules apply while
 
 ## Layout rules
 
-The same rule form works in Spark, JSONC (top-level `alts` array) and DAT
-(one-line `alts:`):
+The same rule form works in Spark and JSONC (top-level `alts` array):
 
 ```json
 "alts": [{"ngram":["p",null,"g"],"fingers":["LM",null,"LI"]}]

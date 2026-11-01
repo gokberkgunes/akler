@@ -152,15 +152,13 @@ fn evaluation_adapter(
     if symbols.len() != n {
         return Err("too many keys for the existing metric adapter".into());
     }
-    let mut board = board_from_text(
-        "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\n",
-        &l.path,
-    )
-    .map_err(|e| e.to_string())?;
-    board.name = l.name.clone();
-    board.symbols = symbols.clone();
-    board.keys = physical_keys(l);
-    board.row_stagger = l.row_stagger;
+    let board = Board {
+        name: l.name.clone(),
+        path: l.path.clone(),
+        symbols: symbols.clone(),
+        keys: physical_keys(l),
+        row_stagger: l.row_stagger,
+    };
     let model = Model::with_rolls(board, w.rolls());
     timing.mark("Metric geometry and adapter board");
     let physical = [
@@ -3325,9 +3323,9 @@ fn save_action_result(
         rolls_config_text(weights.rolls()),
         selected_weights,
         search_settings_text(settings),
-        original.text(),
-        start.text(),
-        layout.text(),
+        crate::layout_export::record_text(original),
+        crate::layout_export::record_text(start),
+        crate::layout_export::record_text(layout),
         locks
             .iter()
             .enumerate()
@@ -3949,12 +3947,7 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
                 detected = Some(l);
             }
             Ok(_) => return None,
-            Err(error) => {
-                if load_board(Path::new(p)).is_ok() {
-                    return None;
-                }
-                return Some(Err(format!("action layout: {error}").into()));
-            }
+            Err(error) => return Some(Err(format!("{p}: {error}").into())),
         }
     }
     Some((|| -> AppResult<()> {
@@ -3974,7 +3967,7 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
         };
         let l = match detected.take() {
             Some(l) => l,
-            None => ak::Layout::load(&path).map_err(|e| format!("action layout: {e}"))?,
+            None => ak::Layout::load(&path).map_err(|e| format!("{}: {e}", path.display()))?,
         };
         if trace {
             let text = args

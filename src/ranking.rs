@@ -891,14 +891,12 @@ enum RankLayout {
 }
 
 fn parse_rank_layout(text: &str, path: &Path) -> AppResult<RankLayout> {
-    match action_keys::Layout::parse(text, path) {
-        Ok(layout) if layout.extended() => Ok(RankLayout::Action(layout)),
-        Ok(_) => Ok(RankLayout::Plain(board_from_text(text, path)?)),
-        Err(action_error) => match board_from_text(text, path) {
-            Ok(board) => Ok(RankLayout::Plain(board)),
-            Err(_) => Err(action_error.into()),
-        },
-    }
+    let layout = action_keys::Layout::parse(text, path)?;
+    Ok(if layout.extended() {
+        RankLayout::Action(layout)
+    } else {
+        RankLayout::Plain(board_from_layout(layout)?)
+    })
 }
 
 // Prepared once for a ranking load. An all-magic collection never prepares

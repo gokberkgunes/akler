@@ -5150,9 +5150,9 @@ fn save_result(
         rolls_config_text(p.weights.rolls()),
         p.weights.2.config_text(),
         search_settings_text(&p.settings),
-        board_text(&p.model.board, &p.model.board.symbols),
-        board_text(&p.model.board, &p.model.symbols(start)),
-        board_text(&p.model.board, &p.model.symbols(arr)),
+        board_record(&p.model.board, &p.model.board.symbols),
+        board_record(&p.model.board, &p.model.symbols(start)),
+        board_record(&p.model.board, &p.model.symbols(arr)),
         locks.iter().enumerate().filter(|(_, v)|**v).map(|(i, _) | i).collect:: <Vec<_>>()
     );
     for (i, c) in p.corpora.iter().enumerate() {
@@ -5171,6 +5171,12 @@ fn save_result(
     }
     atomic_write(&path.with_extension("run.txt"), &report)?;
     Ok(path)
+}
+
+fn board_record(board: &Board, symbols: &[u8]) -> String {
+    board_as_action_layout(board, symbols)
+        .map(|layout| crate::layout_export::record_text(&layout))
+        .unwrap_or_else(|error| format!("# {error}\n"))
 }
 
 fn csv_field(s: &str) -> String {

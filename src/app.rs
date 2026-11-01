@@ -647,35 +647,19 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
 // Invalid but recognizable layouts remain visible and report their parse errors
 // when opened; corpus caches and optimizer reports do not become chooser rows.
 fn recognizable_layout(text: &str) -> bool {
-    if crate::layout_io::is_json_layout(text) {
-        let fields = ["layout", "fingermap", "magic", "skip"];
-        return match crate::layout_io::parse_jsonc(text) {
-            Ok(Json::Object(object)) => fields.iter().any(|field| object.contains_key(*field)),
-            Ok(_) => false,
-            Err(_) => fields.iter().any(|field| {
-                let quoted = format!("\"{field}\"");
-                text.match_indices(&quoted)
-                    .any(|(index, _)| text[index + quoted.len()..].trim_start().starts_with(':'))
-            }),
-        };
+    if !crate::layout_io::is_json_layout(text) {
+        return false;
     }
-
-    let first = text
-        .trim_start_matches('\u{feff}')
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("");
-    let tokens: Vec<_> = first.split_whitespace().collect();
-    let key_tokens = tokens
-        .iter()
-        .filter(|token| {
-            token.chars().count() == 1
-                || matches!(**token, "space" | "blank" | "empty" | "none")
-                || token.starts_with('@')
-                || token.starts_with("char:")
-        })
-        .count();
-    (8..=13).contains(&tokens.len()) && key_tokens >= 8
+    let fields = ["layout", "fingermap", "magic", "skip"];
+    match crate::layout_io::parse_jsonc(text) {
+        Ok(Json::Object(object)) => fields.iter().any(|field| object.contains_key(*field)),
+        Ok(_) => false,
+        Err(_) => fields.iter().any(|field| {
+            let quoted = format!("\"{field}\"");
+            text.match_indices(&quoted)
+                .any(|(index, _)| text[index + quoted.len()..].trim_start().starts_with(':'))
+        }),
+    }
 }
 
 fn same_discovered_layout(a: &action_keys::Layout, b: &action_keys::Layout) -> bool {
@@ -695,9 +679,8 @@ fn layout_file_label(path: &Path) -> String {
 
 fn layout_companion_priority(path: &Path) -> Option<u8> {
     match path.extension().and_then(|extension| extension.to_str()) {
-        Some("dat") => Some(0),
-        Some("json") => Some(1),
-        Some("jsonc") => Some(2),
+        Some("json") => Some(0),
+        Some("jsonc") => Some(1),
         _ => None,
     }
 }
@@ -744,13 +727,16 @@ fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
         let Ok(text) = String::from_utf8(bytes) else {
             continue;
         };
+        if !crate::layout_io::is_json_layout(&text) {
+            continue;
+        }
         let layout = action_keys::Layout::parse(&text, &path).ok();
         if layout.is_some() || recognizable_layout(&text) {
             candidates.push((path, layout));
         }
     }
-    // Generated companions share a stem. Prefer DAT only after confirming that
-    // both files parse to the same complete layout; independent edits stay visible.
+    // Companions share a stem. Prefer JSON only after confirming that both
+    // files parse to the same complete layout; independent edits stay visible.
     candidates.sort_by(|(a, _), (b, _)| {
         layout_companion_priority(a)
             .unwrap_or(3)
@@ -779,7 +765,7 @@ fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
     paths.sort();
     if paths.is_empty() {
         return Err(format!(
-            "no DAT, JSON, or JSONC layout contents in {}",
+            "no JSON or JSONC layout contents in {}",
             directory.display()
         )
         .into());
@@ -800,25 +786,19 @@ fn parse_open_layout(text: &str, path: &Path) -> AppResult<OpenLayout> {
 /// The layout to open, with the alternate-finger problems its file has:
 /// rules it couldn't read or that name no key.
 fn open_layout(text: &str, path: &Path) -> AppResult<(OpenLayout, Vec<String>)> {
-    match crate::action_keys::Layout::parse(text, path) {
-        Ok(layout) => {
-            let problems = layout
-                .source_warnings
-                .iter()
-                .filter(|warning| warning.starts_with("alt fingers"))
-                .cloned()
-                .collect();
-            let open = if layout.extended() {
-                OpenLayout::Action(layout)
-            } else {
-                board_from_text(text, path).map(OpenLayout::Plain)?
-            };
-            Ok((open, problems))
-        }
-        Err(error) => board_from_text(text, path)
-            .map(|board| (OpenLayout::Plain(board), Vec::new()))
-            .map_err(|_| format!("action layout: {error}").into()),
-    }
+    let layout = crate::action_keys::Layout::parse(text, path)?;
+    let problems = layout
+        .source_warnings
+        .iter()
+        .filter(|warning| warning.starts_with("alt fingers"))
+        .cloned()
+        .collect();
+    let open = if layout.extended() {
+        OpenLayout::Action(layout)
+    } else {
+        OpenLayout::Plain(board_from_layout(layout)?)
+    };
+    Ok((open, problems))
 }
 
 fn tui_mode(
@@ -952,7 +932,7 @@ fn run() -> AppResult<()> {
                 return Ok(());
             }
             "--help" | "-h" | "help" => {
-                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\nakler corpus prepare [NAME]\n\nDefault corpus: corpus-monkeyracer.json. Layouts: layouts/ (DAT, JSON, or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
+                println!("akler {BUILD}\n\nakler [editor | ranker | optimizer]\nakler editor|optimizer [LAYOUT] [CORPUS]\nakler ranker [CORPUS]\nakler eval LAYOUT [CORPUS]\nakler bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--show] [--swaps N] [--combos K] [--config FILE]\nakler bench --ranker CORPUS\nakler corpus list|info NAME|add NAME INPUT [CONFIG.json]\nakler corpus build [NAME] [--order 3|4|5] [--jobs N]\nakler corpus top NAME [ORDER] [COUNT]\nakler corpus prepare [NAME]\n\nDefault corpus: corpus-monkeyracer.json. Layouts: layouts/ (JSON or JSONC; filenames need no extension). Raw text: corpus/raw/ (any extension or none). Import text from the Corpora menu.");
                 return Ok(());
             }
             "corpus" => return corpus_command(&args[1..]),
@@ -1193,7 +1173,7 @@ mod layout_dispatch_tests {
     #[test]
     fn discovery_recognizes_invalid_layouts_without_absorbing_reports() {
         assert!(recognizable_layout("{\"layout\":"));
-        assert!(recognizable_layout("q w e r t | y u i o p\nshort row\n"));
+        assert!(!recognizable_layout("q w e r t | y u i o p\nshort row\n"));
         assert!(!recognizable_layout(
             r#"{"letters":{"a":1},"bigrams":{"aa":1}}"#
         ));
@@ -1223,19 +1203,19 @@ mod layout_dispatch_tests {
             std::env::temp_dir().join(format!("akler-discovery-{}-{unique}", crate::process_tag(),)),
         );
         fs::create_dir(&directory.0).unwrap();
-        let dat = action_keys::Layout::parse(PLAIN_JSON, Path::new("inline"))
-            .unwrap()
-            .text();
+        let rows = "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
         for (name, text) in [
             ("seconds", PLAIN_JSON),
-            ("misleading.bin", dat.as_str()),
-            ("saved.dat", dat.as_str()),
+            ("misleading.bin", PLAIN_JSON),
+            ("saved.json", PLAIN_JSON),
             ("saved.jsonc", PLAIN_JSON),
-            ("different.dat", dat.as_str()),
-            (".akler-123-456-0.bak", dat.as_str()),
-            (".layouter-123-456-0.bak", dat.as_str()),
-            ("saved.dat.1800000000000000000.bak", dat.as_str()),
-            ("broken.dat", "{\"layout\":"),
+            ("different.json", PLAIN_JSON),
+            ("rows.dat", rows),
+            (".akler-123-456-0.bak", PLAIN_JSON),
+            (".layouter-123-456-0.bak", PLAIN_JSON),
+            ("saved.json.1800000000000000000.bak", PLAIN_JSON),
+            ("saved.jsonc.123-0.tmp", PLAIN_JSON),
+            ("broken.json", "{\"layout\":"),
             ("broken.txt", "q w e r t | y u i o p\nshort row\n"),
             ("corpus.json", "{\"letters\":{\"a\":1}}"),
             (
@@ -1253,7 +1233,7 @@ mod layout_dispatch_tests {
         let optimized = directory.0.join("optimized");
         fs::create_dir(&optimized).unwrap();
         fs::write(optimized.join("saved.jsonc"), PLAIN_JSON).unwrap();
-        fs::write(optimized.join("paired.dat"), &dat).unwrap();
+        fs::write(optimized.join("paired.json"), PLAIN_JSON).unwrap();
         fs::write(optimized.join("paired.jsonc"), PLAIN_JSON).unwrap();
         let nested = optimized.join("nested");
         fs::create_dir(&nested).unwrap();
@@ -1271,13 +1251,12 @@ mod layout_dispatch_tests {
         let expected: BTreeSet<_> = [
             "seconds",
             "misleading.bin",
-            "saved.dat",
-            "different.dat",
+            "saved.json",
+            "different.json",
             "different.jsonc",
-            "broken.dat",
-            "broken.txt",
+            "broken.json",
             "optimized/saved.jsonc",
-            "optimized/paired.dat",
+            "optimized/paired.json",
         ]
         .into_iter()
         .map(str::to_string)

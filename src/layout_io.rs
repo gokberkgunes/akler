@@ -1,6 +1,6 @@
-//! Content-based JSON/JSONC layout import. Runtime actions still use the DAT model.
+//! Content-based JSON/JSONC layout import.
 
-use crate::action_keys::{self as ak, Layout};
+use crate::action_keys::{self as ak, Emission, Layout};
 use crate::{Json, JsonParser};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -60,7 +60,7 @@ fn without_comments(text: &str) -> ak::Result<String> {
     String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
-/// Detect an object header, not the filename extension or a literal `{` DAT key.
+/// Detect an object header, not the filename extension or a literal `{` key.
 pub(crate) fn is_json_layout(text: &str) -> bool {
     let Ok(clean) = without_comments(text) else {
         return text
@@ -208,7 +208,8 @@ pub(crate) fn dedicated_magic_label(label: &str) -> bool {
     matches!(label, "@" | "*") || (!label.is_ascii() && label.chars().count() == 1)
 }
 
-fn dat_key(label: &str, actions: &BTreeMap<String, String>) -> String {
+/// The key token (`make_slot`'s syntax) for a physical label.
+fn slot_token(label: &str, actions: &BTreeMap<String, String>) -> String {
     if let Some(name) = actions.get(label) {
         format!("@{name}")
     } else if label.is_empty() {
@@ -229,9 +230,9 @@ enum RuleOutput {
 }
 
 struct ImportedRules {
-    basis: &'static str,
+    basis: ak::Basis,
     rules: BTreeMap<Vec<u8>, RuleOutput>,
-    fallback: String,
+    fallback: Emission,
 }
 
 fn physical_key(value: &Json, field: &str, labels: &BTreeSet<String>) -> ak::Result<String> {
@@ -242,19 +243,18 @@ fn physical_key(value: &Json, field: &str, labels: &BTreeSet<String>) -> ak::Res
     Ok(key)
 }
 
-fn fallback_text(value: Option<&Json>, default: &str, field: &str) -> ak::Result<String> {
+fn fallback_emission(value: Option<&Json>, default: Emission, field: &str) -> ak::Result<Emission> {
     let fallback = match value {
-        None | Some(Json::Null) => return Ok(default.into()),
+        None | Some(Json::Null) => return Ok(default),
         Some(value) => string(value, field)?,
     };
     match fallback {
-        "none" => Ok("none".into()),
-        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" => {
-            Ok(fallback.into())
+        "none" => Ok(Emission::None),
+        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" | "inactive" => {
+            Ok(Emission::Call(fallback.into()))
         }
-        "inactive" => Ok("@inactive".into()),
         text if text.len() == 1 && text.as_bytes()[0].is_ascii_graphic() => {
-            Ok(ak::quote(text.as_bytes()))
+            Ok(Emission::Text(text.as_bytes().to_vec()))
         }
         _ => Err(format!(
             "{field}: expected none, a repeat action, inactive, or one printable ASCII character"
@@ -323,9 +323,9 @@ fn import_wildcard_magic(
                     format!("magic wildcard rule {input:?} must preserve {wildcard:?}")
                 })?;
                 if emitted == wildcard {
-                    "repeat-output".into()
+                    Emission::Call("repeat-output".into())
                 } else if emitted.len() == 1 && emitted.as_bytes()[0].is_ascii_graphic() {
-                    ak::quote(&[emitted.as_bytes()[0].to_ascii_lowercase()])
+                    Emission::Text(vec![emitted.as_bytes()[0].to_ascii_lowercase()])
                 } else {
                     return Err(format!(
                         "magic wildcard rule {input:?} must repeat the wildcard or append one printable ASCII character"
@@ -338,12 +338,16 @@ fn import_wildcard_magic(
                         "magic wildcard rule {input:?} must output {expected:?}"
                     ));
                 }
-                "repeat-previous-output".into()
+                Emission::Call("repeat-previous-output".into())
             };
             definitions.insert(
                 label.clone(),
                 ImportedRules {
-                    basis: if text_wildcard { "magic" } else { "skip-magic" },
+                    basis: if text_wildcard {
+                        ak::Basis::Text
+                    } else {
+                        ak::Basis::SkipPress
+                    },
                     rules: BTreeMap::new(),
                     fallback,
                 },
@@ -364,7 +368,7 @@ fn import_wildcard_magic(
         }
         let definition = definitions.get_mut(&label).unwrap();
         let prefix = input.strip_suffix(&label).unwrap();
-        let context = if definition.basis == "skip-magic" {
+        let context = if definition.basis == ak::Basis::SkipPress {
             let context = prefix.strip_suffix('_').ok_or_else(|| {
                 format!("magic skip rule {input:?} must use '_' for its skipped key")
             })?;
@@ -390,12 +394,12 @@ fn import_wildcard_magic(
         let output = match (rule.get("output"), rule.get("call")) {
             (Some(value), None) => {
                 let output = string(value, "magic rule output")?;
-                let output = if definition.basis == "skip-magic" {
+                let output = if definition.basis == ak::Basis::SkipPress {
                     output.to_string()
                 } else {
                     output.to_ascii_lowercase()
                 };
-                let expected = if definition.basis == "skip-magic" {
+                let expected = if definition.basis == ak::Basis::SkipPress {
                     format!("{context}_")
                 } else {
                     context.to_string()
@@ -410,7 +414,7 @@ fn import_wildcard_magic(
                 }
                 RuleOutput::Text(emitted.to_ascii_lowercase().into_bytes())
             }
-            (None, Some(value)) if definition.basis == "skip-magic" => {
+            (None, Some(value)) if definition.basis == ak::Basis::SkipPress => {
                 RuleOutput::CallKey(physical_key(value, "magic rule call", labels)?)
             }
             _ => {
@@ -520,7 +524,6 @@ fn import_layout_with_actions(
         }
     }
 
-    let finger_names = ["LP", "LR", "LM", "LI", "LT", "RT", "RI", "RM", "RR", "RP"];
     let mut fingermap = Vec::new();
     if let Some(value) = root.get("fingermap") {
         let maps = array(value, "fingermap")?;
@@ -535,14 +538,17 @@ fn import_layout_with_actions(
                     row + 1
                 ));
             }
-            let names = tokens.iter().map(|token| {
+            // Mana IDs 0–3 and 6–9 are akler's fingers 0–7.
+            let fingers = tokens.iter().map(|token| {
                 let finger = token.parse::<usize>().map_err(|_| "fingermap must use Mana finger IDs 0 through 9".to_string())?;
-                if matches!(finger, 4 | 5) {
-                    return Err("thumb finger IDs 4 and 5 belong to layout.thumbs, not the main fingermap".into());
+                match finger {
+                    0..=3 => Ok(finger),
+                    4 | 5 => Err("thumb finger IDs 4 and 5 belong to layout.thumbs, not the main fingermap".into()),
+                    6..=9 => Ok(finger - 2),
+                    _ => Err("fingermap must use Mana finger IDs 0 through 9".to_string()),
                 }
-                finger_names.get(finger).copied().ok_or_else(|| "fingermap must use Mana finger IDs 0 through 9".to_string())
             }).collect::<ak::Result<Vec<_>>>()?;
-            fingermap.push(names.join(" "));
+            fingermap.push(fingers);
         }
     }
 
@@ -639,15 +645,16 @@ fn import_layout_with_actions(
                 ));
                 }
                 let default = if dedicated_magic_label(&label) {
-                    "repeat-output".to_string()
+                    Emission::Call("repeat-output".into())
                 } else {
-                    ak::quote(label.to_ascii_lowercase().as_bytes())
+                    Emission::Text(label.to_ascii_lowercase().into_bytes())
                 };
-                let fallback = fallback_text(magic.get("fallback"), &default, "magic.fallback")?;
+                let fallback =
+                    fallback_emission(magic.get("fallback"), default, "magic.fallback")?;
                 action_defs.insert(
                     name,
                     ImportedRules {
-                        basis: "magic",
+                        basis: ak::Basis::Text,
                         rules,
                         fallback,
                     },
@@ -723,22 +730,23 @@ fn import_layout_with_actions(
                 rules.insert(context.as_bytes().to_vec(), output);
             }
         }
-        let fallback = fallback_text(
+        let fallback = fallback_emission(
             skip.get("fallback"),
-            "repeat-previous-output",
+            Emission::Call("repeat-previous-output".into()),
             "skip.fallback",
         )?;
         action_defs.insert(
             "skip".into(),
             ImportedRules {
-                basis: "skip-magic",
+                basis: ak::Basis::SkipPress,
                 rules,
                 fallback,
             },
         );
     }
 
-    let mut dat = String::new();
+    let mut slots = Vec::new();
+    let (mut left_outer, mut right_outer) = (false, false);
     for (row_index, row) in rows.iter().enumerate() {
         let default_split = if row.len() >= 12 {
             row.len().div_ceil(2)
@@ -747,50 +755,44 @@ fn import_layout_with_actions(
         };
         let split = fingermap
             .get(row_index)
-            .and_then(|map| {
-                let fingers: Vec<_> = map.split_whitespace().collect();
-                fingers.iter().position(|finger| finger.starts_with('R'))
-            })
+            .and_then(|fingers| fingers.iter().position(|&finger| finger >= 4))
             .filter(|&split| {
                 matches!(row.len(), 11 | 13)
                     && (5..=7).contains(&split)
                     && (5..=7).contains(&(row.len() - split))
             })
             .unwrap_or(default_split);
-        let left = row[..split]
-            .iter()
-            .map(|label| dat_key(label, &action_names))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let right = row[split..]
-            .iter()
-            .map(|label| dat_key(label, &action_names))
-            .collect::<Vec<_>>()
-            .join(" ");
-        dat.push_str(&format!("{left} | {right}\n"));
+        let tokens = |labels: &[String]| {
+            labels
+                .iter()
+                .map(|label| slot_token(label, &action_names))
+                .collect::<Vec<_>>()
+        };
+        let (left, right) = ak::hand_row(
+            &mut slots,
+            row_index as i8,
+            &tokens(&row[..split]),
+            &tokens(&row[split..]),
+            true,
+        )?;
+        left_outer |= left;
+        right_outer |= right;
     }
-    let thumb_tokens: Vec<_> = thumbs
-        .iter()
-        .map(|group| {
-            if group.is_empty() {
-                "none".into()
-            } else {
-                group
-                    .iter()
-                    .map(|label| dat_key(label, &action_names))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
-        })
-        .collect();
-    dat.push_str(&format!(
-        "thumbs: {} | {}\n",
-        thumb_tokens[0], thumb_tokens[1]
-    ));
-    dat.push_str("col-layout: absolute\n");
+    let thumb_tokens = thumbs.clone().map(|group| {
+        if group.is_empty() {
+            vec!["none".to_string()]
+        } else {
+            group
+                .iter()
+                .map(|label| slot_token(label, &action_names))
+                .collect()
+        }
+    });
+    let mut geometry = ak::GeometrySettings::default();
     if !fingermap.is_empty() {
-        dat.push_str(&format!("fingermap: {}\n", fingermap.join(" / ")));
+        geometry.set_fingers(fingermap);
     }
+    let mut thumb_columns = None;
     if let Some(board) = root.get("board") {
         let board = object(board, "board")?;
         if bool_field(board, "mirrorLeftRowStagger", false)? {
@@ -824,19 +826,18 @@ fn import_layout_with_actions(
                     "board.rowOrColumnStagger needs {expected} values for this geometry"
                 ));
             }
-            let numbers = values
+            let offsets = values
                 .iter()
                 .map(|value| match value {
-                    Json::Number(number) => Ok(number.to_string()),
+                    Json::Number(number) => ak::geometry_offset(&number.to_string()),
                     _ => Err("board.rowOrColumnStagger values must be numbers".to_string()),
                 })
                 .collect::<ak::Result<Vec<_>>>()?;
-            let directive = if row_staggered {
-                "row-offsets"
+            if row_staggered {
+                geometry.set_row_offsets([offsets[0], offsets[1], offsets[2]]);
             } else {
-                "column-offsets"
-            };
-            dat.push_str(&format!("{directive}: {}\n", numbers.join(" ")));
+                geometry.set_column_offsets(offsets);
+            }
         }
         if let Some(value) = board.get("thumbColumns") {
             let values = array(value, "board.thumbColumns")?;
@@ -858,20 +859,35 @@ fn import_layout_with_actions(
                             && number.fract() == 0.0
                             && (i8::MIN as f64..=i8::MAX as f64).contains(number) =>
                     {
-                        Ok((*number as i8).to_string())
+                        Ok(*number as i8)
                     }
                     _ => Err("board.thumbColumns values must be integers in -128..127".into()),
                 })
                 .collect::<ak::Result<Vec<_>>>()?;
-            dat.push_str(&format!("thumb-columns: {}\n", columns.join(" ")));
+            thumb_columns = Some(columns);
         }
     }
 
+    let mut actions = ak::builtin_actions();
+    let mut definitions = Vec::new();
+    let mut mappings = Vec::new();
     for (name, definition) in &action_defs {
-        dat.push_str(&format!("action {name} = {}\n", definition.basis));
-        dat.push_str(&format!("fallback {name} = {}\n", definition.fallback));
+        let name = ak::action_name(name);
+        if definitions.contains(&name) {
+            return Err(format!("duplicate action {name}"));
+        }
+        definitions.push(name.clone());
+        actions.insert(
+            name.clone(),
+            ak::Action::Rules {
+                basis: definition.basis,
+                rules: BTreeMap::new(),
+                fallback: Emission::None,
+            },
+        );
+        mappings.push((name.clone(), None, definition.fallback.clone()));
         for (context, output) in &definition.rules {
-            let context = if definition.basis == "skip-magic" {
+            let context = if definition.basis == ak::Basis::SkipPress {
                 let label = std::str::from_utf8(context).unwrap();
                 action_names
                     .get(label)
@@ -880,19 +896,39 @@ fn import_layout_with_actions(
                 context.clone()
             };
             let output = match output {
-                RuleOutput::Text(output) => ak::quote(output),
+                RuleOutput::Text(output) => Emission::Text(output.clone()),
                 RuleOutput::CallKey(label) => {
                     let name = action_names.get(label).ok_or_else(|| {
                         format!("called physical key {label:?} is not a magic or skip key")
                     })?;
-                    format!("@{name}")
+                    Emission::Call(ak::action_name(name))
                 }
             };
-            dat.push_str(&format!("map {name} {} = {output}\n", ak::quote(&context),));
+            mappings.push((name.clone(), Some(context), output));
         }
     }
 
-    let mut parsed = Layout::parse_dat_preserving_fallbacks(&dat, path)?;
+    let mut parsed = Layout::assemble(
+        ak::Parts {
+            slots,
+            left_outer,
+            right_outer,
+            geometry,
+            stagger: None,
+            thumbs: thumb_tokens,
+            thumb_columns,
+            key_labels: None,
+            action_mode: !definitions.is_empty(),
+            actions,
+            definitions,
+            mappings,
+            compact: Vec::new(),
+            short_tables: BTreeMap::new(),
+            alt_fingers: None,
+            combos: None,
+        },
+        path,
+    )?;
     for slot in &mut parsed.slots {
         if let ak::Binding::Named(name) = &slot.binding {
             if let Some((label, _)) = action_names.iter().find(|(_, value)| *value == name) {
@@ -1142,9 +1178,9 @@ fn import_spark(root: &BTreeMap<String, Json>, path: &Path) -> ak::Result<Layout
                 action_defs.insert(
                     name,
                     ImportedRules {
-                        basis: "magic",
+                        basis: ak::Basis::Text,
                         rules: BTreeMap::new(),
-                        fallback: ak::quote(&[output.as_bytes()[0].to_ascii_lowercase()]),
+                        fallback: Emission::Text(vec![output.as_bytes()[0].to_ascii_lowercase()]),
                     },
                 );
             }

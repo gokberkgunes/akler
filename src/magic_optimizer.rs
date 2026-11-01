@@ -136,7 +136,7 @@ fn better(candidate: &JointResult, current: &JointResult) -> bool {
 fn layout_tie_key(layout: &ak::Layout) -> String {
     // Slot order and BTreeMap action order make this stable. This path is used
     // only for exact score ties, so the allocation is outside the hot loop.
-    format!("{}\n{:?}", layout.text(), layout.actions)
+    format!("{:?}\n{:?}", layout.slots, layout.actions)
 }
 
 fn emit(

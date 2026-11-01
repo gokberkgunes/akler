@@ -429,6 +429,7 @@ fn main_key(row: usize, col: usize) -> Key {
     main_key_at(row, col as i8)
 }
 
+#[cfg(test)]
 fn thumb_key(slot: usize) -> Key {
     Key {
         row: 3,
@@ -1073,6 +1074,7 @@ fn parse_token(token: &str, empty: &mut u8) -> AppResult<u8> {
     Ok(bytes[0].to_ascii_lowercase())
 }
 
+#[cfg(test)]
 fn parse_row(
     line: &str,
     row: usize,
@@ -1151,16 +1153,13 @@ fn parse_row(
 }
 
 fn board_from_text(text: &str, path: &Path) -> AppResult<Board> {
-    if crate::layout_io::is_json_layout(text) {
-        return board_from_json(text, path);
-    }
-    board_from_dat(text, path)
+    board_from_layout(crate::action_keys::Layout::parse(text, path)?)
 }
 
-fn board_from_json(text: &str, path: &Path) -> AppResult<Board> {
-    use crate::action_keys::{Binding, Layout};
+/// The plain board of a layout without actions.
+fn board_from_layout(layout: crate::action_keys::Layout) -> AppResult<Board> {
+    use crate::action_keys::Binding;
 
-    let layout = Layout::parse(text, path)?;
     let mut symbols = Vec::with_capacity(layout.slots.len());
     let mut keys = Vec::with_capacity(layout.slots.len());
     let mut empty = 0;
@@ -1195,220 +1194,6 @@ fn board_from_json(text: &str, path: &Path) -> AppResult<Board> {
     })
 }
 
-fn board_from_dat(text: &str, path: &Path) -> AppResult<Board> {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut lines: Vec<_> = text
-        .lines()
-        .map(|s| s.strip_suffix('\r').unwrap_or(s))
-        .collect();
-    // Ignore genuinely empty edge lines only. A line of spaces is a valid row.
-    while lines.first() == Some(&"") {
-        lines.remove(0);
-    }
-    while lines.last() == Some(&"") {
-        lines.pop();
-    }
-    if lines.len() < 3 {
-        return Err("layout needs three physical rows".into());
-    }
-    let mut empty = 0u8;
-    let mut symbols = Vec::new();
-    let mut keys = Vec::new();
-    let absolute = crate::action_keys::absolute_columns(&lines[3..])?;
-    let mut geometry = crate::action_keys::GeometrySettings::default();
-    for r in 0..3 {
-        let (row, _) = parse_row(lines[r], r, &mut empty, absolute)?;
-        for (index, (ch, col)) in row.into_iter().enumerate() {
-            let col = if absolute { index as i8 } else { col };
-            symbols.push(ch);
-            keys.push(main_key_at(r, col));
-        }
-    }
-    let mut thumbs: [Vec<u8>; 2] = [Vec::new(), Vec::new()];
-    let mut absent = [false; 2];
-    let mut stagger_mode = None;
-    let mut thumb_columns = None;
-    for line in &lines[3..] {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some(value) = trimmed.strip_prefix("thumb-columns:") {
-            if thumb_columns.is_some() {
-                return Err("thumb-columns is defined twice".into());
-            }
-            let columns = value
-                .split_whitespace()
-                .map(|value| {
-                    value
-                        .parse::<i8>()
-                        .map_err(|_| "thumb-columns needs integer columns in -128..127")
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            thumb_columns = Some(columns);
-            continue;
-        }
-        if trimmed.starts_with("col-layout:") || geometry.parse_line(trimmed)? {
-            continue;
-        }
-        if let Some(mode) = crate::action_keys::parse_row_stagger(trimmed)? {
-            if stagger_mode.replace(mode).is_some() {
-                return Err("row-stagger is defined twice".into());
-            }
-            continue;
-        }
-        let named = trimmed
-            .get(..7)
-            .is_some_and(|s| s.eq_ignore_ascii_case("thumbs:"));
-        let content = if named { &trimmed[7..] } else { trimmed };
-        let tokens: Vec<_> = content.split_whitespace().collect();
-        if named && tokens.contains(&"|") {
-            if tokens.iter().filter(|&&token| token == "|").count() != 1
-                || thumbs.iter().any(|group| !group.is_empty())
-            {
-                return Err("invalid or repeated thumb hand divider".into());
-            }
-            let split = tokens.iter().position(|&token| token == "|").unwrap();
-            for (hand, group) in [&tokens[..split], &tokens[split + 1..]].iter().enumerate() {
-                if group.len() == 1 && group[0] == "none" {
-                    absent[hand] = true;
-                } else {
-                    if group.contains(&"none") {
-                        return Err("none cannot be combined with a thumb key".into());
-                    }
-                    for token in *group {
-                        thumbs[hand].push(parse_token(token, &mut empty)?);
-                    }
-                }
-            }
-            continue;
-        }
-        if tokens.is_empty() || tokens.len() > 2 {
-            return Err("thumb line needs one key, or explicit left and right keys".into());
-        }
-        for (i, &token) in tokens.iter().enumerate() {
-            // A bare, single thumb keeps its visual hand: columns 0..=10 are
-            // left and columns 11 onward are right.
-            let hand = if named || tokens.len() == 2 {
-                i
-            } else {
-                usize::from(line.as_bytes().iter().take_while(|&&b| b == b' ').count() > 10)
-            };
-            if !thumbs[hand].is_empty() || absent[hand] {
-                return Err(format!(
-                    "{} thumb is defined twice",
-                    if hand == 0 { "left" } else { "right" }
-                )
-                .into());
-            }
-            let token = if token.len() > 1 {
-                token.strip_suffix(',').unwrap_or(token)
-            } else {
-                token
-            };
-            if token == "none" {
-                absent[hand] = true;
-            } else {
-                thumbs[hand].push(parse_token(token, &mut empty)?);
-            }
-        }
-    }
-    if !symbols.contains(&b' ')
-        && !thumbs.iter().flatten().any(|&ch| ch == b' ')
-        && !absent.contains(&true)
-    {
-        match (thumbs[0].is_empty(), thumbs[1].is_empty()) {
-            (true, true) => thumbs[0].push(b' '),
-            (false, true) => thumbs[1].push(b' '),
-            (true, false) => thumbs[0].push(b' '),
-            _ => {}
-        }
-    }
-    let mut thumb_col = 0usize;
-    for (hand, group) in thumbs.into_iter().enumerate() {
-        if hand == 1 && thumb_col == 0 {
-            thumb_col = 1;
-        }
-        for ch in group {
-            symbols.push(ch);
-            let mut key = thumb_key(hand);
-            key.col = i8::try_from(thumb_col).map_err(|_| "too many thumb keys")?;
-            keys.push(key);
-            thumb_col += 1;
-        }
-    }
-    if let Some(columns) = thumb_columns {
-        let thumbs: Vec<_> = keys.iter_mut().filter(|key| !key.main).collect();
-        if columns.len() != thumbs.len() {
-            return Err(
-                "thumb-columns needs one column for every thumb slot, left hand then right hand"
-                    .into(),
-            );
-        }
-        for (key, col) in thumbs.into_iter().zip(columns) {
-            key.col = col;
-        }
-    }
-    if let Some(mode) = stagger_mode {
-        for key in keys.iter_mut().filter(|key| key.main) {
-            key.row_offset = mode.offset(key.row);
-            key.finger = mode.finger(key.row, key.col, key.finger);
-            if key.hand == 0 {
-                key.rank = key.finger as i8;
-            }
-        }
-    }
-    let shape = std::array::from_fn(|row| {
-        keys.iter()
-            .filter(|key| key.main && key.row == row as i8)
-            .count()
-    });
-    let minimum = keys
-        .iter()
-        .filter(|key| key.main)
-        .map(|key| key.col)
-        .min()
-        .unwrap_or(0);
-    let maximum = keys
-        .iter()
-        .filter(|key| key.main)
-        .map(|key| key.col)
-        .max()
-        .unwrap_or(0);
-    if shape.iter().any(|&width| width == 13) && !geometry.has_fingermap() {
-        return Err("13-column layouts require an explicit fingermap".into());
-    }
-    geometry.validate(shape, minimum, maximum)?;
-    let mut columns = [0; 3];
-    for key in keys.iter_mut().filter(|key| key.main) {
-        let row = key.row as usize;
-        if let Some(offset) = geometry.row_offset(row) {
-            key.row_offset = offset;
-        }
-        if let Some(offset) = geometry.column_offset(key.col, minimum) {
-            key.column_offset = offset;
-        }
-        if let Some(finger) = geometry.finger(row, columns[row]) {
-            key.finger = finger;
-            (key.rank, key.hand) = crate::action_keys::finger_geometry(finger);
-        }
-        columns[row] += 1;
-    }
-
-    let mut seen = BTreeSet::new();
-    for &ch in &symbols {
-        if !blank(ch) && !seen.insert(ch) {
-            return Err(format!("duplicate key {:?}", ch as char).into());
-        }
-    }
-    Ok(Board {
-        name: label(path, ""),
-        path: path.to_owned(),
-        symbols,
-        keys,
-        row_stagger: stagger_mode.unwrap_or_default(),
-    })
-}
 
 fn load_board(path: &Path) -> AppResult<Board> {
     let mut timing = crate::load_profile::LoadProfile::new("ordinary layout read/parse");
@@ -1420,6 +1205,7 @@ fn load_board(path: &Path) -> AppResult<Board> {
     result
 }
 
+#[cfg(test)]
 fn board_text(board: &Board, symbols: &[u8]) -> String {
     let token = |b| {
         if blank(b) {
@@ -1571,9 +1357,8 @@ fn default_locks(board: &Board) -> Vec<bool> {
 /// added as empty keys (`Layout::with_spare_keys`).
 fn with_spare_keys(board: Board) -> Board {
     let padded = board_as_action_layout(&board, &board.symbols)
-        .map(|layout| layout.with_spare_keys().text())
         .ok()
-        .and_then(|text| board_from_dat(&text, &board.path).ok());
+        .and_then(|layout| board_from_layout(layout.with_spare_keys()).ok());
     match padded {
         Some(padded) => Board {
             name: board.name,
@@ -1642,11 +1427,76 @@ fn atomic_write(path: &Path, text: &str) -> AppResult<()> {
     result
 }
 
+/// The layout `board` is with `symbols` on its keys.
 fn board_as_action_layout(
     board: &Board,
     symbols: &[u8],
 ) -> crate::action_keys::Result<crate::action_keys::Layout> {
-    crate::action_keys::Layout::parse_dat(&board_text(board, symbols), &board.path)
+    use crate::action_keys::{Binding, Slot};
+
+    // A hand has an outer column when a row has six keys left of column 5
+    // (6 for absolute columns), or six from there on.
+    let absolute = board.keys.iter().any(|key| key.main && key.col == 11);
+    let (mut left_outer, mut right_outer) = (false, false);
+    for row in 0..3 {
+        let columns: Vec<_> = board
+            .keys
+            .iter()
+            .filter(|key| key.main && key.row == row)
+            .map(|key| key.col)
+            .collect();
+        let separator = if absolute && columns.len() >= 12 { 6 } else { 5 };
+        let left = columns.iter().filter(|&&col| col < separator).count();
+        left_outer |= left >= 6;
+        right_outer |= columns.len() - left >= 6;
+    }
+    let slots = board
+        .keys
+        .iter()
+        .zip(symbols)
+        .map(|(key, &symbol)| {
+            let (binding, label) = if blank(symbol) {
+                (Binding::Empty, "·".to_string())
+            } else if symbol == b' ' {
+                (Binding::Text(vec![b' ']), "␠".to_string())
+            } else {
+                (Binding::Text(vec![symbol]), (symbol as char).to_string())
+            };
+            Slot {
+                binding,
+                label,
+                row: key.row,
+                col: key.col,
+                row_offset: key.row_offset,
+                column_offset: key.column_offset,
+                finger: key.finger,
+                rank: key.rank,
+                hand: key.hand,
+                main: key.main,
+            }
+        })
+        .collect();
+    Ok(crate::action_keys::Layout {
+        name: board
+            .path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned(),
+        path: board.path.clone(),
+        slots,
+        actions: crate::action_keys::builtin_actions(),
+        left_outer,
+        right_outer,
+        row_stagger: board.row_stagger,
+        action_mode: false,
+        magic_rule_slots: BTreeMap::new(),
+        magic_refit_pending: BTreeSet::new(),
+        alt_fingers: Vec::new(),
+        alt_spots: false,
+        combos: Vec::new(),
+        source_warnings: Vec::new(),
+    })
 }
 
 fn save_new_layout(board: &Board, symbols: &[u8]) -> AppResult<PathBuf> {
@@ -3073,3 +2923,4 @@ mod numeric_geometry_tests {
         assert_eq!(first.vertical_delta(second), -64.0);
     }
 }
+

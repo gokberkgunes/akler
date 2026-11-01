@@ -135,6 +135,33 @@ fn staged_file(path: &Path, text: &str) -> io::Result<PathBuf> {
     Ok(temporary)
 }
 
+/// A layout for a run record: its JSONC, or its rows of key labels when
+/// JSONC can't hold it.
+pub(crate) fn record_text(layout: &Layout) -> String {
+    jsonc_text(layout).unwrap_or_else(|_| {
+        let mut out = String::new();
+        for row in 0..3 {
+            let mut keys: Vec<_> = layout
+                .slots
+                .iter()
+                .filter(|slot| slot.main && slot.row == row)
+                .collect();
+            keys.sort_by_key(|slot| slot.col);
+            let labels: Vec<_> = keys.iter().map(|slot| slot.label.as_str()).collect();
+            out.push_str(&labels.join(" "));
+            out.push('\n');
+        }
+        let thumbs: Vec<_> = layout
+            .slots
+            .iter()
+            .filter(|slot| !slot.main)
+            .map(|slot| slot.label.as_str())
+            .collect();
+        out.push_str(&format!("thumbs: {}\n", thumbs.join(" ")));
+        out
+    })
+}
+
 fn object(fields: impl IntoIterator<Item = (&'static str, Json)>) -> Json {
     Json::Object(
         fields
@@ -586,7 +613,7 @@ fn canonical_action_names(layout: &Layout) -> Layout {
 /// Export the subset that the readable Mana-style JSONC fields preserve exactly.
 pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let mut layout = canonical_action_names(layout);
-    // JSONC rows start at column 0; a DAT outer column sits at -1.
+    // JSONC rows start at column 0; an outer column added on the left sits at -1.
     let origins: BTreeSet<_> = (0..3)
         .filter_map(|row| {
             layout
@@ -658,7 +685,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
                 .any(|(index, slot)| slot.col != origin + index as i8)
         {
             return Err(format!(
-                "JSONC cannot represent row {} column origin; use DAT for this geometry",
+                "JSONC cannot represent row {} column origin",
                 row + 1
             ));
         }
@@ -740,7 +767,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
     let has_rows = row_offsets.iter().any(|offset| *offset != 0);
     if has_columns && has_rows {
         return Err(
-            "JSONC cannot represent row and column offsets together; use DAT for this geometry"
+            "JSONC cannot represent row and column offsets together"
                 .into(),
         );
     }
@@ -824,7 +851,7 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
         || restored.left_outer != layout.left_outer
         || restored.right_outer != layout.right_outer
     {
-        return Err("JSONC cannot preserve this layout exactly; save and use its DAT form".into());
+        return Err("JSONC cannot preserve this layout exactly".into());
     }
     Ok(text)
 }
@@ -1152,7 +1179,7 @@ mod tests {
         let source = source.replace("LP LP LR LM LI LI / LP LP LR LM LI LI / LP LP LR LM LI LI", "LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP");
         let layout = Layout::parse(&source, Path::new("source")).unwrap();
         let error = jsonc_text(&layout).unwrap_err();
-        assert!(error.contains("geometry"), "{error}");
+        assert!(error.contains("offsets together"), "{error}");
     }
 
     #[test]

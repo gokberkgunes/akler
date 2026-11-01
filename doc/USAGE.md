@@ -165,7 +165,7 @@ neighbours. Ordinary skipgrams only need their endpoints (`a!b` counts as
 ## Benchmarking
 
 ```sh
-akler bench layouts/packet.dat corpus-reddit --seeds 10 --set mode=aklgg
+akler bench layouts/packet.jsonc corpus-reddit --seeds 10 --set mode=aklgg
 ```
 
 Runs the optimizer without the TUI.

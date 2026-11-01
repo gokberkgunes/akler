@@ -32,6 +32,8 @@ pub struct Slot {
     pub main: bool,
 }
 
+// Only test fixtures build the output and remembered bases.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Basis {
     Text,
@@ -49,6 +51,8 @@ pub enum Emission {
     None,
 }
 
+// Only test fixtures build text macros and inactive actions.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
     Text(Vec<u8>),
@@ -115,6 +119,7 @@ pub fn quote(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(test)]
 fn literal(text: &str) -> Result<Vec<u8>> {
     let text = text.trim();
     if text.len() < 2 || !text.starts_with('"') || !text.ends_with('"') {
@@ -156,7 +161,7 @@ fn literal(text: &str) -> Result<Vec<u8>> {
 // Single glyph identifiers describe physical bindings, so y and Y may emit
 // the same normalized text through different rules. Longer action names keep
 // their legacy case-insensitive spelling.
-fn action_name(text: &str) -> String {
+pub(crate) fn action_name(text: &str) -> String {
     let name = if text == "@" {
         text
     } else {
@@ -169,6 +174,7 @@ fn action_name(text: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn assignment(text: &str) -> Result<(&str, &str)> {
     let (mut quoted, mut escaped) = (false, false);
     for (i, ch) in text.char_indices() {
@@ -190,6 +196,7 @@ fn assignment(text: &str) -> Result<(&str, &str)> {
     err("expected '=' outside a quoted string")
 }
 
+#[cfg(test)]
 fn emission(text: &str) -> Result<Emission> {
     let s = text.trim();
     if s == "none" {
@@ -207,6 +214,7 @@ fn emission(text: &str) -> Result<Emission> {
     Ok(Emission::Text(ascii(literal(s)?, "action output")?))
 }
 
+#[cfg(test)]
 fn action(text: &str) -> Result<Action> {
     let s = text.trim();
     if let Some(rest) = s.strip_prefix("text ") {
@@ -239,6 +247,8 @@ fn action(text: &str) -> Result<Action> {
 
 /// Fixed row-stagger geometry with fingering defined by physical QWERTY slots.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+// Only test fixtures name a preset; JSONC states offsets and fingers.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum RowStagger {
     #[default]
     Off,
@@ -274,6 +284,7 @@ impl RowStagger {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn text(self) -> String {
         let name = match self {
             Self::Off => return String::new(),
@@ -286,6 +297,7 @@ impl RowStagger {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn parse_row_stagger(line: &str) -> Result<Option<RowStagger>> {
     let Some(rest) = line.strip_prefix("row-stagger:") else {
         return Ok(None);
@@ -323,6 +335,7 @@ pub(crate) fn finger_geometry(finger: usize) -> (i8, i8) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn absolute_columns(lines: &[&str]) -> Result<bool> {
     let mut found = None;
     for line in lines {
@@ -348,6 +361,7 @@ pub(crate) struct GeometrySettings {
 }
 
 impl GeometrySettings {
+    #[cfg(test)]
     pub(crate) fn parse_line(&mut self, line: &str) -> Result<bool> {
         if let Some(rest) = line.strip_prefix("row-offsets:") {
             let values: Vec<_> = rest
@@ -397,6 +411,19 @@ impl GeometrySettings {
         Ok(true)
     }
 
+    pub(crate) fn set_row_offsets(&mut self, rows: [i16; 3]) {
+        self.rows = Some(rows);
+    }
+
+    pub(crate) fn set_column_offsets(&mut self, columns: Vec<i16>) {
+        self.columns = Some(columns);
+    }
+
+    /// Fingers per main row, 0–3 left pinky to index, 4–7 right index to pinky.
+    pub(crate) fn set_fingers(&mut self, rows: Vec<Vec<usize>>) {
+        self.fingers = Some(rows);
+    }
+
     pub(crate) fn validate(&self, shape: [usize; 3], minimum: i8, maximum: i8) -> Result<()> {
         if let Some(columns) = &self.columns {
             if columns.len() != (maximum - minimum + 1) as usize {
@@ -438,6 +465,7 @@ impl GeometrySettings {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn geometry_text(
     keys: impl Iterator<Item = (i8, i8, i16, i16, usize)>,
     mode: RowStagger,
@@ -554,7 +582,7 @@ fn finger(col: i8) -> (usize, i8, i8) {
     }
 }
 
-fn make_slot(token: &str, row: i8, col: i8) -> Result<Slot> {
+pub(crate) fn make_slot(token: &str, row: i8, col: i8) -> Result<Slot> {
     let (binding, label) = binding(token)?;
     let (finger, rank, hand) = finger(col);
     Ok(Slot {
@@ -571,6 +599,7 @@ fn make_slot(token: &str, row: i8, col: i8) -> Result<Slot> {
     })
 }
 
+#[cfg(test)]
 fn main_rows(lines: &[&str], absolute: bool) -> Result<(Vec<Slot>, bool, bool)> {
     let mut out = Vec::new();
     let mut left_outer = false;
@@ -614,30 +643,43 @@ fn main_rows(lines: &[&str], absolute: bool) -> Result<(Vec<Slot>, bool, bool)> 
             };
             (tokens[..n].to_vec(), tokens[n..].to_vec())
         };
-        let max_hand_width = if absolute && left.len() + right.len() == 13 {
-            7
-        } else {
-            6
-        };
-        if !(5..=max_hand_width).contains(&left.len())
-            || !(5..=max_hand_width).contains(&right.len())
-        {
-            return err("each hand must have five or six columns (six or seven in an absolute 13-column row)");
-        }
-        left_outer |= left.len() >= 6;
-        right_outer |= right.len() >= 6;
-        let start = if left.len() == 6 && !absolute { -1 } else { 0 };
-        for (j, t) in left.iter().enumerate() {
-            out.push(make_slot(t, r as i8, start + j as i8)?);
-        }
-        for (j, t) in right.iter().enumerate() {
-            let col = if absolute { left.len() + j } else { 5 + j };
-            out.push(make_slot(t, r as i8, col as i8)?);
-        }
+        let (left, right) = hand_row(&mut out, r as i8, &left, &right, absolute)?;
+        left_outer |= left;
+        right_outer |= right;
     }
     Ok((out, left_outer, right_outer))
 }
 
+/// Add one main row's slots from its left- and right-hand key tokens.
+/// Returns whether each hand has an outer column.
+pub(crate) fn hand_row(
+    out: &mut Vec<Slot>,
+    row: i8,
+    left: &[String],
+    right: &[String],
+    absolute: bool,
+) -> Result<(bool, bool)> {
+    let max_hand_width = if absolute && left.len() + right.len() == 13 {
+        7
+    } else {
+        6
+    };
+    if !(5..=max_hand_width).contains(&left.len()) || !(5..=max_hand_width).contains(&right.len())
+    {
+        return err("each hand must have five or six columns (six or seven in an absolute 13-column row)");
+    }
+    let start = if left.len() == 6 && !absolute { -1 } else { 0 };
+    for (j, t) in left.iter().enumerate() {
+        out.push(make_slot(t, row, start + j as i8)?);
+    }
+    for (j, t) in right.iter().enumerate() {
+        let col = if absolute { left.len() + j } else { 5 + j };
+        out.push(make_slot(t, row, col as i8)?);
+    }
+    Ok((left.len() >= 6, right.len() >= 6))
+}
+
+#[cfg(test)]
 fn compact_mapping(line: &str, slots: &[Slot]) -> Result<Option<(u8, Vec<u8>, Vec<u8>)>> {
     // `i@ i'` describes the complete before/after text. The action itself
     // emits only the suffix (`'`); the already typed `i` is not emitted twice.
@@ -680,7 +722,7 @@ fn compact_mapping(line: &str, slots: &[Slot]) -> Result<Option<(u8, Vec<u8>, Ve
 
 /// Compact tables are syntax sugar for the existing text-context actions.
 /// No evaluator or optimizer-specific rule representation is introduced.
-struct CompactTable {
+pub(crate) struct CompactTable {
     rules: BTreeMap<Vec<u8>, Emission>,
     fallback: Emission,
 }
@@ -712,6 +754,7 @@ fn compact_key(token: &str, adaptive: bool) -> Result<String> {
     Ok(token.to_string())
 }
 
+#[cfg(test)]
 fn compact_pair(token: &str) -> Result<(u8, u8)> {
     let bytes = token.as_bytes();
     if bytes.len() != 2 || !bytes.iter().all(u8::is_ascii_graphic) {
@@ -722,6 +765,7 @@ fn compact_pair(token: &str) -> Result<(u8, u8)> {
     Ok((bytes[0].to_ascii_lowercase(), bytes[1].to_ascii_lowercase()))
 }
 
+#[cfg(test)]
 fn insert_compact_rule(
     tables: &mut BTreeMap<String, CompactTable>,
     key: &str,
@@ -748,6 +792,7 @@ fn insert_compact_rule(
     Ok(())
 }
 
+#[cfg(test)]
 fn compact_table_line(line: &str, tables: &mut BTreeMap<String, CompactTable>) -> Result<bool> {
     let fields: Vec<_> = line.split_whitespace().collect();
     let Some(&kind) = fields.first() else {
@@ -869,6 +914,7 @@ fn install_compact_tables(
 }
 
 /// Only use short serialization when it exactly represents the action.
+#[cfg(test)]
 fn short_table_text(name: &str, action: &Action) -> Option<String> {
     let Action::Rules {
         basis: Basis::Text,
@@ -917,6 +963,7 @@ fn short_table_text(name: &str, action: &Action) -> Option<String> {
     ))
 }
 
+#[cfg(test)]
 fn set_thumb(thumbs: &mut [Vec<String>; 2], hand: usize, token: &str) -> Result<()> {
     if hand > 1 {
         return err("thumb hand must be left or right");
@@ -936,6 +983,7 @@ fn set_thumb(thumbs: &mut [Vec<String>; 2], hand: usize, token: &str) -> Result<
     Ok(())
 }
 
+#[cfg(test)]
 fn action_slot_token(name: &str) -> String {
     if name == "@" || name.chars().count() == 1 && !name.is_ascii() {
         name.into()
@@ -944,6 +992,7 @@ fn action_slot_token(name: &str) -> String {
     }
 }
 
+#[cfg(test)]
 fn compact_action_text(name: &str, action: &Action) -> Option<String> {
     if name.len() != 1
         || !name.as_bytes()[0].is_ascii_graphic()
@@ -989,6 +1038,43 @@ fn compact_action_text(name: &str, action: &Action) -> Option<String> {
     Some(out)
 }
 
+/// What a layout file states, before `Layout::assemble` places the thumbs,
+/// applies fingers and offsets, and installs the actions.
+pub(crate) struct Parts {
+    pub(crate) slots: Vec<Slot>,
+    pub(crate) left_outer: bool,
+    pub(crate) right_outer: bool,
+    pub(crate) geometry: GeometrySettings,
+    pub(crate) stagger: Option<RowStagger>,
+    /// Key tokens per hand; `none` for a hand with no thumb keys.
+    pub(crate) thumbs: [Vec<String>; 2],
+    pub(crate) thumb_columns: Option<Vec<i8>>,
+    pub(crate) key_labels: Option<Vec<String>>,
+    pub(crate) actions: BTreeMap<String, Action>,
+    /// Actions the file defines, as opposed to the built-in ones.
+    pub(crate) definitions: Vec<String>,
+    /// Rules (`Some` context) and fallbacks (`None`) for defined actions.
+    pub(crate) mappings: Vec<(String, Option<Vec<u8>>, Emission)>,
+    pub(crate) compact: Vec<(u8, Vec<u8>, Vec<u8>)>,
+    pub(crate) short_tables: BTreeMap<String, CompactTable>,
+    pub(crate) action_mode: bool,
+    pub(crate) alt_fingers: Option<Vec<crate::alt_fingers::Rule>>,
+    pub(crate) combos: Option<Vec<crate::Json>>,
+}
+
+pub(crate) fn builtin_actions() -> BTreeMap<String, Action> {
+    [
+        ("repeat", Action::RepeatOutput),
+        ("repeat-output", Action::RepeatOutput),
+        ("repeat-previous-output", Action::RepeatPreviousOutput),
+        ("repeat-action", Action::RepeatAction),
+        ("again", Action::RepeatAction),
+    ]
+    .into_iter()
+    .map(|(name, action)| (name.into(), action))
+    .collect()
+}
+
 impl Layout {
     pub fn load(path: &Path) -> Result<Self> {
         let mut timing = crate::load_profile::LoadProfile::new("action layout read/parse");
@@ -1003,19 +1089,33 @@ impl Layout {
         let mut layout = if crate::layout_io::is_json_layout(text) {
             crate::layout_io::parse_json_layout(text, path)?
         } else {
-            Self::parse_dat(text, path)?
+            Self::parse_fixture(text, path)?
         };
         let unplaced = crate::alt_fingers::unplaced(&layout);
         layout.source_warnings.extend(unplaced);
         Ok(layout)
     }
 
+    #[cfg(not(test))]
+    fn parse_fixture(_text: &str, _path: &Path) -> Result<Self> {
+        err("not a JSON or JSONC layout")
+    }
+
+    /// Tests write layouts in a compact text notation (rows of keys, then
+    /// `thumbs:`, `action`, `map` and geometry lines).
+    #[cfg(test)]
+    fn parse_fixture(text: &str, path: &Path) -> Result<Self> {
+        Self::parse_dat(text, path)
+    }
+
+    #[cfg(test)]
     pub(crate) fn parse_dat(text: &str, path: &Path) -> Result<Self> {
         let mut layout = Self::parse_dat_preserving_fallbacks(text, path)?;
         layout.normalize_magic_fallbacks();
         Ok(layout)
     }
 
+    #[cfg(test)]
     pub(crate) fn parse_dat_preserving_fallbacks(text: &str, path: &Path) -> Result<Self> {
         let text = text.trim_start_matches('\u{feff}');
         let mut lines: Vec<&str> = text.lines().map(|s| s.trim_end_matches('\r')).collect();
@@ -1031,16 +1131,7 @@ impl Layout {
         let absolute = absolute_columns(&lines[3..])?;
         let (mut slots, mut left_outer, mut right_outer) = main_rows(&lines, absolute)?;
         let mut geometry = GeometrySettings::default();
-        let mut actions = BTreeMap::new();
-        for (k, v) in [
-            ("repeat", Action::RepeatOutput),
-            ("repeat-output", Action::RepeatOutput),
-            ("repeat-previous-output", Action::RepeatPreviousOutput),
-            ("repeat-action", Action::RepeatAction),
-            ("again", Action::RepeatAction),
-        ] {
-            actions.insert(k.into(), v);
-        }
+        let mut actions = builtin_actions();
         let mut definitions = Vec::new();
         let mut mappings = Vec::new();
         let mut compact = Vec::new();
@@ -1218,6 +1309,50 @@ impl Layout {
                 }
             }
         }
+        Self::assemble(
+            Parts {
+                slots,
+                left_outer,
+                right_outer,
+                geometry,
+                stagger: stagger_mode,
+                thumbs,
+                thumb_columns,
+                key_labels,
+                actions,
+                definitions,
+                mappings,
+                compact,
+                short_tables,
+                action_mode,
+                alt_fingers,
+                combos,
+            },
+            path,
+        )
+    }
+
+    /// The layout `parts` describe: thumbs placed, fingers and offsets
+    /// applied, actions installed and checked.
+    pub(crate) fn assemble(parts: Parts, path: &Path) -> Result<Self> {
+        let Parts {
+            mut slots,
+            left_outer,
+            right_outer,
+            geometry,
+            stagger: stagger_mode,
+            mut thumbs,
+            thumb_columns,
+            key_labels,
+            mut actions,
+            definitions,
+            mappings,
+            compact,
+            short_tables,
+            mut action_mode,
+            alt_fingers,
+            combos,
+        } = parts;
         let mut compact_rules: BTreeMap<u8, BTreeMap<Vec<u8>, Emission>> = BTreeMap::new();
         for (marker, context, output) in compact {
             if compact_rules
@@ -1483,8 +1618,9 @@ impl Layout {
     }
 
     /// Keep the legacy repeat default when a text-magic key has no literal
-    /// default. Explicit literal defaults (including Spark defaults) survive
-    /// DAT save/reload, even when their character differs from the key label.
+    /// default. Explicit literal defaults survive, even when their character
+    /// differs from the key label.
+    #[cfg(test)]
     pub(crate) fn normalize_magic_fallbacks(&mut self) {
         let mut repeat = "repeat-output".to_string();
         if !matches!(self.actions.get(&repeat), Some(Action::RepeatOutput)) {
@@ -1573,6 +1709,7 @@ impl Layout {
         }
     }
 
+    #[cfg(test)]
     pub fn text(&self) -> String {
         let token = |s: &Slot| match &s.binding {
             Binding::Empty => "~".into(),
@@ -1967,6 +2104,7 @@ impl Layout {
 
 /// Whether the thumbs use the columns a layout without `thumb-columns` gets:
 /// 0, 1, 2… in order, the first right thumb at 1 when there is no left one.
+#[cfg(test)]
 fn default_thumb_columns(slots: &[Slot]) -> bool {
     slots
         .iter()
@@ -1975,6 +2113,7 @@ fn default_thumb_columns(slots: &[Slot]) -> bool {
         .all(|(index, slot)| slot.col == if index == 0 && slot.hand == 1 { 1 } else { index as i8 })
 }
 
+#[cfg(test)]
 fn emission_text(e: &Emission) -> String {
     match e {
         Emission::None => "none".into(),

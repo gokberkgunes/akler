@@ -8,8 +8,7 @@ to toggle.
 "combos": [{"keys":["a","u"],"output":"au"}]
 ```
 
-DAT uses the same JSON on one line after `combos:`. The `inputs` form also
-works: `{"inputs":["au"],"output":"au"}`.
+The `inputs` form also works: `{"inputs":["au"],"output":"au"}`.
 
 ## Scoring
 
