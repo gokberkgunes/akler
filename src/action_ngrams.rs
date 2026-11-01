@@ -660,11 +660,6 @@ const ALT_SKIP_CORRECTION: u8 = 0x20;
 /// alternate-finger windows kept beyond the capped source windows.
 const ALT_SKIP_ONLY: u8 = 0x10;
 
-/// Alternate-finger contexts keep up to this many times as many four- and
-/// five-key contexts as the n-gram limits (`build_chord_windows`). On reddit
-/// with 5000 of each, 6 keeps espr's SFB within 2% of the unlimited value
-/// (2: 30%, 10: 0.2%); more makes capped searches check limits slower.
-const ALT_CONTEXT_FACTOR: usize = 6;
 
 impl Window {
     fn len(&self) -> usize {
@@ -940,6 +935,7 @@ fn cache_key(text: &str, limits: NgramLimits) -> u64 {
         mix(limit.map_or(u64::MAX, |limit| limit as u64));
     }
     mix(u64::from(limits.include_spacegrams));
+    mix(limits.alt_contexts as u64);
     mix(u64::from(CACHE_VERSION));
     // A new build may prepare contexts differently: it writes its own cache.
     for chunk in crate::BUILD.as_bytes().chunks(8) {
@@ -1122,6 +1118,7 @@ fn read_cache(cache: &Path, key: u64, path: &Path, limits: NgramLimits) -> Optio
         name: corpus_name(path),
         path: path.to_owned(),
         include_spacegrams: limits.include_spacegrams,
+        alt_contexts: limits.alt_contexts,
         order,
         warnings,
         exact_sums: exact_sums_of(&windows),
@@ -1147,6 +1144,9 @@ pub struct NgramCorpus {
     pub(crate) include_spacegrams: bool,
     pub order: usize,
     pub warnings: Vec<String>,
+    /// `[ngrams] alt_contexts`: how many times as many four- and five-key
+    /// contexts as the limits alternate fingers keep (`build_chord_windows`).
+    alt_contexts: usize,
     windows: Arc<[Window]>,
     /// The original suffix windows, even on a corpus with centered contexts.
     source_windows: Arc<[Window]>,
@@ -1402,7 +1402,7 @@ impl NgramCorpus {
             // A key's finger can read two keys to either side, which a
             // dropped context loses: a rule like "␣_e" then goes unseen.
             // Alternate fingers keep the most frequent four- and five-key
-            // contexts, up to `ALT_CONTEXT_FACTOR` times as many as the
+            // contexts, up to `alt_contexts` times as many as the
             // limits kept, whose counted trigrams the trigram limit kept.
             // A four-key context counts its last three keys `ahead` and its
             // first three otherwise (by target); a five-key one the trigram
@@ -1422,7 +1422,7 @@ impl NgramCorpus {
                     })
                     .collect();
                 grams.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                let keep = tables[n - 1].len().saturating_mul(ALT_CONTEXT_FACTOR);
+                let keep = tables[n - 1].len().saturating_mul(self.alt_contexts);
                 for (gram, _) in grams.into_iter().take(keep) {
                     tables[n - 1].insert(pack_gram(&gram[..n]));
                 }
@@ -1786,6 +1786,7 @@ impl NgramCorpus {
             name: corpus_name(path),
             path: path.to_owned(),
             include_spacegrams: limits.include_spacegrams,
+            alt_contexts: limits.alt_contexts,
             order,
             warnings,
             exact_sums,
@@ -8147,7 +8148,6 @@ mod tests {
         );
         let stop = AtomicBool::new(false);
         let effort = |_: Option<usize>, _: Option<usize>, key: usize| 0.01 * key as f64;
-        let geometry = Geometry::new(crate::action_ui::physical_keys(&layout));
         let rules = crate::alt_fingers::AltRules::parse("fg f_g (LM LI) gf g_f (LI LM)").unwrap();
         let positions = crate::alt_fingers::AltPolicy {
             enabled: true,
@@ -10129,6 +10129,7 @@ mod detailed_mapping_tests {
             name: "inline".into(),
             path: PathBuf::from("inline.json"),
             include_spacegrams: true,
+            alt_contexts: NgramLimits::default().alt_contexts,
             order,
             warnings: Vec::new(),
             exact_sums,
@@ -10609,7 +10610,7 @@ mod limit_tests {
                 trigrams: Some(2000),
                 tetragrams: Some(2000),
                 pentagrams: Some(2000),
-                include_spacegrams: true,
+                ..NgramLimits::default()
             },
         ] {
             let actual =
@@ -10706,7 +10707,7 @@ mod limit_tests {
             trigrams: Some(1),
             tetragrams: Some(1),
             pentagrams: Some(1),
-            include_spacegrams: true,
+            ..NgramLimits::default()
         };
         let full = NgramCorpus::from_text(&text, Path::new("inline.json")).unwrap();
         let limited =

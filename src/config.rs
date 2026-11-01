@@ -8,7 +8,15 @@ struct NgramLimits {
     tetragrams: Option<usize>,
     pentagrams: Option<usize>,
     include_spacegrams: bool,
+    /// Under limits, alternate fingers keep up to this many times as many
+    /// four- and five-key contexts as the limits do (`alt_contexts`).
+    alt_contexts: usize,
 }
+
+/// `[ngrams] alt_contexts` by default. On reddit with 5000 of each limit, 6
+/// keeps espr's SFB within 2% of the unlimited value (2: 30%, 10: 0.2%);
+/// more makes capped searches check limits slower.
+const DEFAULT_ALT_CONTEXTS: usize = 6;
 
 impl Default for NgramLimits {
     fn default() -> Self {
@@ -17,6 +25,7 @@ impl Default for NgramLimits {
             tetragrams: None,
             pentagrams: None,
             include_spacegrams: true,
+            alt_contexts: DEFAULT_ALT_CONTEXTS,
         }
     }
 }
@@ -522,6 +531,11 @@ fn parse_app_config(text: &str) -> AppResult<AppConfig> {
                             "trigrams" => config.ngrams.trigrams = parse_ngram_limit(&value)?,
                             "tetragrams" => config.ngrams.tetragrams = parse_ngram_limit(&value)?,
                             "pentagrams" => config.ngrams.pentagrams = parse_ngram_limit(&value)?,
+                            "alt_contexts" => {
+                                config.ngrams.alt_contexts = value.parse().map_err(|_| {
+                                    format!("{key} must be a whole number, such as 0 or 6")
+                                })?
+                            }
                             "include_spacegrams" => {
                                 config.ngrams.include_spacegrams = match value
                                     .to_ascii_lowercase()
@@ -724,11 +738,12 @@ fn save_spacegram_setting(enabled: bool) -> AppResult<()> {
     limits.include_spacegrams = enabled;
     let cap = |value: Option<usize>| value.map(|v| v.to_string()).unwrap_or_else(|| "all".into());
     let text = format!(
-        "include_spacegrams = {}\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\n",
+        "include_spacegrams = {}\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\nalt_contexts = {}\n",
         limits.include_spacegrams,
         cap(limits.trigrams),
         cap(limits.tetragrams),
-        cap(limits.pentagrams)
+        cap(limits.pentagrams),
+        limits.alt_contexts
     );
     save_config_sections(&[("ngrams", text)])
 }
@@ -739,7 +754,7 @@ fn app_config_text(config: &AppConfig) -> String {
         "# akler configuration; see doc/USAGE.md.\n\
          # Missing settings use built-in defaults. Limits other than all are approximate.\n\n\
          [weights]\n{}\n[aklgg]\n{}\n[rolls]\n{}\n[typing]\n{}\n[alts]\n{}\n[search]\n{}\n[magic]\n{}\n[combos]\n{}\n[adaptive]\n{}\n[ranker]\n{}\n\
-         [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\ninclude_spacegrams = {}\n",
+         [ngrams]\ntrigrams = {}\ntetragrams = {}\npentagrams = {}\ninclude_spacegrams = {}\nalt_contexts = {}\n",
         weights_text(&config.weights),
         config.weights.2.config_text(),
         rolls_config_text(config.weights.rolls()),
@@ -754,6 +769,7 @@ fn app_config_text(config: &AppConfig) -> String {
         limit(config.ngrams.tetragrams),
         limit(config.ngrams.pentagrams),
         config.ngrams.include_spacegrams,
+        config.ngrams.alt_contexts,
     )
 }
 
@@ -1071,7 +1087,7 @@ mod config_tests {
             "[weights]\nsfb = 7\n[search]\nseconds = 15\ncorpus.reddit = 2\n\
              [ranker]\ncolumns = SCORE SFB\nhide_magic = true\nhide_non_thumb = true\n\
              hidden_layouts = [\"layouts/a b.dat\", \"layouts/c.dat\"]\n[ngrams]\n\
-             trigrams = 2000\ntetragrams = 4000\npentagrams = all\n[typing]\nalt_fingers = false\ncombos = false\n",
+             trigrams = 2000\ntetragrams = 4000\npentagrams = all\nalt_contexts = 0\n[typing]\nalt_fingers = false\ncombos = false\n",
         )
         .unwrap();
         assert_eq!(parsed.weights.0[SFB], 7.0);
@@ -1101,10 +1117,14 @@ mod config_tests {
         assert_eq!(parsed.ngrams.trigrams, Some(2000));
         assert_eq!(parsed.ngrams.tetragrams, Some(4000));
         assert_eq!(parsed.ngrams.pentagrams, None);
+        assert_eq!(parsed.ngrams.alt_contexts, 0);
+        assert_eq!(NgramLimits::default().alt_contexts, DEFAULT_ALT_CONTEXTS);
+        assert!(parse_app_config("[ngrams]\nalt_contexts = six\n").is_err());
         assert!(!parsed.weights.3);
         assert!(!parsed.weights.4);
         let restored = parse_app_config(&app_config_text(&parsed)).unwrap();
         assert!(!restored.weights.3 && !restored.weights.4);
+        assert_eq!(restored.ngrams.alt_contexts, 0);
         assert_eq!(restored.rank_filters, parsed.rank_filters);
 
         let isolated = rank_filters_from_text(

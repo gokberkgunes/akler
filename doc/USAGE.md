@@ -39,7 +39,7 @@ continues the pass, then starts the next.
 | `[combos]` | Combo fitting; see [COMBOS.md](COMBOS.md). |
 | `[adaptive]` | Adaptive-swap fitting; see [LAYOUTS.md](LAYOUTS.md#fitting-swaps). |
 | `[ranker]` | Visible `columns`, `hide_magic`, `hide_non_thumb`. |
-| `[ngrams]` | `include_spacegrams` and `trigrams`/`tetragrams`/`pentagrams` caps. |
+| `[ngrams]` | `include_spacegrams`, `trigrams`/`tetragrams`/`pentagrams` caps and `alt_contexts`. |
 
 Entries are `name = value`; `#` starts a comment; missing entries use
 defaults. Unknown sections or keys are errors. Saving from the TUI (`s` in
@@ -60,6 +60,11 @@ the denominators. Press `z` in the editor or ranker to toggle it.
 the most frequent entries in memory and never rewrite the corpus file. They
 are faster but approximate: results can change, so compare layouts with the
 same caps. Unigrams and bigrams are never capped.
+
+Under those caps, alternate fingers keep up to `alt_contexts` (default 6) times
+as many four- and five-key contexts, so rules that read two keys away still see
+them. `0` keeps none: capped searches run faster and alternate-finger stats
+read lower (doc/ALTFINGERS.md).
 
 ## Search settings
 

@@ -2753,6 +2753,31 @@ fn capped_alternate_finger_contexts_keep_the_keys_rules_read() {
             );
         }
     }
+    // `[ngrams] alt_contexts = 0` keeps no extra contexts: the capped one
+    // falls back and loses the rule's first key.
+    let corpus = action_ngrams::NgramCorpus::from_text_with_limits(
+        &text,
+        Path::new("inline.json"),
+        NgramLimits {
+            alt_contexts: 0,
+            ..capped
+        },
+    )
+    .unwrap();
+    let result = corpus
+        .evaluate_with_policy(
+            &layout,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+            alts,
+            true,
+            |_, _, _| 0.0,
+        )
+        .unwrap();
+    assert_ne!(
+        result.finger_tables.as_ref().unwrap()[1].get(&pattern),
+        Some(&2.0)
+    );
 }
 
 #[test]
