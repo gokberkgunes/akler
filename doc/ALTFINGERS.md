@@ -78,6 +78,10 @@ moves, magic keys and combos keep the exact check on every kept move. In
 every search, a context whose keys cannot cover all the keys some rule
 names, before or after a move, keeps its keys' own fingers, so the move
 only relabels it; that makes lyrebird's capped runs about a quarter faster.
+Without combos, and while at most half the contexts could have a rule read
+them, the search also moves contexts in groups sharing their last three keys,
+as without alternate fingers, and maps only the possible readers one by one:
+lyrebird and yeast search 60% faster, esp-r 30%.
 
 Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
 one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that

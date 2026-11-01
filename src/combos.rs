@@ -314,6 +314,12 @@ impl Program {
         self.ahead
     }
 
+    /// Whether the layout declares a combo the corpus types: without one,
+    /// the program only shapes alternate-finger contexts.
+    pub(crate) fn has_combos(&self) -> bool {
+        !self.combos.is_empty()
+    }
+
     pub(crate) fn alt_bigram_lookahead(&self) -> bool {
         self.alt_bigram_lookahead
     }

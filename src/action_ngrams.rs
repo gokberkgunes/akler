@@ -3322,6 +3322,12 @@ impl RuleLetters {
         Some(Self { typing, rules })
     }
 
+    /// The characters some of the `slots` (a bit mask) can type, before or
+    /// after the move.
+    fn bytes_typed_by(&self, slots: u64) -> impl Iterator<Item = u8> + '_ {
+        (0..=u8::MAX).filter(move |&byte| self.typing[usize::from(byte)] & slots != 0)
+    }
+
     /// Whether some rule could match within `text`.
     fn reads(&self, text: &[u8]) -> bool {
         let slots = text
@@ -4725,6 +4731,9 @@ pub(crate) struct Proposal {
     /// expands them into per-context changes.
     group_changes: Vec<(u32, Tail)>,
     group_marks: Vec<u64>,
+    /// Grouped static contexts a trial with alternate fingers mapped one by
+    /// one, as some rule may read them; their tail groups leave them out.
+    group_readers: Vec<u32>,
     /// Scratch bitmap over context IDs for affected-context unions; all zero
     /// between uses.
     context_marks: Vec<u64>,
@@ -4778,6 +4787,7 @@ impl Proposal {
             screened: None,
             group_changes: Vec::new(),
             group_marks: Vec::new(),
+            group_readers: Vec::new(),
             context_marks: Vec::new(),
             memos: Default::default(),
             chord_changes: Vec::new(),
@@ -4949,6 +4959,14 @@ pub(crate) struct Incremental {
     /// on a slot a rule names, before or after a move, keeps its keys' own
     /// fingers, so the move only relabels it (`ChordGrams::moved_default`).
     chord_free: Vec<bool>,
+    /// The slots alternate-finger rules name, and a bitmap of the contexts
+    /// whose keys can cover one rule's under the current arrangement
+    /// (`RuleLetters`). A move off those slots changes neither.
+    rule_slots: u64,
+    rule_readers: Vec<u64>,
+    /// Whether at most half the contexts are such readers: tail groups only
+    /// save work while most of their members move as one.
+    few_rule_readers: bool,
     /// Each combo context's plan with declared slots (`chord_plans` index
     /// by context).
     chord_plans: Vec<crate::combos::ChordPlan>,
@@ -5383,6 +5401,9 @@ impl Incremental {
             combo_contexts: Vec::with_capacity(context_count),
             chord_direct: Vec::with_capacity(context_count),
             chord_free: Vec::with_capacity(context_count),
+            rule_slots: 0,
+            rule_readers: Vec::new(),
+            few_rule_readers: false,
             chord_plans: Vec::new(),
             chord_plan_of: Vec::new(),
             chord_postings: Vec::new(),
@@ -5605,6 +5626,11 @@ impl Incremental {
             return Err("layout has no usable letters/bigrams in this corpus".into());
         }
         drop(mapper);
+        cache.rule_slots = cache
+            .alt_fingers
+            .named_slot_masks()
+            .map_or(0, |masks| masks.iter().fold(0, |slots, mask| slots | mask));
+        cache.refresh_rule_readers();
         // Release compiled-state borrows before returning the owner.
         Ok(cache)
     }
@@ -5616,11 +5642,14 @@ impl Incremental {
         slots: &[usize],
         extra: [u64; 4],
         grouped: bool,
+        readers: Option<&RuleLetters>,
         ids: &mut Vec<u32>,
         marks: &mut Vec<u64>,
     ) -> bool {
-        let direct =
-            self.finite_effort && (self.finger_tails.is_none() || !self.alt_fingers.reaches(slots));
+        let direct = self.finite_effort
+            && (self.finger_tails.is_none()
+                || !self.alt_fingers.reaches(slots)
+                || readers.is_some());
         if self.affected_by_bytes(slots, extra, direct, grouped, ids, marks) {
             return true;
         }
@@ -5738,6 +5767,7 @@ impl Incremental {
         &self,
         movement: Move,
         grouped: bool,
+        readers: Option<&RuleLetters>,
         ids: &mut Vec<u32>,
         marks: &mut Vec<u64>,
     ) -> bool {
@@ -5755,7 +5785,7 @@ impl Incremental {
             .combos
             .as_ref()
             .map_or([0; 4], |combos| combos.affected_by(moved).1);
-        if self.affected(slots, [0; 4], grouped, ids, marks) {
+        if self.affected(slots, [0; 4], grouped, readers, ids, marks) {
             return true;
         }
         let chords = moved
@@ -5775,7 +5805,51 @@ impl Incremental {
             }
             read_marks(marks, ids);
         }
+        if let Some(readers) = readers {
+            // A context some rule may read can change with any key it holds,
+            // not only its dependencies: add those holding a moved one. A
+            // move off the rules' slots keeps the current readers.
+            let moved = slots.iter().fold(0u64, |mask, &slot| mask | 1 << slot);
+            mark_contexts(marks, self.tails.len(), ids);
+            if moved & self.rule_slots == 0 && !self.rule_readers.is_empty() {
+                for byte in readers.bytes_typed_by(moved) {
+                    for &id in &self.postings[usize::from(byte)] {
+                        let (word, bit) = (id as usize / 64, 1 << (id % 64));
+                        if self.rule_readers[word] & bit != 0 {
+                            marks[word] |= bit;
+                        }
+                    }
+                }
+            } else {
+                for byte in readers.bytes_typed_by(moved) {
+                    for &id in &self.postings[usize::from(byte)] {
+                        if readers.reads(self.corpus.windows[id as usize].text()) {
+                            marks[id as usize / 64] |= 1 << (id % 64);
+                        }
+                    }
+                }
+            }
+            read_marks(marks, ids);
+        }
         false
+    }
+
+    /// Recount `rule_readers` for the current arrangement.
+    fn refresh_rule_readers(&mut self) {
+        self.rule_readers.clear();
+        if self.finger_tails.is_none() {
+            return;
+        }
+        if let Some(readers) = RuleLetters::new(&self.alt_fingers, &self.keys, &self.keys) {
+            self.rule_readers.resize((self.corpus.windows.len() + 63) / 64, 0);
+            for (id, window) in self.corpus.windows.iter().enumerate() {
+                if readers.reads(window.text()) {
+                    self.rule_readers[id / 64] |= 1 << (id % 64);
+                }
+            }
+        }
+        let count: usize = self.rule_readers.iter().map(|word| word.count_ones() as usize).sum();
+        self.few_rule_readers = 2 * count <= self.corpus.windows.len();
     }
 
     pub(crate) fn numeric_state(&self) -> NumericState {
@@ -5813,6 +5887,7 @@ impl Incremental {
                 self.arrangement.swap(slot, other);
             }
         }
+        self.refresh_rule_readers();
 
         let mut mapper = crate::action_fast::Mapper::new(&self.program, &self.keys);
         let combo_positions = positions(&self.arrangement);
@@ -6074,11 +6149,38 @@ impl Incremental {
         // contexts then move by tail group.
         let rules_unmoved = self.alt_fingers.positional()
             && !self.alt_fingers.reaches(&movement.slots[..movement.len]);
+        // Each trial owns its small key masks and permutation. Corpus, tails,
+        // geometry and contribution tables are shared by independent trials.
+        let mut keys = self.keys.clone();
+        keys.swap(a, b, &self.program);
+        if movement.len == 3 {
+            keys.swap(b, c, &self.program);
+        }
+        // A static context, or without combos a `chord_free` one, whose keys
+        // cannot cover any rule's named slots, before or after this move,
+        // keeps its keys' own fingers on both sides.
+        let ruled = self
+            .finger_tails
+            .as_ref()
+            .filter(|_| self.finite_effort)
+            .and_then(|_| RuleLetters::new(&self.alt_fingers, &self.keys, &keys));
+        let chords_ruled = ruled
+            .as_ref()
+            .filter(|_| self.combos.as_ref().is_some_and(|plan| plan.ahead()));
+        // Without combos, static contexts then move by tail group too, but
+        // for the ones some rule may read, which are mapped one by one.
+        let readers = ruled.as_ref().filter(|_| {
+            aggregate
+                && self.few_rule_readers
+                && !self.tail_groups.is_empty()
+                && !self.combos.as_ref().is_some_and(crate::combos::Program::has_combos)
+        });
         let grouped = aggregate
             && self.finite_effort
             && !self.tail_groups.is_empty()
-            && (self.finger_tails.is_none() || rules_unmoved);
+            && (self.finger_tails.is_none() || rules_unmoved || readers.is_some());
         proposal.group_changes.clear();
+        proposal.group_readers.clear();
         let sparse = terminal_active
             .is_some_and(|active| active.allows_sparse_zeros(self.raw.1.as_ref().unwrap()));
         let exact_integer = sparse
@@ -6203,6 +6305,7 @@ impl Incremental {
             proposal.all_contexts = self.affected_move(
                 movement,
                 grouped,
+                readers,
                 &mut proposal.affected,
                 &mut proposal.context_marks,
             );
@@ -6229,13 +6332,6 @@ impl Incremental {
         if RECORD || active.is_none() || !self.finite_effort {
             proposal.changes.reserve(proposal.examined);
         }
-        // Each trial owns its small key masks and permutation. Corpus, tails,
-        // geometry and contribution tables are shared by independent trials.
-        let mut keys = self.keys.clone();
-        keys.swap(a, b, &self.program);
-        if movement.len == 3 {
-            keys.swap(b, c, &self.program);
-        }
         let combo_positions = self.combos.as_ref().map(|_| {
             let mut arrangement = self.arrangement.clone();
             arrangement.swap(a, b);
@@ -6244,17 +6340,6 @@ impl Incremental {
             }
             positions(&arrangement)
         });
-        // A static context, or without combos a `chord_free` one, whose keys
-        // cannot cover any rule's named slots, before or after this move,
-        // keeps its keys' own fingers on both sides.
-        let ruled = self
-            .finger_tails
-            .as_ref()
-            .filter(|_| self.finite_effort)
-            .and_then(|_| RuleLetters::new(&self.alt_fingers, &self.keys, &keys));
-        let chords_ruled = ruled
-            .as_ref()
-            .filter(|_| self.combos.as_ref().is_some_and(|plan| plan.ahead()));
         let contexts_start = clock::<PROFILE>();
         let result = (|| -> ak::Result<()> {
             let mut mapper = crate::action_fast::Mapper::new(&self.program, &keys);
@@ -6629,6 +6714,9 @@ impl Incremental {
                 } else if let Some(bindings) =
                     self.static_contexts[id].filter(|_| self.finite_effort)
                 {
+                    if grouped && self.group_of[id] != NO_GROUP {
+                        proposal.group_readers.push(id as u32);
+                    }
                     let mut mapped = [None; 5];
                     for (key, &binding) in mapped.iter_mut().zip(&bindings[..window.len()]) {
                         if binding != crate::action_fast::UNTYPED {
@@ -6779,6 +6867,20 @@ impl Incremental {
                         marks[group as usize / 64] |= 1 << (group % 64);
                     }
                 }
+                // Mapped readers leave their groups: the frequency of those
+                // on their keys' own fingers, by group. Every member with
+                // contextual fingers is one.
+                let mut left: Vec<(u32, f64)> = Vec::new();
+                if readers.is_some() {
+                    let tails = self.finger_tails.as_ref().unwrap();
+                    for &member in &proposal.group_readers {
+                        let id = member as usize;
+                        if default_fingers_of(&self.default_fingers, self.tails[id], tails[id]) {
+                            left.push((self.group_of[id], self.corpus.windows[id].weight));
+                        }
+                    }
+                    left.sort_unstable_by_key(|&(group, _)| group);
+                }
                 for (word, &bits) in marks.iter().enumerate() {
                     let mut bits = bits;
                     while bits != 0 {
@@ -6794,16 +6896,17 @@ impl Incremental {
                         if tail == group.tail {
                             continue;
                         }
-                        if group.default_weight != 0.0 {
-                            proposal
-                                .net
-                                .add(self.tail_key(group.tail, None), -group.default_weight);
-                            proposal
-                                .net
-                                .add(self.tail_key(tail, None), group.default_weight);
+                        let start = left.partition_point(|&(other, _)| other < index as u32);
+                        let weight = left[start..]
+                            .iter()
+                            .take_while(|&&(other, _)| other == index as u32)
+                            .fold(group.default_weight, |weight, &(_, left)| weight - left);
+                        if weight != 0.0 {
+                            proposal.net.add(self.tail_key(group.tail, None), -weight);
+                            proposal.net.add(self.tail_key(tail, None), weight);
                         }
-                        let tails = self.finger_tails.as_ref();
-                        for &member in &group.contextual {
+                        let tails = self.finger_tails.as_ref().filter(|_| readers.is_none());
+                        for &member in tails.map_or(&[][..], |_| &group.contextual[..]) {
                             let id = member as usize;
                             let weight = self.corpus.windows[id].weight;
                             let old = tails.unwrap()[id];
@@ -6830,13 +6933,11 @@ impl Incremental {
                 let mut drained = std::mem::take(&mut proposal.drained);
                 drained.clear();
                 drained.extend(proposal.net.drain().filter(|&(_, weight)| weight != 0.0));
-                // Plain tails need only their projections for the score.
+                // Tails, with or without contextual fingers, need only their
+                // projections for the score.
                 let projectable = self.score_terms.is_some()
                     && proposal.raw.1.is_none()
-                    && drained.iter().all(|&(key, _)| {
-                        let (_, fingers, usage) = unpack_key(key);
-                        fingers.is_none() && !usage
-                    });
+                    && drained.iter().all(|&(key, _)| !unpack_key(key).2);
                 if projectable {
                     self.project(proposal, &drained);
                 }
@@ -7171,6 +7272,9 @@ impl Incremental {
         for &(group, tail) in &proposal.group_changes {
             let group = &self.tail_groups[group as usize];
             for &member in &group.members {
+                if proposal.group_readers.binary_search(&member).is_ok() {
+                    continue;
+                }
                 let id = member as usize;
                 let fingers = self
                     .finger_tails
@@ -7253,7 +7357,10 @@ impl Incremental {
             let projection = proposal
                 .projections
                 .entry(key)
-                .or_insert_with(|| self.tail_projection(unpack_key(key).0, terms));
+                .or_insert_with(|| {
+                    let (tail, fingers, _) = unpack_key(key);
+                    self.tail_projection(tail, fingers, terms)
+                });
             for (total, value) in sum.iter_mut().zip(projection.0) {
                 *total += weight * value;
             }
@@ -7294,11 +7401,29 @@ impl Incremental {
     }
 
     /// One unit of `tail`'s contribution, as `TailContributions::apply` adds
-    /// it, reduced to what the score and caps read.
-    fn tail_projection(&self, tail: Tail, terms: &[(usize, usize, f64)]) -> TailProjection {
+    /// it (`apply_contextual` with contextual `fingers`), reduced to what the
+    /// score and caps read.
+    fn tail_projection(
+        &self,
+        tail: Tail,
+        fingers: Option<Tail>,
+        terms: &[(usize, usize, f64)],
+    ) -> TailProjection {
         let mut raw = Raw::default();
         let mut totals = [0.0; 4];
-        self.contributions.apply(&mut raw, &mut totals, tail, 1.0, &self.geometry);
+        if fingers.is_some() {
+            self.contributions.apply_contextual(
+                &mut raw,
+                &mut totals,
+                tail,
+                fingers,
+                1.0,
+                &self.positions,
+                &self.geometry,
+            );
+        } else {
+            self.contributions.apply(&mut raw, &mut totals, tail, 1.0, &self.geometry);
+        }
         let mut projection = [0.0; PROJECTED];
         for &(counter, group, weight) in terms {
             projection[group] += weight * raw.0[counter];
@@ -7394,6 +7519,12 @@ impl Incremental {
         if proposal.movement.len == 3 {
             self.keys.swap(b, c, &self.program);
             self.arrangement.swap(b, c);
+        }
+        let moved = proposal.movement.slots[..proposal.movement.len]
+            .iter()
+            .fold(0u64, |mask, &slot| mask | 1 << slot);
+        if moved & self.rule_slots != 0 {
+            self.refresh_rule_readers();
         }
         for &(id, tail) in &proposal.changes {
             self.tails[id] = tail;
@@ -7944,6 +8075,118 @@ mod tests {
             bits.extend(stats.1.skipgrams.iter().map(|value| value.to_bits()));
         }
         bits
+    }
+
+    #[test]
+    fn grouped_alternate_finger_trials_match_unscreened_and_fresh_evaluation() {
+        // Without combos, screened trials move static contexts by tail
+        // group, mapping one by one only those some rule may read.
+        let mut layout = ak::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\nswap e dr\n",
+            Path::new("grouped-alternates.dat"),
+        )
+        .unwrap();
+        layout.alt_fingers = crate::alt_fingers::AltRules::parse_letters("sg s_g (LM LI)").unwrap();
+        crate::alt_fingers::pin(&mut layout);
+        let corpus = corpus(
+            b"the fig sags as sage dogs gasp at red deer; she drags his bag past the fog and edges dry seeds",
+            5,
+        );
+        let stop = AtomicBool::new(false);
+        let effort = |_: Option<usize>, _: Option<usize>, key: usize| 0.01 * key as f64;
+        let geometry = Geometry::new(crate::action_ui::physical_keys(&layout));
+        let rules = crate::alt_fingers::AltRules::parse("fg f_g (LM LI) gf g_f (LI LM)").unwrap();
+        let positions = crate::alt_fingers::AltPolicy {
+            enabled: true,
+            positions: crate::alt_fingers::AltRules {
+                rowstag: rules.clone(),
+                colstag: rules,
+            }
+            .intern(),
+        };
+        let mut own = layout.clone();
+        own.alt_fingers.clear();
+        for (layout, alts) in [
+            (&layout, crate::alt_fingers::AltPolicy::layout(true)),
+            (&own, positions),
+        ] {
+            let fresh = |layout: &ak::Layout| {
+                let mut cache = Incremental::new_with_policy(
+                    &corpus,
+                    layout,
+                    geometry.clone(),
+                    &stop,
+                    alts,
+                    crate::combos::Policy::OFF,
+                    effort,
+                )
+                .unwrap();
+                cache.enable_finite_effort();
+                cache
+            };
+            let close = |a: &Raw, b: &Raw| {
+                a.0.iter()
+                    .zip(&b.0)
+                    .all(|(a, b)| (a - b).abs() <= 1e-9 * (1.0 + b.abs()))
+            };
+            let mut cache = fresh(layout);
+            let mut screened = fresh(layout);
+            screened.enable_aggregation();
+            let (mut proposal, mut screened_proposal) = (Proposal::new(), Proposal::new());
+            let mut current = layout.clone();
+            let slots: Vec<_> = (0..layout.slots.len())
+                .filter(|&slot| layout.slots[slot].main)
+                .collect();
+            let mut state = 7usize;
+            let mut next = |n: usize| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) % n
+            };
+            for step in 0..120 {
+                let (a, b) = (slots[next(slots.len())], slots[next(slots.len())]);
+                let c = slots[next(slots.len())];
+                if a == b || c == a || c == b {
+                    continue;
+                }
+                let movement = if step % 3 == 0 {
+                    Move { slots: [a, b, c], len: 3 }
+                } else {
+                    Move { slots: [a, b, 0], len: 2 }
+                };
+                for (cache, proposal) in
+                    [(&cache, &mut proposal), (&screened, &mut screened_proposal)]
+                {
+                    cache
+                        .propose_move_profiled::<false, false, _>(
+                            movement,
+                            &stop,
+                            effort,
+                            proposal,
+                            &mut Profile::default(),
+                        )
+                        .unwrap();
+                }
+                // Screened sums follow the groups' bookkeeping; replayed,
+                // they match the unscreened proposal bit for bit.
+                assert!(close(&screened_proposal.raw, &proposal.raw), "screened {step}");
+                screened.exact(&mut screened_proposal);
+                assert_eq!(raw_bits(&screened_proposal.raw), raw_bits(&proposal.raw), "{step}");
+                let mut moved = current.clone();
+                moved.swap(a, b);
+                if movement.len == 3 {
+                    moved.swap(b, c);
+                }
+                assert!(close(&proposal.raw, &fresh(&moved).raw), "{step}");
+                if step % 2 == 0 {
+                    cache.commit(&mut proposal);
+                    screened.commit(&mut screened_proposal);
+                    current = moved;
+                    assert_eq!(raw_bits(&screened.raw), raw_bits(&cache.raw), "{step}");
+                    assert_eq!(screened.finger_tails, cache.finger_tails, "{step}");
+                    assert!(close(&cache.raw, &fresh(&current).raw), "{step}");
+                }
+            }
+        }
     }
 
     fn check_combo_trials(definitions: &str, policy: crate::combos::Policy, text: &[u8]) {
