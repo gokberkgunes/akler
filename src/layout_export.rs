@@ -46,6 +46,36 @@ pub(crate) fn save_jsonc_copy(layout: &Layout) -> Result<PathBuf> {
     save_numbered_jsonc(layout, dir, stem)
 }
 
+/// Replace the layout's own file, in its format (DAT or JSONC), keeping the
+/// previous file as a backup beside it. A layout JSONC can't hold goes to
+/// the DAT file of the same name instead. The optimizer's spare keys are
+/// saved only when they hold something.
+pub(crate) fn save_in_place(layout: &Layout) -> Result<PathBuf> {
+    let layout = &layout.without_spare_keys();
+    let mut path = layout.path.clone();
+    let is_dat = match fs::read_to_string(&path) {
+        Ok(text) => !crate::layout_io::is_json_layout(&text),
+        Err(_) => path.extension().is_some_and(|ext| ext == "dat"),
+    };
+    let text = if is_dat {
+        layout.text()
+    } else {
+        match jsonc_text(layout) {
+            Ok(text) => text,
+            Err(_) => {
+                path = path.with_extension("dat");
+                layout.text()
+            }
+        }
+    };
+    let staged = staged_file(&path, &text).map_err(|e| e.to_string())?;
+    if let Err(error) = backup_file(&path).and_then(|_| fs::rename(&staged, &path)) {
+        let _ = fs::remove_file(&staged);
+        return Err(error.to_string());
+    }
+    Ok(path)
+}
+
 fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBuf> {
     let text = jsonc_text(layout)?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -1398,6 +1428,35 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn saving_in_place_keeps_each_files_format_and_a_backup() {
+        let directory = test_directory();
+        let source = Layout::parse(GRID, Path::new("source.dat")).unwrap();
+        let mut swapped = source.clone();
+        swapped.swap(0, 1);
+        // An extensionless JSONC file stays JSONC; a DAT file stays DAT.
+        for (name, original) in [("plain", jsonc_text(&source).unwrap()), ("grid.dat", GRID.into())] {
+            let path = directory.join(name);
+            fs::write(&path, &original).unwrap();
+            let mut layout = swapped.clone();
+            layout.path = path.clone();
+            assert_eq!(save_in_place(&layout).unwrap(), path);
+            let saved = fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                crate::layout_io::is_json_layout(&saved),
+                crate::layout_io::is_json_layout(&original)
+            );
+            assert_eq!(Layout::parse(&saved, &path).unwrap().slots, swapped.slots);
+            let backups: Vec<_> = fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
+                .filter(|text| *text == original)
+                .collect();
+            assert_eq!(backups.len(), 1, "{name}");
+        }
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

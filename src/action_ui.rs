@@ -2705,6 +2705,15 @@ fn action_optimizer_setup(
                 }
             }
             Event::Char('H') => *locks = optimizer_locks(layout, action_home_locks(layout)),
+            Event::Char('S') => {
+                let target = layout.path.display().to_string();
+                if confirm_box(term, "Save over the layout", &target, "Save")? {
+                    *status = match crate::layout_export::save_in_place(layout) {
+                        Ok(path) => saved_in_place_message(&layout.path, &path),
+                        Err(error) => error,
+                    };
+                }
+            }
             Event::Char('U') => locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o') => {
@@ -2833,6 +2842,7 @@ fn action_optimizer_setup(
                     "v\tSwitch Simple / Detailed statistics; scoring stays unchanged.".into(),
                     "t\tSwitch normal / aklgg scoring.".into(),
                     "s\tSave weights and search settings.".into(),
+                    "S\tSave the layout over its own file (asks first; keeps a backup).".into(),
                     "r\tReload weights and search settings from configuration.".into(),
                     "d\tRestore default weights and search settings.".into(),
                     "o\tReset the layout to its loaded bindings.".into(),
@@ -3638,7 +3648,7 @@ fn action_optimizer_session(
                         "Optimizer result",
                         &[
                             "Space refines this candidate; b compares archived candidates; [ and ] move between them.".into(),
-                            "s saves this candidate; S saves the archive; r or q returns to setup and keeps the current layout in memory.".into(),
+                            "s saves this candidate as a new file; S saves it over the layout's own file (with a backup); A saves every candidate; r or q returns to setup and keeps the current layout in memory.".into(),
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
                             "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS.".into(),
                             "v shows current magic rules when magic optimization is enabled.".into(),
@@ -3698,6 +3708,15 @@ fn action_optimizer_session(
                         };
                     }
                     Event::Char('S') => {
+                        let target = layout.path.display().to_string();
+                        if confirm_box(term, "Save over the layout", &target, "Save")? {
+                            status = match crate::layout_export::save_in_place(&layout) {
+                                Ok(path) => saved_in_place_message(&layout.path, &path),
+                                Err(error) => error,
+                            };
+                        }
+                    }
+                    Event::Char('A') => {
                         let mut saved = 0;
                         for candidate in &result.archive {
                             let candidate_layout =

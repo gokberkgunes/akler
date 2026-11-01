@@ -47,6 +47,19 @@ fn stagger_cells(offset: i16, minimum: i16, step: usize) -> usize {
     (((i32::from(offset) - i32::from(minimum)).max(0) as usize * step) + 500) / 1000
 }
 
+/// The status after `save_in_place` wrote `saved` for the layout at `source`.
+fn saved_in_place_message(source: &Path, saved: &Path) -> String {
+    if source == saved {
+        format!("saved over {}", saved.display())
+    } else {
+        format!(
+            "saved {}; JSONC can't hold this layout, so {} is unchanged",
+            saved.display(),
+            source.display()
+        )
+    }
+}
+
 fn saved_layout_message(path: &Path) -> String {
     if path
         .extension()
@@ -4829,6 +4842,16 @@ fn optimizer_setup(
             Event::Escape | Event::Char('q') if term.optimizer_score => { term.optimizer_score = false; scroll = 0; },
             Event::Escape | Event::Quit | Event::Char('q') => return Ok(false),
             Event::Char('H')=>*locks = optimizer_locks(&model.board, home_locks(&model.board)),
+            Event::Char('S') => {
+                let layout = board_as_action_layout(&model.board, &model.symbols(arr))?;
+                let target = layout.path.display().to_string();
+                if confirm_box(term, "Save over the layout", &target, "Save")? {
+                    status = match crate::layout_export::save_in_place(&layout) {
+                        Ok(p) => saved_in_place_message(&layout.path, &p),
+                        Err(e) => e,
+                    };
+                }
+            },
             Event::Char('U')=>locks.fill(false),
             Event::Char('L') => locks.fill(true),
             Event::Char('o')=>*arr = model.original.clone(),
@@ -4895,6 +4918,7 @@ fn optimizer_setup(
                     "t\tSwitch Normal / AKL.GG scoring weights.".into(),
                     "AKL.GG\tBigrams, skipgrams, and trigrams use their own retained populations; speed columns are numeric costs.".into(),
                     "s\tSave weights and search settings to configuration.".into(),
+                    "S\tSave the layout over its own file (asks first; keeps a backup).".into(),
                     ".\tSwitch between two and four decimal places.".into(),
                     "r\tReload configuration.".into(),
                     "d\tRestore default weights and search settings.".into(),
@@ -5310,7 +5334,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     &arr,
                     &locks,
                     "Optimizer result",
-                    "r setup | Space refine | b compare | [ ] | a stats | s save | S batch | q setup",
+                    "r setup | Space refine | b compare | [ ] | a stats | s save | S save over | A all | q setup",
                     &text
                 );
                 term.present(&frame, scroll)?;
@@ -5343,7 +5367,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                             "q or r: return to setup with this candidate; Space: refine again."
                                 .into(),
                             "[ / ]: previous / next candidate; b: compare candidates.".into(),
-                            "s: save a copy; S: save all candidates.".into(),
+                            "s: save a copy; S: save over the layout's file (with a backup); A: save all candidates.".into(),
                             "m\tSwitch Simple / Detailed stats; scoring stays unchanged.".into(),
                             "a: score contributions; i: corpus notes; v: validation; .: precision."
                                 .into(),
@@ -5374,6 +5398,16 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                         }
                     }
                     Event::Char('S') => {
+                        let layout = board_as_action_layout(&problem.model.board, &problem.model.symbols(&arr))?;
+                        let target = layout.path.display().to_string();
+                        if confirm_box(term, "Save over the layout", &target, "Save")? {
+                            status = match crate::layout_export::save_in_place(&layout) {
+                                Ok(p) => saved_in_place_message(&layout.path, &p),
+                                Err(e) => e,
+                            };
+                        }
+                    }
+                    Event::Char('A') => {
                         status = match save_batch(&problem, &result, &start, &locks) {
                             Ok(p) => format!(
                                 "saved {} candidates (.jsonc); {}",

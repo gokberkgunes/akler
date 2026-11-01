@@ -124,9 +124,12 @@ thumbs are excluded.
 - **Optimizer:** every layout gets an outer pinky column on each side and two
   thumb keys per hand; the added keys start empty and locked. Click keys to
   lock them, `H` locks the home row, `U`/`L` unlock/lock everything. Space
-  starts a search, `q` stops it and keeps the best result. Results are saved
-  under `layouts/optimized/` with a `.run.txt` record; added keys still empty
-  are left out.
+  starts a search, `q` stops it and keeps the best result. `s` saves the
+  result under `layouts/optimized/` with a `.run.txt` record, `S` saves it
+  over the layout's own file in its format (after asking; the old file is
+  kept as a backup; a layout JSONC can't hold goes to the DAT of the same
+  name), and `A` saves every candidate; added keys still empty are left out.
+  `S` in setup saves the current layout the same way.
 
 `f`, `F` and `z` toggle alternate fingers, combos and spacegrams.
 
