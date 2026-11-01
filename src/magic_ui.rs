@@ -85,6 +85,10 @@ pub(crate) struct MagicTab {
     seed: Option<MagicSeed>,
     /// The selected row: a setting, then the candidates.
     selected: usize,
+    /// The page's scroll and the first scrolled ranker column, kept while
+    /// other tabs are open.
+    scroll: usize,
+    first_column: usize,
 }
 
 struct MagicSeed {
@@ -207,6 +211,8 @@ impl MagicTab {
             archive: None,
             seed: None,
             selected: 0,
+            scroll: 0,
+            first_column: 0,
         }
     }
 
@@ -247,11 +253,9 @@ pub(crate) fn optimizer_magic_tab(
 ) -> AppResult<MagicTabExit> {
     use crate::magic_design::{IterativeSettings, PlacementMode, Settings};
     let mut status = String::new();
-    let mut scroll = 0;
     let (rank_columns, rank_mana2) = configured_rank_columns(
         &load_app_config().unwrap_or_default(),
     );
-    let mut first_column = 0;
     loop {
         let candidates = state
             .archive
@@ -335,7 +339,8 @@ pub(crate) fn optimizer_magic_tab(
             let pinned = usize::from(rank_columns.first() == Some(&RANK_SCORE));
             let rest = &rank_columns[pinned..];
             let room = fit - pinned;
-            first_column = first_column.min(rest.len().saturating_sub(room));
+            state.first_column = state.first_column.min(rest.len().saturating_sub(room));
+            let first_column = state.first_column;
             let metrics: Vec<usize> = rank_columns[..pinned]
                 .iter()
                 .chain(rest.iter().skip(first_column).take(room))
@@ -458,14 +463,14 @@ pub(crate) fn optimizer_magic_tab(
         c.text(0, y, &short(&status, c.w), FG);
         c.h = y + 1;
         c.cells.truncate(c.w * c.h);
-        scroll = scroll.min(c.h.saturating_sub(term.size.1));
-        term.present(&c, scroll)?;
+        state.scroll = state.scroll.min(c.h.saturating_sub(term.size.1));
+        term.present(&c, state.scroll)?;
         let mut event = term.event()?;
-        if scroll_event(&event, &mut scroll, c.h, term.size.1) {
+        if scroll_event(&event, &mut state.scroll, c.h, term.size.1) {
             continue;
         }
         if let Event::Mouse { x, y, button: 0, release: false, motion: false, .. } = event {
-            match term.hit(&c, x, y, scroll) {
+            match term.hit(&c, x, y, state.scroll) {
                 Some(Action::Key(slot)) if chosen.is_none() && slot < locks.len() => {
                     locks[slot] = !locks[slot];
                     continue;
@@ -487,8 +492,8 @@ pub(crate) fn optimizer_magic_tab(
             Event::Escape | Event::Char('q') => return Ok(MagicTabExit::Key('1')),
             Event::Quit => return Ok(MagicTabExit::Key('q')),
             Event::Char('j') | Event::Down => state.selected += 1,
-            Event::Left => first_column = first_column.saturating_sub(1),
-            Event::Right => first_column += 1,
+            Event::Left => state.first_column = state.first_column.saturating_sub(1),
+            Event::Right => state.first_column += 1,
             Event::Char('k') | Event::Up => state.selected = state.selected.saturating_sub(1),
             Event::Char('H') => {
                 *locks = action_ui::optimizer_locks(layout, action_ui::action_home_locks(layout));
