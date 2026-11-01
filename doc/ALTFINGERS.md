@@ -88,7 +88,8 @@ thumb-rule layouts like esp-r search about 70% faster again. Limits are
 checked on the full contexts' screened sums, which replay context by context
 only when the last bits could decide a cap, and contexts no rule reads move
 there by relabelling their tails: capped lyrebird runs are about a third
-faster for it.
+faster for it. Correction windows, which change only where a rule reads
+them, are left out of a move's contexts otherwise (another 8%).
 
 Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
 one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that

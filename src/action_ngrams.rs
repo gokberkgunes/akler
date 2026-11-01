@@ -4925,6 +4925,9 @@ pub(crate) struct Incremental {
     finger_tails: Option<Vec<Tail>>,
     combo_usage: Vec<Tail>,
     postings: [Vec<u32>; 256],
+    /// `postings` of the alternate-finger correction windows, which change
+    /// only where some rule reads them (`affected`).
+    correction_postings: [Vec<u32>; 256],
     /// Left-open contexts by first byte, kept only with combos: a chord that
     /// began before such a context may cover its start.
     open_postings: [Vec<u32>; 256],
@@ -5391,6 +5394,7 @@ impl Incremental {
             finger_tails: use_alt_fingers.then(|| Vec::with_capacity(context_count)),
             combo_usage: Vec::with_capacity(context_count),
             postings: std::array::from_fn(|_| Vec::new()),
+            correction_postings: std::array::from_fn(|_| Vec::new()),
             open_postings: std::array::from_fn(|_| Vec::new()),
             direct_postings: std::array::from_fn(|_| Vec::new()),
             ambiguous_postings: std::array::from_fn(|_| Vec::new()),
@@ -5576,9 +5580,14 @@ impl Incremental {
                     cache.open_postings[first as usize].push(id as u32);
                 }
             }
+            let postings = if window.alt_bigram_correction() {
+                &mut cache.correction_postings
+            } else {
+                &mut cache.postings
+            };
             for (j, &byte) in window.text().iter().enumerate() {
                 if !window.text()[..j].contains(&byte) {
-                    cache.postings[byte as usize].push(id as u32);
+                    postings[byte as usize].push(id as u32);
                 }
             }
             // What each context's mapping reads: its tail, or its text up to
@@ -5648,6 +5657,7 @@ impl Incremental {
         extra: [u64; 4],
         grouped: bool,
         readers: Option<&RuleLetters>,
+        ruled: Option<&RuleLetters>,
         ids: &mut Vec<u32>,
         marks: &mut Vec<u64>,
     ) -> bool {
@@ -5667,6 +5677,39 @@ impl Incremental {
                     self.tails.len(),
                     &self.binding_postings[self.keys.binding(slot)],
                 );
+            }
+            read_marks(marks, ids);
+        }
+        if !direct && self.correction_postings.iter().any(|posting| !posting.is_empty()) {
+            // A correction changes nothing unless some rule reads it before
+            // or after the move.
+            let moved = slots.iter().fold(0u64, |mask, &slot| mask | 1 << slot);
+            mark_contexts(marks, self.tails.len(), ids);
+            let cached = ruled.is_some() && moved & self.rule_slots == 0 && !self.rule_readers.is_empty();
+            // The characters a moved key can type, before or after the move.
+            let typed = match ruled {
+                Some(ruled) => std::array::from_fn(|word| {
+                    (0..64).fold(0u64, |bits, bit| {
+                        bits | u64::from(ruled.typing[word * 64 + bit] & moved != 0) << bit
+                    })
+                }),
+                None => self.program.affected_bytes(&self.keys, slots).unwrap_or([u64::MAX; 4]),
+            };
+            for byte in 0..=u8::MAX {
+                if typed[usize::from(byte) / 64] & (1 << (byte % 64)) == 0 {
+                    continue;
+                }
+                for &id in &self.correction_postings[usize::from(byte)] {
+                    let (word, bit) = (id as usize / 64, 1u64 << (id % 64));
+                    let read = match ruled {
+                        None => true,
+                        Some(_) if cached => self.rule_readers[word] & bit != 0,
+                        Some(ruled) => ruled.reads(self.corpus.windows[id as usize].text()),
+                    };
+                    if read {
+                        marks[word] |= bit;
+                    }
+                }
             }
             read_marks(marks, ids);
         }
@@ -5771,6 +5814,7 @@ impl Incremental {
         movement: Move,
         grouped: bool,
         readers: Option<&RuleLetters>,
+        ruled: Option<&RuleLetters>,
         ids: &mut Vec<u32>,
         marks: &mut Vec<u64>,
     ) -> bool {
@@ -5788,7 +5832,7 @@ impl Incremental {
             .combos
             .as_ref()
             .map_or([0; 4], |combos| combos.affected_by(moved).1);
-        if self.affected(slots, [0; 4], grouped, readers, ids, marks) {
+        if self.affected(slots, [0; 4], grouped, readers, ruled, ids, marks) {
             return true;
         }
         let chords = moved
@@ -5816,7 +5860,8 @@ impl Incremental {
             mark_contexts(marks, self.tails.len(), ids);
             if moved & self.rule_slots == 0 && !self.rule_readers.is_empty() {
                 for byte in readers.bytes_typed_by(moved) {
-                    for &id in &self.postings[usize::from(byte)] {
+                    let byte = usize::from(byte);
+                    for &id in self.postings[byte].iter().chain(&self.correction_postings[byte]) {
                         let (word, bit) = (id as usize / 64, 1 << (id % 64));
                         if self.rule_readers[word] & bit != 0 {
                             marks[word] |= bit;
@@ -5825,7 +5870,8 @@ impl Incremental {
                 }
             } else {
                 for byte in readers.bytes_typed_by(moved) {
-                    for &id in &self.postings[usize::from(byte)] {
+                    let byte = usize::from(byte);
+                    for &id in self.postings[byte].iter().chain(&self.correction_postings[byte]) {
                         if readers.reads(self.corpus.windows[id as usize].text()) {
                             marks[id as usize / 64] |= 1 << (id % 64);
                         }
@@ -6322,6 +6368,7 @@ impl Incremental {
                 movement,
                 grouped,
                 readers,
+                ruled.as_ref(),
                 &mut proposal.affected,
                 &mut proposal.context_marks,
             );
