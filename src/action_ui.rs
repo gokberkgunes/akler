@@ -157,7 +157,6 @@ fn evaluation_adapter(
         path: l.path.clone(),
         symbols: symbols.clone(),
         keys: physical_keys(l),
-        row_stagger: l.row_stagger,
     };
     let model = Model::with_rolls(board, w.rolls());
     timing.mark("Metric geometry and adapter board");
@@ -2282,7 +2281,6 @@ fn action_optimizer_setup(
             if !settings_view && current_cache.is_none() {
                 if layout.slots == original.slots
                     && layout.actions == original.actions
-                    && layout.row_stagger == original.row_stagger
                     && layout.left_outer == original.left_outer
                     && layout.right_outer == original.right_outer
                     && layout.action_mode == original.action_mode
@@ -4063,7 +4061,7 @@ mod ngram_integration_tests {
     }
     #[test]
     fn staggered_action_keyboard_preserves_tints_highlights_and_hitboxes() {
-        let source = format!("{}row-stagger: standard\n", ak::test_layouts::COMPACT);
+        let source = format!("{}row-offsets: -0.25 0 0.5\n", ak::test_layouts::COMPACT);
         let original = ak::Layout::parse(&source, Path::new("tints.dat")).unwrap();
         let mut layout = original.clone();
         layout.swap(0, 1);
@@ -4865,7 +4863,7 @@ mod ngram_integration_tests {
             .any(|(name, _, _)| name == "@ p"));
         // There is no derived-state cache: changed rules/geometry are evaluated afresh.
         let mut changed = l.clone();
-        changed.actions.insert("@".into(), ak::Action::Inactive);
+        changed.actions.insert("@".into(), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::None });
         let changed_value = evaluate(&changed, &c, &w, &stop).unwrap();
         assert_eq!(changed_value.counts.action_presses, 0.0);
         let m = history_key(&l, "@");
@@ -5005,7 +5003,7 @@ mod ngram_integration_tests {
         let a = history_key(&l, "a");
         let n = history_key(&l, "n");
         l.actions
-            .insert("leaf".into(), ak::Action::Text(vec![b'!']));
+            .insert("leaf".into(), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::Text(vec![b'!']) });
         l.actions.insert(
             "@".into(),
             ak::Action::Rules {
@@ -5112,7 +5110,7 @@ mod ngram_integration_tests {
         let root = history_key(&layout, "@");
         layout
             .actions
-            .insert("@".into(), ak::Action::Text(vec![b'!']));
+            .insert("@".into(), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::Text(vec![b'!']) });
         let corpus = history_corpus(b"z!j a!j a ! a!d d!a a!j z!j");
         let stop = AtomicBool::new(false);
         let baseline = evaluate(&layout, &corpus, &Weights::default(), &stop).unwrap();
@@ -5195,7 +5193,7 @@ mod ngram_integration_tests {
         let root = history_key(&layout, "@");
         layout
             .actions
-            .insert("@".into(), ak::Action::Text(vec![b'!']));
+            .insert("@".into(), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::Text(vec![b'!']) });
         let stop = AtomicBool::new(false);
         let weights = Weights::default();
 
@@ -5268,7 +5266,7 @@ mod ngram_integration_tests {
         let mut action = l.clone();
         action
             .actions
-            .insert("@".into(), ak::Action::Text(vec![b'!']));
+            .insert("@".into(), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::Text(vec![b'!']) });
         let mut literal = action.clone();
         literal.slots[m].binding = ak::Binding::Text(vec![b'!']);
         let stop = AtomicBool::new(false);

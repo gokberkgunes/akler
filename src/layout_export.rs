@@ -316,7 +316,6 @@ fn wildcard_marker(layout: &Layout) -> Result<char> {
     }
     for action in layout.actions.values() {
         match action {
-            Action::Text(text) => mark(text),
             Action::Rules {
                 rules, fallback, ..
             } => {
@@ -1140,7 +1139,6 @@ mod tests {
             "action * = magic\nmap * \"q\" = none\n",
             "action * = magic\nmap * \"q\" = \"U\"\n",
             "action * = magic\nmap * \"Q\" = \"u\"\n",
-            "action * = magic\nmap * \"q\" = @leaf\naction leaf = text \"u\"\n",
             "action * = repeat-action\n",
             "action * = press-magic\nmap * \"q\" = \"u\"\n",
             "action * = magic\nmap * \"q\" = \"ui\"\n",
@@ -1164,7 +1162,7 @@ mod tests {
 
     #[test]
     fn unsupported_action_graph_fails_instead_of_exporting_lossily() {
-        let source = format!("{}action ◇ = magic\nmap ◇ \"q\" = \"u\"\nmap ◇ \"x\" = none\naction a = magic\nmap a \"i\" = \"o\"\nfallback a = \"a\"\naction press = press-magic\nmap press \"q\" = @macro\nfallback press = none\naction macro = text \"the\"\naction again-key = repeat-action\n", GRID.replace("q w e r t", "@◇ @a @press @again-key t").replace("a s d f g", "q s d f g"));
+        let source = format!("{}action ◇ = magic\nmap ◇ \"q\" = \"u\"\nmap ◇ \"x\" = none\naction a = magic\nmap a \"i\" = \"o\"\nfallback a = \"a\"\naction press = press-magic\nmap press \"q\" = \"z\"\nfallback press = none\naction again-key = repeat-action\n", GRID.replace("q w e r t", "@◇ @a @press @again-key t").replace("a s d f g", "q s d f g"));
         let mut original = Layout::parse(&source, Path::new("source")).unwrap();
         original.swap(0, 10);
         original.swap(1, 20);

@@ -2813,8 +2813,7 @@ fn emission_bytes(emission: &ak::Emission, bytes: &mut [u64; 4]) -> Option<()> {
 /// windows holding one of them. None when it depends on history or calls.
 fn action_bytes(action: Option<&ak::Action>, bytes: &mut [u64; 4]) -> Option<()> {
     match action {
-        None | Some(ak::Action::Inactive) => {}
-        Some(ak::Action::Text(text)) => text.iter().for_each(|&byte| add_byte(bytes, byte)),
+        None => {}
         Some(ak::Action::Rules {
             basis: ak::Basis::Text,
             rules,
@@ -3054,7 +3053,6 @@ impl Mappings {
             || layout.slots.len() != base.slots.len()
             || (layout.left_outer, layout.right_outer, layout.action_mode)
                 != (base.left_outer, base.right_outer, base.action_mode)
-            || layout.row_stagger != base.row_stagger
             || flags.0.compile(layout) != flags.0.compile(base)
         {
             return None;
@@ -10425,10 +10423,7 @@ mod detailed_mapping_tests {
         let corpus = contexts(3);
         let stop = AtomicBool::new(false);
         let progress = AtomicU64::new(0);
-        for suffix in [
-            "outer-left: ~ @m ~\naction m = text \"ab\"\n",
-            "outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n",
-        ] {
+        for suffix in ["outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n"] {
             let layout =
                 ak::Layout::parse(&format!("{BASE}{suffix}"), Path::new("inline.dat")).unwrap();
             assert_eq!(
@@ -10474,41 +10469,6 @@ mod detailed_mapping_tests {
         assert_counts_bits(&actual, &expected);
     }
 
-    #[test]
-    fn detailed_terminal_depth_limits_match_reference() {
-        let corpus = contexts(5);
-        let stop = AtomicBool::new(false);
-        let progress = AtomicU64::new(0);
-        for depth in [30, 31, 32, 33] {
-            let mut source = format!("{BASE}outer-left: ~ @m0 ~\n");
-            for id in 0..depth {
-                if id + 1 == depth {
-                    source.push_str(&format!("action m{id} = repeat-output\n"));
-                } else {
-                    // Preserve the bound root's delegation; text-magic helper
-                    // actions remain unbound and keep their own fallbacks.
-                    let basis = if id == 0 { "output-magic" } else { "magic" };
-                    source.push_str(&format!(
-                        "action m{id} = {basis}\nfallback m{id} = @m{}\n",
-                        id + 1
-                    ));
-                }
-            }
-            let layout = ak::Layout::parse(&source, Path::new("inline.dat")).unwrap();
-            let effort = |_: Option<usize>, _: Option<usize>, key: usize| {
-                if matches!(layout.slots[key].binding, ak::Binding::Named(_)) {
-                    -1.0
-                } else {
-                    0.0
-                }
-            };
-            let actual = corpus.evaluate(&layout, &stop, &progress, &effort).unwrap();
-            let expected = corpus
-                .evaluate_reference(&layout, &stop, &progress, &effort)
-                .unwrap();
-            assert_counts_bits(&actual, &expected);
-        }
-    }
 }
 
 #[cfg(test)]

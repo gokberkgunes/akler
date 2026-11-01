@@ -52,8 +52,7 @@ fn eligible(
         && !(combos && !layout.combos.is_empty())
         && layout.slots.iter().all(|slot| match &slot.binding {
             Binding::Named(name) => match layout.actions.get(name) {
-                Some(Action::Inactive | Action::RepeatOutput) => true,
-                Some(Action::Text(text)) => text.len() == 1,
+                Some(Action::RepeatOutput) => true,
                 Some(action) => ordinary_rules(action, layout),
                 None => false,
             },
@@ -133,7 +132,6 @@ impl Cache {
         if self.policy != (alt_fingers, combos, finite)
             || !eligible(layout, alt_fingers, combos, finite)
             || layout.slots != base.slots
-            || layout.row_stagger != base.row_stagger
             || layout.left_outer != base.left_outer
             || layout.right_outer != base.right_outer
             || layout.action_mode != base.action_mode

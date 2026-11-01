@@ -74,9 +74,6 @@ fn basis_name(basis: Basis) -> &'static str {
         Basis::Text => "text",
         Basis::Press => "press",
         Basis::SkipPress => "skip press",
-        Basis::Output => "output",
-        Basis::SkipOutput => "skip output",
-        Basis::Remembered => "remembered output",
     }
 }
 
@@ -108,16 +105,11 @@ fn bound_slots(layout: &Layout, name: &str) -> String {
 fn action_lines(layout: &Layout, name: &str, action: &KeyAction, out: &mut Vec<String>) {
     let bound = bound_slots(layout, name);
     match action {
-        KeyAction::Text(text) => out.push(format!(
-            "{name}{bound}: text {}",
-            crate::action_keys::quote(text)
-        )),
         KeyAction::RepeatOutput => out.push(format!("{name}{bound}: repeat output")),
         KeyAction::RepeatPreviousOutput => {
             out.push(format!("{name}{bound}: repeat previous output"))
         }
         KeyAction::RepeatAction => out.push(format!("{name}{bound}: repeat action")),
-        KeyAction::Inactive => out.push(format!("{name}{bound}: inactive")),
         KeyAction::Rules {
             basis,
             rules,

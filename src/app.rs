@@ -1086,7 +1086,7 @@ mod layout_dispatch_tests {
         let OpenLayout::Plain(original) = parse_open_layout(ROWS, path).unwrap() else {
             panic!("expected ordinary layout");
         };
-        let staggered = format!("{ROWS}row-stagger: anglemod\n");
+        let staggered = format!("{ROWS}row-offsets: -0.25 0 0.5\n");
         let OpenLayout::Plain(changed) = parse_open_layout(&staggered, path).unwrap() else {
             panic!("expected ordinary staggered layout");
         };

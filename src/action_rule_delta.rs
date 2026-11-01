@@ -372,7 +372,6 @@ impl Delta {
 
     fn changed_contexts(&self, layout: &ak::Layout) -> Option<Vec<u8>> {
         if layout.slots != self.layout.slots
-            || layout.row_stagger != self.layout.row_stagger
             || layout.left_outer != self.layout.left_outer
             || layout.right_outer != self.layout.right_outer
             || layout.action_mode != self.layout.action_mode
@@ -464,8 +463,7 @@ fn ordinary_parts<'a>(
 fn safe_actions(layout: &ak::Layout) -> bool {
     layout.slots.iter().all(|slot| match &slot.binding {
         Binding::Named(name) => match layout.actions.get(name) {
-            Some(Action::Inactive | Action::RepeatOutput) => true,
-            Some(Action::Text(text)) => text.len() == 1,
+            Some(Action::RepeatOutput) => true,
             Some(action) => ordinary_parts(action, layout).is_some(),
             None => false,
         },
@@ -583,7 +581,7 @@ mod tests {
         let competitor = layout.slots.iter().position(|s| s.label == "p").unwrap();
         layout
             .actions
-            .insert("other".into(), Action::Text(vec![b'a']));
+            .insert("other".into(), Action::Rules { basis: crate::action_keys::Basis::Text, rules: Default::default(), fallback: crate::action_keys::Emission::Text(vec![b'a']) });
         layout.slots[competitor].binding = Binding::Named("other".into());
         let root = layout.slots.iter().position(|s| s.label == "@").unwrap();
         let Binding::Named(name) = layout.slots[root].binding.clone() else {

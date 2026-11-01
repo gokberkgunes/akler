@@ -780,7 +780,7 @@ fn clean_sraf_direction_and_legacy_rewards_are_independent() {
 fn action_sraf_uses_current_root_slot_and_directional_objective() {
     let rows = "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
     let mut layout = action_keys::Layout::parse(
-        &format!("{rows}action m = text \"q\"\n"),
+        &format!("{rows}action m = magic\nfallback m = \"q\"\n"),
         Path::new("action-sraf.dat"),
     )
     .unwrap();
@@ -2836,7 +2836,7 @@ fn skipgram_fingers_see_the_keys_after_their_last_key() {
 #[test]
 fn alternate_bigram_lookahead_works_with_unrelated_action_keys() {
     let layout = action_keys::Layout::parse(
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = text \"h\"\n",
+        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space @other\naction other = magic\nfallback other = \"h\"\n",
         Path::new("alternate-action-bigrams.dat"),
     ).unwrap();
     let input = b"afgvx";
@@ -3381,53 +3381,6 @@ fn hidden_rows_leave_the_color_range() {
 }
 
 #[test]
-fn stagger_geometry_round_trip_and_zero_offset_control() {
-    let plain = board_from_text(PACKET, Path::new("plain.dat")).unwrap();
-    let zero = board_from_text(
-        &format!("{PACKET}row-stagger: off\n"),
-        Path::new("zero.dat"),
-    )
-    .unwrap();
-    assert_eq!(plain.keys, zero.keys);
-    assert_eq!(
-        board_text(&plain, &plain.symbols),
-        board_text(&zero, &zero.symbols)
-    );
-
-    let stagger = board_from_text(
-        &format!("{PACKET}row-stagger: standard\n"),
-        Path::new("stagger.dat"),
-    )
-    .unwrap();
-    let round = board_from_text(
-        &board_text(&stagger, &stagger.symbols),
-        Path::new("round.dat"),
-    )
-    .unwrap();
-    assert_eq!(stagger.keys, round.keys);
-    let action = crate::action_keys::Layout::parse(
-        &board_text(&stagger, &stagger.symbols),
-        Path::new("action.dat"),
-    )
-    .unwrap();
-    for (key, slot) in stagger.keys.iter().zip(&action.slots) {
-        assert_eq!(key.row_offset, slot.row_offset);
-    }
-    let geometry = Geometry::new(stagger.keys.clone());
-    assert_eq!(geometry.home[0][0].to_bits(), 0.25f64.hypot(1.0).to_bits());
-    assert_eq!(
-        geometry.sf_distance[10].to_bits(),
-        1.0f64.hypot(0.25).to_bits()
-    );
-    let mut a = main_key(0, 0);
-    let b = main_key(1, 1);
-    assert!(!is_lateral_stretch(a, b));
-    a.row_offset = -1000;
-    assert!(is_lateral_stretch(a, b));
-    assert_eq!(pair_flags(a, b, false).bi & bit(SFB), 0);
-}
-
-#[test]
 fn finger_tints_are_grayscale_and_follow_physical_fingers() {
     assert_eq!(finger_tint(0), finger_tint(2));
     assert_ne!(finger_tint(0), finger_tint(1));
@@ -3435,90 +3388,6 @@ fn finger_tints_are_grayscale_and_follow_physical_fingers() {
     assert_eq!(ansi_color(finger_tint(1)), "\x1b[38;2;230;230;230m");
     assert_eq!(stagger_cells(-250, -250, 8), 0);
     assert_eq!(stagger_cells(500, -250, 8), 6);
-}
-
-#[test]
-fn named_stagger_modes_use_physical_slots_in_both_parsers() {
-    let qwerty =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-    let plain = board_from_text(qwerty, Path::new("inline")).unwrap();
-    let cases = [
-        ("standard", [0, 1, 2, 3, 3, 0, 1, 2, 3, 3, 0, 1, 2, 3, 3]),
-        ("standart", [0, 1, 2, 3, 3, 0, 1, 2, 3, 3, 0, 1, 2, 3, 3]),
-        ("anglemod", [0, 1, 2, 3, 3, 0, 1, 2, 3, 3, 1, 2, 3, 3, 3]),
-        ("nokwts", [0, 1, 2, 2, 3, 0, 1, 2, 3, 3, 0, 1, 3, 3, 3]),
-        ("meteorite", [0, 1, 2, 3, 3, 0, 1, 2, 3, 3, 1, 2, 2, 3, 3]),
-    ];
-    for (name, expected) in cases {
-        let source = format!("{qwerty}row-stagger: {name}\n");
-        let board = board_from_text(&source, Path::new("inline")).unwrap();
-        let mut action = crate::action_keys::Layout::parse(&source, Path::new("inline")).unwrap();
-        for (i, key) in board.keys.iter().enumerate() {
-            if key.main && key.hand == 0 {
-                assert_eq!(
-                    key.finger,
-                    expected[key.row as usize * 5 + key.col as usize],
-                    "{name}, slot {i}"
-                );
-                assert_eq!(key.rank, key.finger as i8);
-            } else {
-                assert_eq!(key.finger, plain.keys[i].finger);
-            }
-            assert_eq!(key.finger, action.slots[i].finger);
-            assert_eq!(key.rank, action.slots[i].rank);
-            assert_eq!(key.row_offset, action.slots[i].row_offset);
-        }
-        let saved =
-            board_from_text(&board_text(&board, &board.symbols), Path::new("inline")).unwrap();
-        assert_eq!(board.row_stagger, saved.row_stagger);
-        assert_eq!(board.keys, saved.keys);
-        let before: Vec<_> = action
-            .slots
-            .iter()
-            .map(|s| (s.finger, s.rank, s.row_offset))
-            .collect();
-        action.swap(0, 22);
-        assert_eq!(
-            before,
-            action
-                .slots
-                .iter()
-                .map(|s| (s.finger, s.rank, s.row_offset))
-                .collect::<Vec<_>>()
-        );
-        let saved = crate::action_keys::Layout::parse(&action.text(), Path::new("inline")).unwrap();
-        assert_eq!(action.row_stagger, saved.row_stagger);
-        assert_eq!(action.slots, saved.slots);
-
-        // QWERTY S/Z is a same-finger pair only with the angle/meteorite maps.
-        let sf = pair_flags(board.keys[11], board.keys[20], false);
-        assert_eq!(
-            sf.bi & bit(SFB) != 0,
-            matches!(name, "anglemod" | "meteorite")
-        );
-        assert_eq!(
-            sf.sk & bit(SFS) != 0,
-            matches!(name, "anglemod" | "meteorite")
-        );
-    }
-    for directive in [
-        "row-stagger:",
-        "row-stagger: standard",
-        "row-stagger: standart",
-    ] {
-        assert_eq!(
-            crate::action_keys::parse_row_stagger(directive).unwrap(),
-            Some(crate::action_keys::RowStagger::Standard)
-        );
-    }
-    for value in ["-0.25 0 0.5", "unknown", "nokwts,"] {
-        assert!(crate::action_keys::parse_row_stagger(&format!("row-stagger: {value}")).is_err());
-    }
-    assert!(board_from_text(
-        &format!("{qwerty}row-stagger: standard\nrow-stagger: anglemod\n"),
-        Path::new("inline")
-    )
-    .is_err());
 }
 
 #[test]

@@ -1045,7 +1045,6 @@ struct Board {
     path: PathBuf,
     symbols: Vec<u8>,
     keys: Vec<Key>,
-    row_stagger: crate::action_keys::RowStagger,
 }
 
 fn parse_token(token: &str, empty: &mut u8) -> AppResult<u8> {
@@ -1190,7 +1189,6 @@ fn board_from_layout(layout: crate::action_keys::Layout) -> AppResult<Board> {
         path: layout.path,
         symbols,
         keys,
-        row_stagger: layout.row_stagger,
     })
 }
 
@@ -1246,7 +1244,6 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
         out.push_str(&line);
         out.push('\n');
     }
-    out.push_str(&board.row_stagger.text());
     out.push_str(&crate::action_keys::geometry_text(
         board.keys.iter().filter(|key| key.main).map(|key| {
             (
@@ -1257,7 +1254,6 @@ fn board_text(board: &Board, symbols: &[u8]) -> String {
                 key.finger,
             )
         }),
-        board.row_stagger,
     ));
     let thumb_columns: Vec<_> = board
         .keys
@@ -1488,7 +1484,6 @@ fn board_as_action_layout(
         actions: crate::action_keys::builtin_actions(),
         left_outer,
         right_outer,
-        row_stagger: board.row_stagger,
         action_mode: false,
         magic_rule_slots: BTreeMap::new(),
         magic_refit_pending: BTreeSet::new(),
@@ -2747,10 +2742,7 @@ mod numeric_geometry_tests {
     fn old_coordinates_keep_their_exact_distances() {
         for extra in [
             "",
-            "row-stagger: standard\n",
-            "row-stagger: anglemod\n",
-            "row-stagger: nokwts\n",
-            "row-stagger: meteorite\n",
+            "row-offsets: -0.25 0 0.5\n",
         ] {
             let board = parse(extra);
             let geometry = Geometry::new(board.keys.clone());

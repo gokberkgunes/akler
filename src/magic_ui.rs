@@ -901,10 +901,7 @@ fn magic_recovered_rules(
     };
     if let Some(action) = layout.actions.get(name) {
         if let action_keys::Action::Rules { basis, rules, .. } = action {
-            let skip = matches!(
-                basis,
-                action_keys::Basis::SkipOutput | action_keys::Basis::SkipPress
-            );
+            let skip = *basis == action_keys::Basis::SkipPress;
             for (context, emission) in rules {
                 if let action_keys::Emission::Text(output) = emission {
                     if context.len() == 1 && output.len() == 1 {

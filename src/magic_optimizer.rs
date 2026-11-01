@@ -405,7 +405,6 @@ fn same_layout(a: &ak::Layout, b: &ak::Layout) -> bool {
         && a.actions == b.actions
         && a.left_outer == b.left_outer
         && a.right_outer == b.right_outer
-        && a.row_stagger == b.row_stagger
         && a.action_mode == b.action_mode
         && a.magic_rule_slots == b.magic_rule_slots
         && a.magic_refit_pending == b.magic_refit_pending

@@ -68,7 +68,7 @@ fn plain_pair_slots(
                 }
             }
             ak::Binding::Named(name) => match layout.actions.get(name)? {
-                ak::Action::Inactive | ak::Action::RepeatOutput => {}
+                ak::Action::RepeatOutput => {}
                 ak::Action::Rules {
                     basis: ak::Basis::Text,
                     rules,
@@ -108,7 +108,6 @@ pub(crate) struct Summary {
 /// action rules are deliberately excluded: every evaluator rebuilds its mapper.
 pub(crate) struct PhysicalTables {
     slots: Vec<ak::Slot>,
-    row_stagger: ak::RowStagger,
     pair_corpora: std::sync::Mutex<BTreeMap<[u8; 2], Arc<ng::NgramCorpus>>>,
     /// Pair costs keyed by the two pressed slots and layout policy, valid only
     /// when no action can type either character (see `plain_pair_slots`).
@@ -140,7 +139,6 @@ impl PhysicalTables {
             mode: mode.into(),
             physical_weights: physical.then(|| weights.2.clone()),
             slots: layout.slots.clone(),
-            row_stagger: layout.row_stagger,
             pair_corpora: std::sync::Mutex::new(BTreeMap::new()),
             slot_pair_costs: std::sync::Mutex::new(BTreeMap::new()),
             mapped_pair_costs: std::sync::Mutex::new(HashMap::new()),
@@ -156,8 +154,7 @@ impl PhysicalTables {
     }
 
     pub(crate) fn matches(&self, layout: &ak::Layout, weights: &Weights) -> bool {
-        layout.row_stagger == self.row_stagger
-            && weights.0.map(f64::to_bits) == self.weight_bits
+        weights.0.map(f64::to_bits) == self.weight_bits
             && self
                 .physical_weights
                 .as_ref()
@@ -1632,7 +1629,7 @@ mod tests {
             let mut variant = layout.clone();
             variant
                 .actions
-                .insert(format!("memo-unused-{index}"), ak::Action::Inactive);
+                .insert(format!("memo-unused-{index}"), ak::Action::Rules { basis: ak::Basis::Text, rules: Default::default(), fallback: ak::Emission::None });
             prepared.evaluate(&variant, &stop, &progress).unwrap();
         }
         assert_eq!(prepared.summaries.lock().unwrap().len(), 4);
@@ -1738,7 +1735,7 @@ mod tests {
         let ak::Action::Rules { basis, .. } = direct_trial.actions.get_mut("m").unwrap() else {
             unreachable!()
         };
-        *basis = ak::Basis::Output;
+        *basis = ak::Basis::SkipPress;
         let unsupported = direct_prepared
             .evaluate(&direct_trial, &stop, &progress)
             .unwrap();

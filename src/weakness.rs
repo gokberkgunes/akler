@@ -58,7 +58,6 @@ fn weakness_bound_action(
             flags.2 = true;
             format!("{:?}", layout.actions.get(name))
         }
-        Some(action_keys::Action::Text(text)) if text.len() == 1 => format!("{}", text[0]),
         other => format!("{other:?}"),
     };
     visiting.remove(name);

@@ -636,13 +636,10 @@ fn slot_letter(layout: &action_keys::Layout, slot: &action_keys::Slot) -> Option
     let text = match &slot.binding {
         Binding::Text(text) => text,
         Binding::Named(name) => match layout.actions.get(name) {
-            Some(
-                Action::Text(text)
-                | Action::Rules {
-                    fallback: Emission::Text(text),
-                    ..
-                },
-            ) => text,
+            Some(Action::Rules {
+                fallback: Emission::Text(text),
+                ..
+            }) => text,
             _ => {
                 let mut chars = slot.label.chars();
                 match (chars.next(), chars.next()) {

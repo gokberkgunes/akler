@@ -250,14 +250,14 @@ fn fallback_emission(value: Option<&Json>, default: Emission, field: &str) -> ak
     };
     match fallback {
         "none" => Ok(Emission::None),
-        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" | "inactive" => {
+        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" => {
             Ok(Emission::Call(fallback.into()))
         }
         text if text.len() == 1 && text.as_bytes()[0].is_ascii_graphic() => {
             Ok(Emission::Text(text.as_bytes().to_vec()))
         }
         _ => Err(format!(
-            "{field}: expected none, a repeat action, inactive, or one printable ASCII character"
+            "{field}: expected none, a repeat action, or one printable ASCII character"
         )),
     }
 }
@@ -914,7 +914,6 @@ fn import_layout_with_actions(
             left_outer,
             right_outer,
             geometry,
-            stagger: None,
             thumbs: thumb_tokens,
             thumb_columns,
             key_labels: None,

@@ -299,7 +299,6 @@ impl RankRow {
                 match &slot.binding {
                     action_keys::Binding::Text(text) => alpha(text),
                     action_keys::Binding::Named(name) => match layout.actions.get(name) {
-                        Some(action_keys::Action::Text(text)) => alpha(text),
                         Some(action_keys::Action::Rules {
                             fallback: action_keys::Emission::Text(text),
                             ..
@@ -4137,7 +4136,7 @@ mod ranker_tests {
         let mut changed_weights = weights.clone();
         changed_weights.0[SFB] += 7.0;
         let changed_rule = ACTION_LAYOUT.replace("@ aa", "@ ab");
-        let staggered = format!("{ACTION_LAYOUT}row-stagger: anglemod\n");
+        let staggered = format!("{ACTION_LAYOUT}row-offsets: -0.25 0 0.5\n");
         let changed_corpus = CORPUS.replace(":1", ":0.5");
         let replacements = [
             make_row(ACTION_LAYOUT, CORPUS, NgramLimits::default(), &weights),

@@ -32,16 +32,11 @@ pub struct Slot {
     pub main: bool,
 }
 
-// Only test fixtures build the output and remembered bases.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Basis {
     Text,
     Press,
     SkipPress,
-    Output,
-    SkipOutput,
-    Remembered,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -51,11 +46,8 @@ pub enum Emission {
     None,
 }
 
-// Only test fixtures build text macros and inactive actions.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Action {
-    Text(Vec<u8>),
     Rules {
         basis: Basis,
         rules: BTreeMap<Vec<u8>, Emission>,
@@ -64,7 +56,6 @@ pub enum Action {
     RepeatOutput,
     RepeatPreviousOutput,
     RepeatAction,
-    Inactive,
 }
 
 #[derive(Clone, Debug)]
@@ -75,7 +66,6 @@ pub struct Layout {
     pub actions: BTreeMap<String, Action>,
     pub left_outer: bool,
     pub right_outer: bool,
-    pub(crate) row_stagger: RowStagger,
     pub(crate) action_mode: bool,
     /// Session-only contexts whose outputs refresh must refit in place.
     pub(crate) magic_rule_slots: BTreeMap<String, Vec<Vec<u8>>>,
@@ -217,16 +207,10 @@ fn emission(text: &str) -> Result<Emission> {
 #[cfg(test)]
 fn action(text: &str) -> Result<Action> {
     let s = text.trim();
-    if let Some(rest) = s.strip_prefix("text ") {
-        return Ok(Action::Text(ascii(literal(rest)?, "macro")?));
-    }
     let basis = match s {
         "magic" => Some(Basis::Text),
         "press-magic" => Some(Basis::Press),
         "skip-magic" => Some(Basis::SkipPress),
-        "output-magic" => Some(Basis::Output),
-        "skip-output-magic" => Some(Basis::SkipOutput),
-        "alternate" | "alt-repeat" => Some(Basis::Remembered),
         _ => None,
     };
     if let Some(basis) = basis {
@@ -240,77 +224,8 @@ fn action(text: &str) -> Result<Action> {
         "repeat" | "repeat-output" => Ok(Action::RepeatOutput),
         "repeat-previous-output" => Ok(Action::RepeatPreviousOutput),
         "again" | "repeat-action" => Ok(Action::RepeatAction),
-        "inactive" => Ok(Action::Inactive),
         _ => err(format!("unknown action kind {s:?}")),
     }
-}
-
-/// Fixed row-stagger geometry with fingering defined by physical QWERTY slots.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-// Only test fixtures name a preset; JSONC states offsets and fingers.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) enum RowStagger {
-    #[default]
-    Off,
-    Standard,
-    Anglemod,
-    Nokwts,
-    Meteorite,
-}
-
-impl RowStagger {
-    pub(crate) fn offset(self, row: i8) -> i16 {
-        if self == Self::Off {
-            return 0;
-        }
-        match row {
-            0 => -250,
-            2 => 500,
-            _ => 0,
-        }
-    }
-
-    pub(crate) fn finger(self, row: i8, col: i8, original: usize) -> usize {
-        // Extra outer columns, thumbs, and the right hand retain their fingering.
-        if !(0..=4).contains(&col) || !(0..=2).contains(&row) {
-            return original;
-        }
-        match (self, row, col) {
-            (Self::Anglemod | Self::Meteorite, 2, 0) => 1, // QWERTY Z
-            (Self::Anglemod | Self::Meteorite, 2, 1) => 2, // QWERTY X
-            (Self::Anglemod | Self::Nokwts, 2, 2) => 3,    // QWERTY C
-            (Self::Nokwts, 0, 3) => 2,                     // QWERTY R
-            _ => original,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn text(self) -> String {
-        let name = match self {
-            Self::Off => return String::new(),
-            Self::Standard => "standard",
-            Self::Anglemod => "anglemod",
-            Self::Nokwts => "nokwts",
-            Self::Meteorite => "meteorite",
-        };
-        format!("row-stagger: {name}\n")
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn parse_row_stagger(line: &str) -> Result<Option<RowStagger>> {
-    let Some(rest) = line.strip_prefix("row-stagger:") else {
-        return Ok(None);
-    };
-    let mode = match rest.trim().to_ascii_lowercase().as_str() {
-        "" | "standard" | "standart" => RowStagger::Standard,
-        "anglemod" => RowStagger::Anglemod,
-        "nokwts" => RowStagger::Nokwts,
-        "meteorite" => RowStagger::Meteorite,
-        "off" => RowStagger::Off,
-        _ => return err("row-stagger: expected standard (or standart), anglemod, nokwts, meteorite, or off; use row-offsets: for numeric geometry"),
-    };
-    Ok(Some(mode))
 }
 
 /// Geometry is stored in thousandths of a key unit, without silent rounding.
@@ -468,7 +383,6 @@ impl GeometrySettings {
 #[cfg(test)]
 pub(crate) fn geometry_text(
     keys: impl Iterator<Item = (i8, i8, i16, i16, usize)>,
-    mode: RowStagger,
 ) -> String {
     let keys: Vec<_> = keys.collect();
     let mut out = String::new();
@@ -476,7 +390,7 @@ pub(crate) fn geometry_text(
         out.push_str("col-layout: absolute\n");
     }
 
-    if keys.iter().any(|key| key.2 != mode.offset(key.0)) {
+    if keys.iter().any(|key| key.2 != 0) {
         out.push_str("row-offsets:");
         for row in 0..3 {
             let offset = keys.iter().find(|key| key.0 == row).map_or(0, |key| key.2);
@@ -501,7 +415,7 @@ pub(crate) fn geometry_text(
     if (0..3).any(|row| keys.iter().filter(|key| key.0 == row).count() == 13)
         || keys
             .iter()
-            .any(|key| key.4 != mode.finger(key.0, key.1, finger(key.1).0))
+            .any(|key| key.4 != finger(key.1).0)
     {
         const NAMES: [&str; 8] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP"];
         out.push_str("fingermap:");
@@ -1045,7 +959,6 @@ pub(crate) struct Parts {
     pub(crate) left_outer: bool,
     pub(crate) right_outer: bool,
     pub(crate) geometry: GeometrySettings,
-    pub(crate) stagger: Option<RowStagger>,
     /// Key tokens per hand; `none` for a hand with no thumb keys.
     pub(crate) thumbs: [Vec<String>; 2],
     pub(crate) thumb_columns: Option<Vec<i8>>,
@@ -1138,7 +1051,6 @@ impl Layout {
         let mut thumbs: [Vec<String>; 2] = [Vec::new(), Vec::new()];
         let mut action_mode = false;
         let mut short_tables = BTreeMap::new();
-        let mut stagger_mode = None;
         let mut key_labels = None;
         let mut thumb_columns = None;
         let mut alt_fingers = None;
@@ -1209,12 +1121,6 @@ impl Layout {
                 continue;
             }
             if s.starts_with("col-layout:") || geometry.parse_line(s).map_err(&fail)? {
-                continue;
-            }
-            if let Some(mode) = parse_row_stagger(s).map_err(&fail)? {
-                if stagger_mode.replace(mode).is_some() {
-                    return err(fail("row-stagger is defined twice".into()));
-                }
                 continue;
             }
             if compact_table_line(s, &mut short_tables).map_err(&fail)? {
@@ -1315,7 +1221,6 @@ impl Layout {
                 left_outer,
                 right_outer,
                 geometry,
-                stagger: stagger_mode,
                 thumbs,
                 thumb_columns,
                 key_labels,
@@ -1340,7 +1245,6 @@ impl Layout {
             left_outer,
             right_outer,
             geometry,
-            stagger: stagger_mode,
             mut thumbs,
             thumb_columns,
             key_labels,
@@ -1444,15 +1348,6 @@ impl Layout {
                     main: false,
                 });
                 thumb_col += 1;
-            }
-        }
-        if let Some(mode) = stagger_mode {
-            for slot in slots.iter_mut().filter(|slot| slot.main) {
-                slot.row_offset = mode.offset(slot.row);
-                slot.finger = mode.finger(slot.row, slot.col, slot.finger);
-                if slot.hand == 0 {
-                    slot.rank = slot.finger as i8;
-                }
             }
         }
 
@@ -1602,7 +1497,6 @@ impl Layout {
             actions,
             left_outer,
             right_outer,
-            row_stagger: stagger_mode.unwrap_or_default(),
             action_mode,
             magic_rule_slots: BTreeMap::new(),
             magic_refit_pending: BTreeSet::new(),
@@ -1765,13 +1659,11 @@ impl Layout {
             out.push_str(&line);
             out.push('\n');
         }
-        out.push_str(&self.row_stagger.text());
         out.push_str(&geometry_text(
             self.slots
                 .iter()
                 .filter(|s| s.main)
                 .map(|s| (s.row, s.col, s.row_offset, s.column_offset, s.finger)),
-            self.row_stagger,
         ));
         let thumbs: Vec<_> = self.slots.iter().filter(|s| !s.main).collect();
         let is_space = |s: &Slot| s.binding == Binding::Text(vec![b' ']);
@@ -1907,19 +1799,14 @@ impl Layout {
                 }
                 continue;
             }
-            let kind = match a {
-                Action::Text(v) => format!("text {}", quote(v)),
+            let kind: String = match a {
                 Action::RepeatOutput => "repeat-output".into(),
                 Action::RepeatPreviousOutput => "repeat-previous-output".into(),
                 Action::RepeatAction => "repeat-action".into(),
-                Action::Inactive => "inactive".into(),
                 Action::Rules { basis, .. } => match basis {
                     Basis::Text => "magic",
                     Basis::Press => "press-magic",
                     Basis::SkipPress => "skip-magic",
-                    Basis::Output => "output-magic",
-                    Basis::SkipOutput => "skip-output-magic",
-                    Basis::Remembered => "alternate",
                 }
                 .into(),
             };
@@ -2189,9 +2076,6 @@ pub(crate) fn key_context(
 fn context<'a>(basis: Basis, l: &'a Layout, mem: &'a Memory, prefix: &'a [u8]) -> &'a [u8] {
     match basis {
         Basis::Text => prefix,
-        Basis::Remembered => &mem.remembered_output,
-        Basis::Output => &mem.last_output,
-        Basis::SkipOutput => &mem.previous_output,
         Basis::Press => mem
             .last
             .map(|i| match &l.slots[i].binding {
@@ -2257,12 +2141,6 @@ fn resolve_named(
     }
     stack.push(name.into());
     let result = match l.actions.get(name)? {
-        Action::Inactive => None,
-        Action::Text(v) => Some(Resolved {
-            output: v.clone(),
-            remember: true,
-            reason: format!("macro @{name}"),
-        }),
         Action::RepeatOutput => {
             if m.remembered_output.is_empty() {
                 None
@@ -2395,12 +2273,11 @@ impl<'a> WindowMapper<'a> {
         };
         let skip = match action {
             Action::Rules {
-                basis: Basis::SkipPress | Basis::SkipOutput,
+                basis: Basis::SkipPress,
                 ..
             }
             | Action::RepeatPreviousOutput => true,
             Action::Rules { .. } | Action::RepeatOutput | Action::RepeatAction => false,
-            Action::Text(_) | Action::Inactive => return None,
         };
         let finger = self.layout.slots[key].finger;
         let prior = if skip { memory.previous } else { memory.last };
@@ -2444,11 +2321,6 @@ impl<'a> WindowMapper<'a> {
                 .ok_or_else(|| format!("unknown action {name}"))?;
             let mut emissions = Vec::new();
             match action {
-                Action::Text(text) => {
-                    if text.len() != 1 {
-                        return err(format!("Action {name} emits multiple characters; cached n-gram mode requires one character per press."));
-                    }
-                }
                 Action::Rules {
                     basis,
                     rules,
@@ -3001,28 +2873,6 @@ mod tests {
     }
 
     #[test]
-    fn row_stagger_survives_action_swaps_and_save() {
-        let mut layout = make("outer-left: ~ @ ~\n@ hr\nrow-stagger: standard\n");
-        let before: Vec<_> = layout.slots.iter().map(|s| s.row_offset).collect();
-        let action = key(&layout, "@");
-        let q = key(&layout, "q");
-        layout.swap(action, q);
-        assert_eq!(
-            before,
-            layout
-                .slots
-                .iter()
-                .map(|s| s.row_offset)
-                .collect::<Vec<_>>()
-        );
-        let round = Layout::parse(&layout.text(), Path::new("stagger.dat")).unwrap();
-        assert_eq!(layout.slots, round.slots);
-        for bad in ["0 1 0", "0 NaN 0", "-3 0 0", "0.0001 0 0", "0 0"] {
-            assert!(parse_row_stagger(&format!("row-stagger: {bad}")).is_err());
-        }
-    }
-
-    #[test]
     fn adaptive_fallback_swap_direction_and_physical_root() {
         let layout = make("swap h nr\n");
         assert_eq!(typed(&layout, &["h", "n"]), b"hr");
@@ -3121,13 +2971,6 @@ mod tests {
         assert_eq!(typed(&l, &["q", "m", "m"]), b"que");
     }
     #[test]
-    fn macro_repeat_repeats_whole_output() {
-        let l = make(
-            "outer-left: @macro @rep ~\naction macro = text \"the\"\naction rep = repeat-output\n",
-        );
-        assert_eq!(typed(&l, &["macro", "rep", "rep"]), b"thethethe");
-    }
-    #[test]
     fn repeat_at_start_emits_nothing() {
         let l = make("outer-left: ~ @rep ~\naction rep = repeat-output\n");
         assert!(trace_keys(&l, &[key(&l, "rep")]).is_err());
@@ -3137,17 +2980,6 @@ mod tests {
         let l = make("outer-left: @m @rep @again\naction m = magic\nmap m \"q\" = \"u\"\nmap m \"qu\" = \"e\"\naction rep = repeat-output\naction again = repeat-action\n");
         assert_eq!(typed(&l, &["q", "m", "rep"]), b"quu");
         assert_eq!(typed(&l, &["q", "m", "again"]), b"que");
-    }
-    #[test]
-    fn fallback_repeat_keeps_remembered_action() {
-        let l = make("outer-left: @macro @m @rep\naction macro = text \"th\"\naction m = magic\nfallback m = repeat-output\naction rep = repeat-output\n");
-        assert_eq!(typed(&l, &["macro", "m", "rep"]), b"ththth");
-    }
-    #[test]
-    fn alternative_updates_repeat_snapshot() {
-        let l = make("outer-left: @alt @rep ~\naction alt = alternate\nmap alt \"e\" = \"u\"\nmap alt \"u\" = \"e\"\naction rep = repeat-output\n");
-        assert_eq!(typed(&l, &["e", "alt", "alt"]), b"eue");
-        assert_eq!(typed(&l, &["e", "alt", "rep"]), b"euu");
     }
     #[test]
     fn skip_magic_uses_second_last_physical_key() {
@@ -3243,26 +3075,6 @@ mod tests {
         assert_eq!(l.text().lines().nth(3), Some("r"));
     }
     #[test]
-    fn shortest_typing_chooses_macro() {
-        let l = make("outer-left: ~ @th ~\naction th = text \"the\"\n");
-        let s = decode(&l, b"thethe", 100000, &AtomicBool::new(false), |_, _, _| {
-            0.0
-        })
-        .unwrap();
-        assert_eq!(s.len(), 2);
-        assert!(s.iter().all(|s| s.output == b"the"));
-    }
-    #[test]
-    fn decoder_never_slices_macro_output() {
-        let l = make("outer-left: ~ @macro ~\naction macro = text \"the\"\n");
-        let s = decode(&l, b"then", 100000, &AtomicBool::new(false), |_, _, _| 0.0).unwrap();
-        assert_eq!(s.len(), 2);
-        assert_eq!(
-            s.iter().flat_map(|s| s.output.clone()).collect::<Vec<_>>(),
-            b"then"
-        );
-    }
-    #[test]
     fn decoder_honors_state_limit_and_cancellation() {
         let l = make("");
         for (case, state_limit, cancelled) in
@@ -3291,11 +3103,6 @@ mod tests {
     fn quoted_equals_context() {
         let l = make("outer-left: ~ @m ~\naction m = magic\nmap m \"a = \" = \"b\"\n");
         assert!(matches!(l.actions.get("m"), Some(Action::Rules { .. })));
-    }
-    #[test]
-    fn press_rule_distinguishes_magic_key_from_output() {
-        let l = make("outer-left: @macro @next ~\naction macro = text \"xy\"\naction next = press-magic\nmap next \"macro\" = \"z\"\n");
-        assert_eq!(typed(&l, &["macro", "next"]), b"xyz");
     }
     #[test]
     fn strict_text_trace_still_rejects_missing_output() {
@@ -3352,8 +3159,6 @@ mod tests {
     }
     #[test]
     fn mapper_still_rejects_invalid_initial_definitions() {
-        let macro_layout = make("outer-left: ~ @macro ~\naction macro = text \"ab\"\n");
-        assert!(WindowMapper::new(&macro_layout, 5).is_err());
         let long_rule = make("outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n");
         assert!(WindowMapper::new(&long_rule, 3).is_err());
         assert!(WindowMapper::new(&long_rule, 4).is_ok());
@@ -3488,12 +3293,4 @@ mod format_policy_tests {
         assert_eq!(layout.slots, round.slots);
     }
 
-    #[test]
-    fn reachable_overridden_builtin_is_serialized() {
-        let source = format!("{ROWS}thumbs: @MAGIC space\naction Repeat = text \"x\"\naction Magic = magic\nmap MAGIC \"q\" = @REPEAT\n");
-        let layout = Layout::parse(&source, Path::new("inline")).unwrap();
-        let round = Layout::parse(&layout.text(), Path::new("round")).unwrap();
-        assert_eq!(round.actions["repeat"], Action::Text(b"x".to_vec()));
-        assert_eq!(round.actions["magic"], layout.actions["magic"]);
-    }
 }

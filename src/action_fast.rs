@@ -115,8 +115,6 @@ impl SuffixIndex {
 }
 
 enum Code {
-    Inactive,
-    Byte(u8),
     RepeatOutput,
     RepeatPreviousOutput,
     RepeatAction,
@@ -124,10 +122,6 @@ enum Code {
         table: Box<[Emit; 257]>,
     },
     TextRules(SuffixIndex),
-    OutputRules {
-        basis: Basis,
-        table: Box<[Emit; 257]>,
-    },
     PressRules {
         basis: Basis,
         table: Box<[Emit]>,
@@ -155,8 +149,6 @@ fn terminal_call<'a>(
         seen.push(name);
         let hops = seen.len() as u8;
         match &defs[name] {
-            Action::Inactive => return Some((hops, Terminal::None)),
-            Action::Text(v) => return Some((hops, Terminal::Byte(v[0]))),
             Action::RepeatOutput => return Some((hops, Terminal::RepeatOutput)),
             Action::RepeatPreviousOutput => return Some((hops, Terminal::RepeatPreviousOutput)),
             Action::Rules {
@@ -271,8 +263,6 @@ impl Program {
         // BTreeMap order is the same order used to assign IDs above.
         for name in ids.keys() {
             let code = match &layout.actions[name] {
-                Action::Inactive => Code::Inactive,
-                Action::Text(v) => Code::Byte(v[0]),
                 Action::RepeatOutput => Code::RepeatOutput,
                 Action::RepeatPreviousOutput => Code::RepeatPreviousOutput,
                 Action::RepeatAction => Code::RepeatAction,
@@ -314,21 +304,6 @@ impl Program {
                             Code::PressRules {
                                 basis: if by_key { Basis::Press } else { *basis },
                                 table: table.into_boxed_slice(),
-                            }
-                        }
-                        _ => {
-                            let mut table = Box::new([fallback; 257]);
-                            if let Some(e) = rules.get(b"".as_slice()) {
-                                table[256] = emission(e, &ids, &layout.actions);
-                            }
-                            for byte in 0..256 {
-                                if let Some(e) = rules.get([byte as u8].as_slice()) {
-                                    table[byte] = emission(e, &ids, &layout.actions);
-                                }
-                            }
-                            Code::OutputRules {
-                                basis: *basis,
-                                table,
                             }
                         }
                     }
@@ -422,13 +397,8 @@ impl Program {
         let next = depth + 1;
         let mut local = [0; 4];
         let known = match &self.actions[id] {
-            Code::Inactive => true,
-            Code::Byte(byte) => {
-                local[usize::from(*byte) / 64] |= 1 << (usize::from(*byte) % 64);
-                true
-            }
             Code::RepeatOutput | Code::RepeatPreviousOutput | Code::RepeatAction => false,
-            Code::TextOne { table } | Code::OutputRules { table, .. } => table
+            Code::TextOne { table } => table
                 .iter()
                 .copied()
                 .all(|emit| self.collect_emit_bytes(emit, stack, next, outputs, &mut local)),
@@ -583,11 +553,6 @@ impl Program {
         stack[depth] = id;
         let next = depth + 1;
         match &self.actions[id] {
-            Code::Inactive => None,
-            Code::Byte(byte) => Some(Output {
-                byte: *byte,
-                remember: true,
-            }),
             Code::RepeatOutput => m.remembered_output.map(|byte| Output {
                 byte,
                 remember: false,
@@ -640,23 +605,6 @@ impl Program {
                 };
                 let binding = optional_key(key).map_or(self.keys.len(), |key| state.ids[key]);
                 self.emit::<PROFILE>(table[binding], state, m, prefix, stack, next, ops)
-            }
-            Code::OutputRules { basis, table } => {
-                let byte = match basis {
-                    Basis::Remembered => m.remembered_output,
-                    Basis::Output => m.last_output,
-                    Basis::SkipOutput => m.previous_output,
-                    _ => unreachable!(),
-                };
-                self.emit::<PROFILE>(
-                    table[byte.map_or(256, usize::from)],
-                    state,
-                    m,
-                    prefix,
-                    stack,
-                    next,
-                    ops,
-                )
             }
         }
     }
@@ -880,7 +828,7 @@ impl StaticBindings {
         let mut adaptive = vec![false; program.actions.len()];
         for (id, code) in program.actions.iter().enumerate() {
             match code {
-                Code::Inactive | Code::Byte(_) | Code::RepeatOutput => {}
+                Code::RepeatOutput => {}
                 Code::TextOne { table }
                     if table.iter().all(|emit| simple(emit) || repeat(emit)) => {}
                 Code::PressRules {
@@ -1089,7 +1037,6 @@ fn bounded_terminal_dependencies(program: &Program, state: &KeyState) -> Option<
             unreachable!("action root mask contains only action bindings");
         };
         match &program.actions[id] {
-            Code::Inactive | Code::Byte(_) => {}
             Code::RepeatOutput => remembered = true,
             Code::RepeatPreviousOutput => previous = true,
             Code::PressRules {
@@ -1162,18 +1109,12 @@ impl<'a> Mapper<'a> {
                 basis: Basis::SkipPress,
                 ..
             }
-            | Code::OutputRules {
-                basis: Basis::SkipOutput,
-                ..
-            }
             | Code::RepeatPreviousOutput => true,
             Code::TextOne { .. }
             | Code::TextRules(_)
             | Code::PressRules { .. }
-            | Code::OutputRules { .. }
             | Code::RepeatOutput
             | Code::RepeatAction => false,
-            Code::Byte(_) | Code::Inactive => return None,
         };
         let finger = self.program.fingers[key];
         let prior = if skip { memory.previous } else { memory.last };
@@ -1977,9 +1918,6 @@ pub(crate) mod tests {
             "magic",
             "press-magic",
             "skip-magic",
-            "output-magic",
-            "skip-output-magic",
-            "alternate",
         ] {
             let aliases = if matches!(basis, "press-magic" | "skip-magic") {
                 "map m \"@rep\" = \"u\"\nmap m \"rep\" = none\nmap m \"␠\" = \"a\"\n"
@@ -1988,18 +1926,13 @@ pub(crate) mod tests {
             };
             fixtures.push(format!("{base}outer-left: @m @rep @again\nouter-right: @sk ~ ~\naction m = {basis}\nmap m \"i\" = \"'\"\nmap m \"q\" = \"u\"\nmap m \"qu\" = \"e\"\n{aliases}fallback m = @sk\naction sk = skip-magic\nmap sk \"q\" = \"a\"\naction rep = repeat-output\naction again = repeat-action\n"));
         }
-        // The bound root uses output history so its dynamic repeat-action
-        // fallback remains intact under the text-magic repeat policy.
-        fixtures.push(format!("{}outer-left: @m @again @literal\naction m = output-magic\nmap m \"q\" = \"u\"\nfallback m = repeat-action\naction again = repeat-action\naction literal = text \"q\"\naction unused = text \"multiple\"\n", base.replacen("w ", "q ", 1)));
         fixtures.push(crate::action_keys::test_layouts::COMPACT.to_string());
         fixtures.push(format!("{base}outer-left: ~ ◇ ~\n◇ hr u'\n"));
         fixtures.push(format!(
             "{base}outer-left: ~ ◇ ~\n◇ hr u'\nfallback ◇ = repeat-output\n"
         ));
         fixtures.push(format!("{base}adaptive n hr ay\nswap th qe\n"));
-        for mode in ["standard", "anglemod", "nokwts", "meteorite"] {
-            fixtures.push(format!("{base}swap h nr y ,u\nrow-stagger: {mode}\n"));
-        }
+        fixtures.push(format!("{base}swap h nr y ,u\nrow-offsets: -0.25 0 0.5\n"));
         fixtures
     }
     #[test]
@@ -2214,50 +2147,6 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn numeric_mapper_matches_reference_depth_limit_and_validation() {
-        let base =
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-        for depth in [31, 32, 33] {
-            let mut source = format!("{base}outer-left: ~ @m0 ~\n");
-            for id in 0..depth {
-                if id + 1 == depth {
-                    source.push_str(&format!("action m{id} = text \"'\"\n"));
-                } else {
-                    // Only m0 is physically bound; keep its delegate fallback
-                    // while exercising the unbound text-magic helper chain.
-                    let basis = if id == 0 { "output-magic" } else { "magic" };
-                    source.push_str(&format!(
-                        "action m{id} = {basis}\nfallback m{id} = @m{}\n",
-                        id + 1
-                    ));
-                }
-            }
-            let layout = Layout::parse(&source, Path::new("depth.dat")).unwrap();
-            let program = Program::new(&layout, 5).unwrap();
-            let state = KeyState::new(&program);
-            assert_eq!(
-                Mapper::new(&program, &state)
-                    .map(b"q'", &|_, _, _| 0.0)
-                    .unwrap(),
-                ak::WindowMapper::new(&layout, 5)
-                    .unwrap()
-                    .map(b"q'", &|_, _, _| 0.0)
-                    .unwrap()
-            );
-        }
-        for suffix in [
-            "outer-left: ~ @m ~\naction m = text \"ab\"\n",
-            "outer-left: ~ @m ~\naction m = magic\nmap m \"abc\" = \"d\"\n",
-        ] {
-            let layout =
-                Layout::parse(&format!("{base}{suffix}"), Path::new("invalid.dat")).unwrap();
-            assert_eq!(
-                Program::new(&layout, 3).err(),
-                ak::WindowMapper::new(&layout, 3).err()
-            );
-        }
-    }
     #[test]
     fn numeric_masks_cover_maximum_key_count_and_duplicate_literals() {
         assert_eq!(optional_key(stored_key(MAX_KEYS - 1)), Some(MAX_KEYS - 1));
@@ -2624,58 +2513,6 @@ pub(crate) mod tests {
         }
     }
     #[test]
-    fn action_outcomes_count_final_winners_and_prefix_reuse() {
-        let program = Program {
-            keys: vec![
-                Key::Byte(b'q'),
-                Key::Action(0),
-                Key::Action(1),
-                Key::Action(2),
-                Key::Action(3),
-            ],
-            actions: vec![
-                Code::Inactive,
-                Code::Byte(b'x'),
-                Code::Byte(b'q'),
-                Code::Byte(b'q'),
-            ],
-            action_outputs: Vec::new(),
-            fingers: (0..5).collect(),
-        };
-        let state = KeyState::new(&program);
-        for tied in [false, true] {
-            let mut mapper = Mapper::new(&program, &state);
-            let mut ops = MappingCounts::default();
-            let effort = |_: Option<usize>, _: Option<usize>, key: usize| {
-                if tied {
-                    0.0
-                } else {
-                    -(key as f64)
-                }
-            };
-            let first = mapper
-                .map_profiled::<true, _>(b"q", &effort, &mut ops)
-                .unwrap();
-            assert_eq!(first[0], Some(if tied { 0 } else { 4 }));
-            // The repeated call reuses one position and adds no action attempts.
-            assert_eq!(
-                mapper
-                    .map_profiled::<true, _>(b"q", &effort, &mut ops)
-                    .unwrap(),
-                first
-            );
-            assert_eq!(ops.positions_processed, 1);
-            assert_eq!(ops.positions_reused, 1);
-            assert_eq!(ops.action_attempts, 4);
-            assert_eq!(ops.action_no_output, 1);
-            assert_eq!(ops.action_mismatch, 1);
-            assert_eq!(ops.action_matches, 2);
-            assert_eq!(ops.action_effort_losses, if tied { 2 } else { 1 });
-            assert_eq!(ops.action_winners, if tied { 0 } else { 1 });
-            assert_eq!(ops.action_nonfinite_effort, 0);
-        }
-    }
-    #[test]
     fn text_one_cross_counts_follow_selected_emission_and_final_output() {
         for repeat in [true, false] {
             let mut table = Box::new([Emit::None; 257]);
@@ -2824,47 +2661,6 @@ pub(crate) mod tests {
         assert!(ops.suffix_index_lookups > 0);
         assert!(ops.terminal_shortcuts > 0);
         assert_eq!(ops.recursive, 0);
-    }
-    #[test]
-    fn terminal_chains_preserve_depth_limits_and_memory() {
-        let base = fixtures()[0].clone();
-        for depth in [1, 2, 30, 31, 32, 33, 34] {
-            for terminal in ["text \"'\"", "repeat-output", "inactive", "magic"] {
-                let mut source = format!("{base}outer-left: ~ @m0 ~\n");
-                for id in 0..depth {
-                    if id + 1 == depth {
-                        let kind = if id == 0 && terminal == "magic" {
-                            "output-magic"
-                        } else {
-                            terminal
-                        };
-                        source.push_str(&format!("action m{id} = {kind}\n"));
-                        if terminal == "magic" {
-                            source.push_str(&format!("fallback m{id} = \"'\"\n"));
-                        }
-                    } else {
-                        let basis = if id == 0 { "output-magic" } else { "magic" };
-                        source.push_str(&format!(
-                            "action m{id} = {basis}\nfallback m{id} = @m{}\n",
-                            id + 1
-                        ));
-                    }
-                }
-                let layout = Layout::parse(&source, Path::new("terminal-depth.dat")).unwrap();
-                let program = Program::new(&layout, 5).unwrap();
-                let state = KeyState::new(&program);
-                let mut fast = Mapper::new(&program, &state);
-                let mut reference = ak::WindowMapper::new(&layout, 5).unwrap();
-                for text in [b"q'qqq".as_slice(), b"qqqqq", b"q!q'q", b"'qq"] {
-                    let effort = |_: Option<usize>, _: Option<usize>, key: usize| -(key as f64);
-                    assert_eq!(
-                        fast.map(text, &effort).unwrap(),
-                        reference.map(text, &effort).unwrap(),
-                        "depth {depth} terminal {terminal}"
-                    );
-                }
-            }
-        }
     }
     #[test]
     fn cyclic_and_history_dependent_delegates_are_not_flattened() {
