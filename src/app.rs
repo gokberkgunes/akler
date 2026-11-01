@@ -791,12 +791,31 @@ enum OpenLayout {
     Action(crate::action_keys::Layout),
 }
 
+#[cfg(test)]
 fn parse_open_layout(text: &str, path: &Path) -> AppResult<OpenLayout> {
+    open_layout(text, path).map(|(layout, _)| layout)
+}
+
+/// The layout to open, with the alternate-finger problems its file has:
+/// rules it couldn't read or that name no key.
+fn open_layout(text: &str, path: &Path) -> AppResult<(OpenLayout, Vec<String>)> {
     match crate::action_keys::Layout::parse(text, path) {
-        Ok(layout) if layout.extended() => Ok(OpenLayout::Action(layout)),
-        Ok(_) => board_from_text(text, path).map(OpenLayout::Plain),
+        Ok(layout) => {
+            let problems = layout
+                .source_warnings
+                .iter()
+                .filter(|warning| warning.starts_with("alt fingers"))
+                .cloned()
+                .collect();
+            let open = if layout.extended() {
+                OpenLayout::Action(layout)
+            } else {
+                board_from_text(text, path).map(OpenLayout::Plain)?
+            };
+            Ok((open, problems))
+        }
         Err(error) => board_from_text(text, path)
-            .map(OpenLayout::Plain)
+            .map(|board| (OpenLayout::Plain(board), Vec::new()))
             .map_err(|_| format!("action layout: {error}").into()),
     }
 }
@@ -845,9 +864,12 @@ fn tui_mode(
         let result = (|| -> AppResult<()> {
             let mut timing = crate::load_profile::LoadProfile::new("layout open dispatch");
             let text = fs::read_to_string(&path)?;
-            let layout = parse_open_layout(&text, &path)?;
+            let (layout, problems) = open_layout(&text, &path)?;
             timing.mark("Read layout once and detect evaluator");
             drop(timing);
+            if !problems.is_empty() {
+                info_page(term, "Layout warnings", &problems)?;
+            }
 
             match layout {
                 OpenLayout::Action(layout) => {

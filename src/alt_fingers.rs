@@ -19,6 +19,49 @@ pub(crate) struct Rule {
 
 const FINGERS: [&str; 10] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP", "LT", "RT"];
 
+/// Non-ASCII key labels rules name (a magic key's `◇`), as bytes 128 up,
+/// since rules hold one byte per key. Codes last for this process only;
+/// files always store the labels themselves.
+static SYMBOLS: std::sync::Mutex<Vec<char>> = std::sync::Mutex::new(Vec::new());
+
+/// The byte a rule uses for `ch`, assigning one to a new symbol.
+fn symbol_code(ch: char) -> Option<u8> {
+    if ch.is_ascii() || ch.is_whitespace() || ch.is_control() {
+        return None;
+    }
+    let mut symbols = SYMBOLS.lock().unwrap_or_else(|error| error.into_inner());
+    let index = match symbols.iter().position(|&symbol| symbol == ch) {
+        Some(index) => index,
+        None if symbols.len() < 128 => {
+            symbols.push(ch);
+            symbols.len() - 1
+        }
+        None => return None,
+    };
+    Some(128 + index as u8)
+}
+
+/// `symbol_code` for a label some rule already names, without assigning one.
+fn known_symbol(ch: char) -> Option<u8> {
+    let symbols = SYMBOLS.lock().unwrap_or_else(|error| error.into_inner());
+    symbols
+        .iter()
+        .position(|&symbol| symbol == ch)
+        .map(|index| 128 + index as u8)
+}
+
+/// The character a rule's byte names: ASCII, or a symbol from `symbol_code`.
+pub(crate) fn symbol(code: u8) -> char {
+    if code.is_ascii() {
+        return char::from(code);
+    }
+    let symbols = SYMBOLS.lock().unwrap_or_else(|error| error.into_inner());
+    symbols
+        .get(usize::from(code - 128))
+        .copied()
+        .unwrap_or(char::REPLACEMENT_CHARACTER)
+}
+
 pub(crate) fn parse_json(value: &Json) -> Result<Vec<Rule>, String> {
     let Json::Array(values) = value else {
         return Err("alts must be an array".into());
@@ -56,8 +99,13 @@ pub(crate) fn parse_json(value: &Json) -> Result<Vec<Rule>, String> {
                     {
                         Ok(Some(text.as_bytes()[0].to_ascii_lowercase()))
                     }
+                    Json::String(text) if text.chars().count() == 1 => {
+                        symbol_code(text.chars().next().unwrap()).ok_or_else(|| {
+                            error("ngram entries must be one printable character, space, or null")
+                        }).map(Some)
+                    }
                     _ => Err(error(
-                        "ngram entries must be one printable ASCII character, space, or null",
+                        "ngram entries must be one printable character, space, or null",
                     )),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
@@ -252,7 +300,8 @@ impl AltRules {
     /// position names or `_` for any key; its fingers cover the named
     /// positions in order, `.` keeping a position's normal finger.
     pub(crate) fn parse(text: &str) -> Result<Vec<Rule>, String> {
-        let key = |byte| {
+        let key = |ch: char| {
+            let byte = u8::try_from(ch).ok()?;
             (0..3).find_map(|row| {
                 let col = QWERTY[row].iter().position(|&key| key == byte)?;
                 Some(position_code(row as i8, col as i8))
@@ -263,9 +312,13 @@ impl AltRules {
 
     /// `parse` for letters instead of positions, as stray writes a layout's
     /// own rules in its notes: `sg s_g (LM LI) · gs g_s (LI LM)`. `␣` names
-    /// Space, and thumb keys may take `LT` or `RT`: `e␣ (LT RT)`.
+    /// Space, and thumb keys may take `LT` or `RT`: `e␣ (LT RT)`. Keys with
+    /// another single-character label go by it: `t◇ (LM LR)`.
     pub(crate) fn parse_letters(text: &str) -> Result<Vec<Rule>, String> {
-        let key = |byte: u8| (byte.is_ascii_graphic() || byte == b' ').then_some(byte);
+        let key = |ch: char| match u8::try_from(ch) {
+            Ok(byte) => (byte.is_ascii_graphic() || byte == b' ').then_some(byte),
+            Err(_) => symbol_code(ch),
+        };
         Self::parse_with(
             &text.replace('·', " "),
             key,
@@ -274,11 +327,29 @@ impl AltRules {
         )
     }
 
+    /// `parse_letters` one `(fingers)` group at a time, so a group it can't
+    /// read costs only its own rules; each such group comes with its error.
+    pub(crate) fn parse_letter_groups(text: &str) -> (Vec<Rule>, Vec<String>) {
+        let mut rules = Vec::new();
+        let mut errors = Vec::new();
+        for group in text.split_inclusive(')') {
+            let group = group.trim().trim_start_matches('·').trim();
+            if group.is_empty() {
+                continue;
+            }
+            match Self::parse_letters(group) {
+                Ok(parsed) => rules.extend(parsed),
+                Err(error) => errors.push(format!("{group}: {error}")),
+            }
+        }
+        (rules, errors)
+    }
+
     /// `parse` with `key` naming each pattern character; `hint` explains a
     /// character it rejects. `fingers` are the names a list may use.
     fn parse_with(
         text: &str,
-        key: impl Fn(u8) -> Option<u8>,
+        key: impl Fn(char) -> Option<u8>,
         hint: &str,
         fingers: &[&str],
     ) -> Result<Vec<Rule>, String> {
@@ -293,9 +364,8 @@ impl AltRules {
                     .chars()
                     .map(|ch| match ch {
                         '_' => Some(None),
-                        '␣' | '␠' => key(b' ').map(Some),
-                        ch if ch.is_ascii() => key((ch as u8).to_ascii_lowercase()).map(Some),
-                        _ => None,
+                        '␣' | '␠' => key(' ').map(Some),
+                        ch => key(ch.to_ascii_lowercase()).map(Some),
                     }
                     .ok_or_else(|| format!("{token}: {hint}")))
                     .collect::<Result<Vec<_>, _>>()?;
@@ -354,7 +424,7 @@ impl AltRules {
     pub(crate) fn letters(rules: &[Rule]) -> String {
         Self::text_with(rules, |letter| match letter {
             b' ' => "␣".into(),
-            _ => char::from(letter).to_string(),
+            _ => symbol(letter).to_string(),
         })
     }
 
@@ -504,6 +574,45 @@ fn spot_rules(layout: &action_keys::Layout) -> Vec<Rule> {
     map_rules(&layout.alt_fingers, code)
 }
 
+/// Warnings for a layout's own rules that can never apply: each character
+/// they name that no key carries, with the rules naming it.
+pub(crate) fn unplaced(layout: &action_keys::Layout) -> Vec<String> {
+    if layout.alt_spots {
+        return Vec::new();
+    }
+    let placed = |letter: u8| {
+        layout
+            .slots
+            .iter()
+            .any(|slot| slot_letter(layout, slot) == Some(letter))
+    };
+    let mut missing: Vec<u8> = Vec::new();
+    for &letter in layout.alt_fingers.iter().flat_map(|rule| &rule.ngram).flatten() {
+        if !missing.contains(&letter) && !placed(letter) {
+            missing.push(letter);
+        }
+    }
+    missing
+        .into_iter()
+        .map(|letter| {
+            let rules: Vec<_> = layout
+                .alt_fingers
+                .iter()
+                .filter(|rule| rule.ngram.contains(&Some(letter)))
+                .cloned()
+                .collect();
+            let name = match letter {
+                b' ' => '␣',
+                _ => symbol(letter),
+            };
+            format!(
+                "alt fingers: no key is {name}, so these rules never apply: {}",
+                AltRules::letters(&rules)
+            )
+        })
+        .collect()
+}
+
 /// Undoes `pin`, naming each key by the letter on it now.
 pub(crate) fn unpin(layout: &mut action_keys::Layout) {
     if !layout.alt_spots {
@@ -521,7 +630,7 @@ pub(crate) fn unpin(layout: &mut action_keys::Layout) {
 }
 
 /// The letter naming a slot in rules: its text, an adaptive key's fallback,
-/// or else a magic key's one-character label (`*`).
+/// or else a magic key's one-character label (`*`, or `◇` as a symbol).
 fn slot_letter(layout: &action_keys::Layout, slot: &action_keys::Slot) -> Option<u8> {
     use action_keys::{Action, Binding, Emission};
     let text = match &slot.binding {
@@ -534,7 +643,13 @@ fn slot_letter(layout: &action_keys::Layout, slot: &action_keys::Slot) -> Option
                     ..
                 },
             ) => text,
-            _ => slot.label.as_bytes(),
+            _ => {
+                let mut chars = slot.label.chars();
+                match (chars.next(), chars.next()) {
+                    (Some(ch), None) if !ch.is_ascii() => return known_symbol(ch),
+                    _ => slot.label.as_bytes(),
+                }
+            }
         },
         Binding::Empty => return None,
     };
@@ -994,7 +1109,7 @@ pub(crate) fn to_json(rules: &[Rule]) -> Json {
                                 .iter()
                                 .map(|ch| {
                                     ch.map_or(Json::Null, |ch| {
-                                        Json::String((ch as char).to_string())
+                                        Json::String(symbol(ch).to_string())
                                     })
                                 })
                                 .collect(),

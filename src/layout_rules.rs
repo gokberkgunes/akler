@@ -15,7 +15,7 @@ fn character(ch: u8) -> String {
     if ch == b' ' {
         "␣".into()
     } else {
-        (ch as char).to_string()
+        crate::alt_fingers::symbol(ch).to_string()
     }
 }
 
@@ -148,6 +148,13 @@ pub(crate) fn lines(layout: &Layout, weights: &Weights) -> Vec<String> {
         weights.alt_fingers_label(),
         count("rule", layout.alt_fingers.len())
     ));
+    out.extend(
+        layout
+            .source_warnings
+            .iter()
+            .filter_map(|warning| warning.strip_prefix("alt fingers: "))
+            .map(|warning| format!("  ! {warning}")),
+    );
     if layout.alt_fingers.is_empty() {
         out.push("  No alternate-finger rules are defined.".into());
     } else {

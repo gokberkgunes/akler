@@ -4003,6 +4003,15 @@ pub fn dispatch(args: &[String]) -> Option<AppResult<()>> {
         let corpus_path = corpus_arg(args, 2)?;
         if matches!(command, "editor" | "optimizer") {
             let mut term = Terminal::open()?;
+            let problems: Vec<_> = l
+                .source_warnings
+                .iter()
+                .filter(|warning| warning.starts_with("alt fingers"))
+                .cloned()
+                .collect();
+            if !problems.is_empty() {
+                info_page(&mut term, "Layout warnings", &problems)?;
+            }
             let Some(corpus) = load_corpus_tui(&mut term, &corpus_path)? else {
                 return Ok(());
             };

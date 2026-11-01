@@ -1000,11 +1000,14 @@ impl Layout {
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self> {
-        if crate::layout_io::is_json_layout(text) {
-            crate::layout_io::parse_json_layout(text, path)
+        let mut layout = if crate::layout_io::is_json_layout(text) {
+            crate::layout_io::parse_json_layout(text, path)?
         } else {
-            Self::parse_dat(text, path)
-        }
+            Self::parse_dat(text, path)?
+        };
+        let unplaced = crate::alt_fingers::unplaced(&layout);
+        layout.source_warnings.extend(unplaced);
+        Ok(layout)
     }
 
     pub(crate) fn parse_dat(text: &str, path: &Path) -> Result<Self> {

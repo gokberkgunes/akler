@@ -1202,12 +1202,13 @@ pub(crate) fn parse_json_layout(text: &str, path: &Path) -> ak::Result<Layout> {
     let mut layout = result.map_err(|error| format!("{}: {error}", path.display()))?;
     if layout.alt_fingers.is_empty() {
         if let Some(notes) = alt_finger_notes(text) {
-            match crate::alt_fingers::AltRules::parse_letters(&notes) {
-                Ok(rules) => layout.alt_fingers = rules,
-                Err(error) => layout
-                    .source_warnings
-                    .push(format!("alt fingers notes ignored: {error}")),
-            }
+            let (rules, errors) = crate::alt_fingers::AltRules::parse_letter_groups(&notes);
+            layout.alt_fingers = rules;
+            layout.source_warnings.extend(
+                errors
+                    .into_iter()
+                    .map(|error| format!("alt fingers: notes group ignored: {error}")),
+            );
         }
     }
     Ok(layout)
@@ -1428,6 +1429,38 @@ mod tests {
             error.contains("Spark magic rules are not supported yet"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn alt_finger_notes_name_symbol_keys_and_keep_readable_groups() {
+        let notes = "// alt fingers\n//   t◇ t_◇ (LM LR) · rk (RM XX) · e, (RM RT) · k☆ (RI RM)\n//\n";
+        let body = example("◇", r#"{"inputs":"a◇","output":"ay"}"#, row_board())
+            .replace("q w ◇ r t", "q w ◇ r k")
+            .replace("a s d f g", "a s t f g");
+        let layout = Layout::parse(&format!("{notes}{body}"), Path::new("x.jsonc")).unwrap();
+        // The bad group goes, with a warning; the others stay.
+        assert_eq!(
+            crate::alt_fingers::AltRules::letters(&layout.alt_fingers),
+            "t◇ t_◇ (LM LR) e, (RM RT) k☆ (RI RM)"
+        );
+        let warnings = layout.source_warnings.join("\n");
+        assert!(warnings.contains("rk (RM XX): XX"), "{warnings}");
+        assert!(
+            warnings.contains("no key is ☆, so these rules never apply: k☆ (RI RM)"),
+            "{warnings}"
+        );
+        assert!(!warnings.contains("no key is ◇"), "{warnings}");
+        // ◇ names the magic key: its rules reach a position.
+        let mut pinned = layout.clone();
+        crate::alt_fingers::pin(&mut pinned);
+        assert_eq!(pinned.alt_fingers.len(), 3);
+        // Both file forms write the symbol back.
+        let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
+        assert!(jsonc.contains("\"◇\""), "{jsonc}");
+        let restored = Layout::parse(&jsonc, Path::new("x.jsonc")).unwrap();
+        assert_eq!(restored.alt_fingers, layout.alt_fingers);
+        let restored = Layout::parse(&layout.text(), Path::new("x.dat")).unwrap();
+        assert_eq!(restored.alt_fingers, layout.alt_fingers);
     }
 
     #[test]
