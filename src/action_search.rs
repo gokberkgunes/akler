@@ -659,9 +659,17 @@ impl Problem<'_> {
                     &mut full.proposal,
                     &mut Profile::default(),
                 )?;
-                full.cache.exact(&mut full.proposal);
             }
             self.full_pending = Some(movement);
+            // Screened full counts differ from a context-by-context replay
+            // only in the last bits: replay when those could decide a cap,
+            // or when joint searches score on them. A kept move replays
+            // when committed.
+            if self.soft_caps || self.near_cap() {
+                for full in self.full.iter_mut().flatten() {
+                    full.cache.exact(&mut full.proposal);
+                }
+            }
         }
         let mut excess = 0.0;
         if !self.soft_caps {

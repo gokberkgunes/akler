@@ -84,7 +84,11 @@ as without alternate fingers, and maps only the possible readers one by one:
 lyrebird and yeast search 60% faster, esp-r 30%. A move that touches no key a
 rule names or can move, and no key on a finger a rule moves keys onto,
 changes no rule's outcome: every context then just relabels its keys, so
-thumb-rule layouts like esp-r search about 70% faster again.
+thumb-rule layouts like esp-r search about 70% faster again. Limits are
+checked on the full contexts' screened sums, which replay context by context
+only when the last bits could decide a cap, and contexts no rule reads move
+there by relabelling their tails: capped lyrebird runs are about a third
+faster for it.
 
 Under `[ngrams]` limits, a context the limits dropped falls back to a shorter
 one, which can hide the key a rule reads: a dropped `asfg` loses the `a` that

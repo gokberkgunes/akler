@@ -3653,14 +3653,14 @@ fn add_pattern_with_fingers(
     geometry: &Geometry,
 ) {
     debug_assert_eq!(slots.len(), fingers.len());
-    let keys: Vec<_> = slots
-        .iter()
-        .zip(fingers)
-        .map(|(&slot, &finger)| crate::alt_fingers::with_finger(geometry.keys[slot], finger))
-        .collect();
+    assert!(slots.len() <= 3);
+    let mut keys = [geometry.keys[slots[0]]; 3];
+    for (key, (&slot, &finger)) in keys.iter_mut().zip(slots.iter().zip(fingers)) {
+        *key = crate::alt_fingers::with_finger(geometry.keys[slot], finger);
+    }
+    let keys = &keys[..slots.len()];
     if let Some(mana) = &mut raw.1 {
-        let ids: Vec<_> = (0..keys.len()).collect();
-        mana2_metrics::add_gram(mana, &keys, kind, &ids, f);
+        mana2_metrics::add_gram(mana, keys, kind, &[0, 1, 2][..keys.len()], f);
     }
     match kind {
         0 => {
@@ -4744,6 +4744,9 @@ pub(crate) struct Proposal {
     /// Screened `chord_direct` contexts whose grams the move relabels,
     /// ascending; a replay adds them to the changes (`expand_chord_relabels`).
     chord_relabels: Vec<u32>,
+    /// The same for `chord_free` contexts no rule reads, whose relabelled
+    /// grams take their moved keys' own fingers (`ChordGrams::moved_default`).
+    chord_free_relabels: Vec<u32>,
     /// Projected tails (`TailProjection`) by tail key, for the geometry they
     /// were computed with.
     projections: HashMap<u64, TailProjection, FastHash>,
@@ -4792,6 +4795,7 @@ impl Proposal {
             memos: Default::default(),
             chord_changes: Vec::new(),
             chord_relabels: Vec::new(),
+            chord_free_relabels: Vec::new(),
             examined: 0,
             all_contexts: false,
         }
@@ -6122,6 +6126,7 @@ impl Incremental {
         proposal.combo_usage_changes.clear();
         proposal.chord_changes.clear();
         proposal.chord_relabels.clear();
+        proposal.chord_free_relabels.clear();
         proposal.raw.clone_from(&self.raw);
         proposal.totals = self.totals;
         proposal.speed_populations = self.corpus.speed_populations;
@@ -6616,12 +6621,26 @@ impl Incremental {
                                 &self.default_fingers,
                             ))
                         };
-                        if aggregate && self.finite_effort && self.chord_direct[id] {
+                        // Fingers of contexts no rule reads stay their keys'
+                        // own, which screening keys leave out as for plain
+                        // relabels.
+                        let free = self.finite_effort
+                            && !self.chord_direct[id]
+                            && self.chord_free[id]
+                            && chords_ruled.is_some_and(|ruled| !ruled.reads(window.text()));
+                        if aggregate && self.finite_effort && (self.chord_direct[id] || free) {
                             // Screening moves just the tails holding a moved
                             // key; a replay relabels the whole grams.
                             let old = self.chord_grams[id].as_deref().unwrap();
                             #[cfg(test)]
-                            assert_eq!(old.moved(movement), remap(&mut mapper, &mut profile.ops)?);
+                            assert_eq!(
+                                if free {
+                                    old.moved_default(movement, &self.default_fingers)
+                                } else {
+                                    old.moved(movement)
+                                },
+                                remap(&mut mapper, &mut profile.ops)?
+                            );
                             let contribution_start = clock::<DETAIL>();
                             let mut changed = old.pressed().any(|key| {
                                 move_tail([key as u8, GAP, GAP], movement)[0] != key as u8
@@ -6635,7 +6654,9 @@ impl Incremental {
                                     proposal.net.add(self.tail_key(moved, None), weight);
                                 }
                             }
-                            if changed {
+                            if changed && free {
+                                proposal.chord_free_relabels.push(id as u32);
+                            } else if changed {
                                 proposal.chord_relabels.push(id as u32);
                             }
                             if DETAIL {
@@ -7241,35 +7262,57 @@ impl Incremental {
     /// Merge screened chord relabels into the proposal's per-context changes,
     /// ascending, as an unscreened trial records them.
     fn expand_chord_relabels(&self, proposal: &mut Proposal) {
-        if proposal.chord_relabels.is_empty() {
+        if proposal.chord_relabels.is_empty() && proposal.chord_free_relabels.is_empty() {
             return;
         }
         let movement = proposal.movement;
-        let changes = std::mem::take(&mut proposal.changes);
-        let chords = std::mem::take(&mut proposal.chord_changes);
-        let relabels = &proposal.chord_relabels;
-        let mut merged = Vec::with_capacity(changes.len() + relabels.len());
-        let mut ids = relabels.iter().map(|&id| id as usize).peekable();
-        for change in changes {
-            while let Some(id) = ids.next_if(|&id| id < change.0) {
-                merged.push((id, [GAP; 3]));
+        let mut relabels: Vec<(usize, bool)> = proposal
+            .chord_relabels
+            .iter()
+            .map(|&id| (id as usize, false))
+            .chain(proposal.chord_free_relabels.iter().map(|&id| (id as usize, true)))
+            .collect();
+        relabels.sort_unstable();
+        let relabel = |(id, free): (usize, bool)| {
+            let old = self.chord_grams[id].as_deref().unwrap();
+            let grams = if free {
+                old.moved_default(movement, &self.default_fingers)
+            } else {
+                old.moved(movement)
+            };
+            (id, grams)
+        };
+        // Changes, chord changes and finger changes stay ascending and in
+        // step; a chord context's finger change is a placeholder.
+        fn merge<T>(
+            into: Vec<(usize, T)>,
+            ids: &[(usize, bool)],
+            add: impl Fn((usize, bool)) -> (usize, T),
+        ) -> Vec<(usize, T)> {
+            let mut merged = Vec::with_capacity(into.len() + ids.len());
+            let mut ids = ids.iter().copied().peekable();
+            for item in into {
+                while let Some(id) = ids.next_if(|&(id, _)| id < item.0) {
+                    merged.push(add(id));
+                }
+                merged.push(item);
             }
-            merged.push(change);
+            merged.extend(ids.map(add));
+            merged
         }
-        merged.extend(ids.map(|id| (id, [GAP; 3])));
-        let relabel = |id: usize| (id, self.chord_grams[id].as_deref().unwrap().moved(movement));
-        let mut merged_chords = Vec::with_capacity(chords.len() + relabels.len());
-        let mut ids = relabels.iter().map(|&id| id as usize).peekable();
-        for chord in chords {
-            while let Some(id) = ids.next_if(|&id| id < chord.0) {
-                merged_chords.push(relabel(id));
-            }
-            merged_chords.push(chord);
+        proposal.changes = merge(std::mem::take(&mut proposal.changes), &relabels, |(id, _)| {
+            (id, [GAP; 3])
+        });
+        proposal.chord_changes =
+            merge(std::mem::take(&mut proposal.chord_changes), &relabels, relabel);
+        if self.finger_tails.is_some() {
+            proposal.finger_changes =
+                merge(std::mem::take(&mut proposal.finger_changes), &relabels, |(id, _)| {
+                    (id, [GAP; 3])
+                });
         }
-        merged_chords.extend(ids.map(relabel));
-        proposal.changes = merged;
-        proposal.chord_changes = merged_chords;
         proposal.chord_relabels.clear();
+        proposal.chord_free_relabels.clear();
     }
 
     /// Merge moved tail groups' members into the proposal's per-context
