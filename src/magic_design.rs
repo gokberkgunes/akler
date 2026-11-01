@@ -3532,6 +3532,18 @@ pub(crate) fn iterative_refine(
     });
     let mut archive = Vec::new();
     let mut seen = std::collections::BTreeSet::new();
+    // The starting design counts for its own position.
+    retain_candidate(
+        &current,
+        root,
+        0,
+        &current_summary,
+        &before,
+        opts,
+        &mut archive,
+        &mut seen,
+        settings.archive,
+    )?;
     let mut count = 0;
     let mut beam = vec![PolishSeed {
         layout: current,
@@ -3963,6 +3975,7 @@ pub(crate) fn extra_magic_seed(layout: &ak::Layout, left: bool) -> ak::Result<(a
     Ok((result, root))
 }
 
+#[cfg(test)]
 pub(crate) fn prepare(layout: &ak::Layout, placement: PlacementMode) -> ak::Result<ak::Layout> {
     match placement {
         PlacementMode::ExtraBothPinkies => both_outer_magic_seed(layout).map(|x| x.0),
@@ -3995,9 +4008,10 @@ fn retain_candidate(
     seen: &mut std::collections::BTreeSet<String>,
     limit: usize,
 ) -> ak::Result<()> {
+    // The archive keeps the best layout found for each magic-key position,
+    // within the caps, whether or not it beats the baseline's score.
     if (!settings.roots.is_empty() && !settings.roots.contains(&root))
         || !evaluated.score.is_finite()
-        || evaluated.score >= baseline.score
         || !feasible(evaluated, baseline, settings)
     {
         return Ok(());
@@ -4005,6 +4019,12 @@ fn retain_candidate(
     let (rules, _) = original(layout, root).ok_or("Unsupported magic candidate.")?;
     if rules.len() > settings.max_rules {
         return Ok(());
+    }
+    if let Some(index) = archive.iter().position(|candidate| candidate.root == root) {
+        if evaluated.score >= archive[index].score {
+            return Ok(());
+        }
+        archive.remove(index);
     }
     let text = crate::layout_export::jsonc_text(layout)?;
     if !seen.insert(text) {
@@ -4403,7 +4423,7 @@ mod tests {
     }
 
     #[test]
-    fn iterative_archive_is_distinct_improving_and_exportable() {
+    fn iterative_archive_keeps_one_exportable_design_per_position() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
             Path::new("magic.dat"),
@@ -4443,8 +4463,9 @@ mod tests {
         assert!(!result.candidates.is_empty());
         assert!(result.candidate_count > 0);
         let mut distinct = std::collections::BTreeSet::new();
+        let mut roots = std::collections::BTreeSet::new();
         for candidate in result.candidates {
-            assert!(candidate.score < result.before.score);
+            assert!(roots.insert(candidate.root), "one design per magic-key position");
             assert!(candidate.rules.len() <= settings.rule_settings.max_rules);
             assert!(candidate.rules.iter().all(|r| r.frequency > 0.0));
             let text = crate::layout_export::jsonc_text(&candidate.layout).unwrap();
@@ -4461,6 +4482,62 @@ mod tests {
             .unwrap();
             assert_eq!(score.score.to_bits(), candidate.score.to_bits());
         }
+    }
+
+    #[test]
+    fn a_single_allowed_position_gives_its_best_layout_even_without_a_gain() {
+        let layout = prepare(
+            &ak::Layout::parse(
+                &crate::action_fast::tests::fixtures()[0],
+                Path::new("magic.dat"),
+            )
+            .unwrap(),
+            PlacementMode::ExtraBothPinkies,
+        )
+        .unwrap();
+        let magic = (0..layout.slots.len())
+            .find(|&slot| matches!(layout.slots[slot].binding, ak::Binding::Named(_)))
+            .unwrap();
+        // Only SFB counts and q and p are on different hands, with every
+        // letter locked: nothing can beat the start.
+        let corpus = ng::NgramCorpus::from_text(
+            r#"{"letters":{"q":3,"p":2},"bigrams":{"qp":1,"pq":1},"trigrams":{"qpq":1}}"#,
+            Path::new("magic.json"),
+        )
+        .unwrap();
+        let mut values = [0.0; N_WEIGHTS];
+        values[SFB] = 1.0;
+        let settings = IterativeSettings {
+            workers: 1,
+            passes: 1,
+            archive: 5,
+            rule_settings: Settings {
+                roots: vec![magic],
+                locked_slots: (0..layout.slots.len())
+                    .filter(|&slot| matches!(layout.slots[slot].binding, ak::Binding::Text(_)))
+                    .collect(),
+                max_rules: 2,
+                shortlist: 4,
+                sfb_limit: None,
+                sfs_limit: None,
+                ..Settings::default()
+            },
+            placement: PlacementMode::Existing,
+            ..IterativeSettings::default()
+        };
+        let result = iterative_refine(
+            &layout,
+            &layout,
+            &corpus,
+            &Weights::new(values),
+            &settings,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].root, magic);
+        assert!(result.candidates[0].score <= result.before.score + 1e-9);
     }
 
     #[test]

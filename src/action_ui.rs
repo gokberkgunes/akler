@@ -2239,7 +2239,10 @@ fn action_optimizer_setup(
     before_magic: &mut Option<(ak::Layout, Vec<bool>)>,
     stashed_swaps: &mut Option<Vec<crate::swap_fit::Swap>>,
     run_now: bool,
+    magic_tab: &mut crate::MagicTab,
+    open_magic: bool,
 ) -> AppResult<bool> {
+    let mut pending = open_magic.then_some(Event::Char('5'));
     // The selected optimizer panel belongs to this setup session.
     term.optimizer_weights = false;
     term.optimizer_score = false;
@@ -2364,7 +2367,7 @@ fn action_optimizer_setup(
                 metric_score_rows(&before.metrics, &after.metrics, weights)
             };
             let mut frame = score_frame(term.width(), rows, term.decimals());
-            let keys = "1 overview · 2 settings · 3 weights · Space run · q back";
+            let keys = "1 overview · 2 settings · 3 weights · 5 magic · Space run · q back";
             let h = frame.h;
             frame.text(0, h - 3, &short(status, frame.w), CYAN);
             frame.text(0, h - 2, &short(keys, frame.w), MUTED);
@@ -2424,7 +2427,10 @@ fn action_optimizer_setup(
         );
         scroll = scroll.min(frame.h.saturating_sub(term.size.1));
         term.present(&frame, scroll)?;
-        let mut event = term.event()?;
+        let mut event = match pending.take() {
+            Some(event) => event,
+            None => term.event()?,
+        };
         if scroll_event(&event, &mut scroll, frame.h, term.size.1) {
             continue;
         }
@@ -2596,6 +2602,29 @@ fn action_optimizer_setup(
             }
         }
 
+        // The Magic tab runs its own screen until another tab is chosen.
+        if matches!(event, Event::Char('5')) {
+            event = match crate::optimizer_magic_tab(
+                term,
+                magic_tab,
+                layout,
+                original,
+                corpus,
+                weights,
+                settings,
+                magic_rules,
+                locks,
+                magic_root,
+                before_magic,
+            )? {
+                crate::MagicTabExit::Key(key) => Event::Char(key),
+                crate::MagicTabExit::Applied(message) => {
+                    *status = message;
+                    *current_cache = None;
+                    Event::Char('1')
+                }
+            };
+        }
         // Handle shared tab shortcuts before panel-specific commands. This is
         // also the path used by mouse clicks on the tab bar.
         match event {
@@ -2797,6 +2826,7 @@ fn action_optimizer_setup(
                 &[
                     "Space\tRun the optimizer.".into(),
                     "m\tToggle magic-key injection and joint letter/rule search.".into(),
+                    "5\tMagic tab: search magic-key positions and rules, then apply a candidate.".into(),
                     "1 / 2 / 3\tOverview / Settings / Weights.".into(),
                     "e / w\tOpen Settings / Weights; press again for Overview.".into(),
                     "Enter\tChoose a weight for the selected scoring system.".into(),
@@ -3330,13 +3360,37 @@ fn action_optimizer(
     let original = original.with_spare_keys();
     let locks = optimizer_locks(&original, action_default_locks(&original));
     action_optimizer_session(
-        term, original, corpus, weights, settings, locks, false, false,
+        term, original, corpus, weights, settings, locks, false, false, false,
+    )
+    .map(|_| ())
+}
+
+/// The action optimizer opened on its Magic tab (the magic designer).
+pub(crate) fn action_optimizer_magic(
+    term: &mut Terminal,
+    original: ak::Layout,
+    corpus: ng::NgramCorpus,
+) -> AppResult<()> {
+    let config = load_app_config()?;
+    let original = original.with_spare_keys();
+    let locks = optimizer_locks(&original, action_default_locks(&original));
+    action_optimizer_session(
+        term,
+        original,
+        corpus,
+        config.weights,
+        config.search,
+        locks,
+        false,
+        false,
+        true,
     )
     .map(|_| ())
 }
 
 /// The action optimizer for a converted plain layout, injecting a magic key
-/// when `magic` is set and starting a run at once when `start` is set.
+/// when `magic` is set, starting a run at once when `start` is set, and
+/// opening on the Magic tab when `magic_tab` is set.
 pub(crate) fn action_optimizer_from_plain(
     term: &mut Terminal,
     original: ak::Layout,
@@ -3346,9 +3400,10 @@ pub(crate) fn action_optimizer_from_plain(
     locks: Vec<bool>,
     magic: bool,
     start: bool,
+    magic_tab: bool,
 ) -> AppResult<bool> {
     action_optimizer_session(
-        term, original, corpus, weights, settings, locks, magic, start,
+        term, original, corpus, weights, settings, locks, magic, start, magic_tab,
     )
 }
 
@@ -3361,8 +3416,11 @@ fn action_optimizer_session(
     mut locks: Vec<bool>,
     enable: bool,
     start: bool,
+    open_magic: bool,
 ) -> AppResult<bool> {
     let mut layout = original.clone();
+    let mut magic_tab = crate::MagicTab::new();
+    let mut open_magic = open_magic;
     let mut before_magic = None;
     let mut run_now = start;
     let mut magic_root = if enable {
@@ -3406,6 +3464,8 @@ fn action_optimizer_session(
             &mut before_magic,
             &mut stashed_swaps,
             std::mem::take(&mut run_now),
+            &mut magic_tab,
+            std::mem::take(&mut open_magic),
         )? {
             return Ok(true);
         }

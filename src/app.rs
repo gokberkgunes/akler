@@ -503,7 +503,7 @@ const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
     ],
     &[
         (5, "Weakness report", "Find the layout's largest problems"),
-        (6, "Magic designer", "Design and compare magic keys"),
+        (6, "Magic designer", "Optimizer Magic tab: design magic keys"),
         (8, "Scissor test", "Type words and rate scissor pairs"),
     ],
 ];

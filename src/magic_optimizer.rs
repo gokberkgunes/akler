@@ -1895,6 +1895,46 @@ pub(crate) fn run_controlled_with_status(
     Ok((best.layout, snapshot))
 }
 
+/// A magic key on its seed's own outer slot, as the magic design search
+/// starts from, with `locks` carried over to the extended board. The magic
+/// key is unlocked: the search may move it. As in `inject`, the other empty
+/// outer keys are locked.
+pub(crate) fn inject_default(
+    layout: &ak::Layout,
+    locks: &[bool],
+) -> ak::Result<(ak::Layout, usize, Vec<bool>)> {
+    let (injected, root) = design::both_outer_magic_seed(layout)?;
+    let shift = i8::from(!layout.left_outer);
+    let mut mapped_locks = vec![false; injected.slots.len()];
+    for (index, old) in layout.slots.iter().enumerate() {
+        let col = old.col.checked_add(shift).ok_or("Physical column overflow.")?;
+        let at = injected
+            .slots
+            .iter()
+            .position(|s| s.main == old.main && s.row == old.row && s.col == col)
+            .ok_or("An original physical slot was lost during magic injection.")?;
+        if at == root && matches!(old.binding, ak::Binding::Text(_)) {
+            return Err(
+                "No empty key is available to seed magic without replacing an ordinary binding."
+                    .into(),
+            );
+        }
+        mapped_locks[at] = locks.get(index).copied().unwrap_or(false);
+    }
+    let outer = injected.slots.iter().filter(|s| s.main).map(|s| s.col).max();
+    for (index, slot) in injected.slots.iter().enumerate() {
+        if slot.main
+            && (slot.col == 0 || Some(slot.col) == outer)
+            && matches!(slot.binding, ak::Binding::Empty)
+        {
+            mapped_locks[index] = true;
+        }
+    }
+    mapped_locks[root] = false;
+    crate::layout_export::jsonc_text(&injected)?;
+    Ok((injected, root, mapped_locks))
+}
+
 /// Inject a dedicated magic action without discarding the selected binding.
 /// Lock indices follow the original physical positions after column extension.
 /// A locked selected binding also stays locked at its displacement destination.

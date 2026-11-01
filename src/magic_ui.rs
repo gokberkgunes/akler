@@ -28,8 +28,8 @@ fn magic_root_label(layout: &action_keys::Layout, index: usize) -> String {
     )
 }
 
+/// Open `selected` in the action optimizer on its Magic tab.
 fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -> AppResult<()> {
-    use crate::magic_design::{IterativeSettings, PlacementMode, Settings};
     if data.mana2 {
         return info_page(
             term,
@@ -40,7 +40,7 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
     let Some(row) = data.rows.get(selected) else {
         return Ok(());
     };
-    let (mut original, existing_corpus) = match row {
+    let (original, existing_corpus) = match row {
         RankRow::Plain { model, .. } => (
             board_as_action_layout(&model.board, &model.board.symbols)?,
             None,
@@ -48,7 +48,7 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
         RankRow::Action { layout, corpus, .. } => (layout.clone(), Some(Arc::clone(corpus))),
     };
     let corpus = match existing_corpus {
-        Some(corpus) => corpus,
+        Some(corpus) => (*corpus).clone(),
         None => {
             let path = data.path.clone();
             let limits = data.ngrams;
@@ -64,564 +64,411 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
             else {
                 return Ok(());
             };
-            Arc::new(corpus)
+            corpus
         }
     };
-    let config = load_app_config()?;
-    let search = config.search;
-    let mut settings = IterativeSettings {
-        rule_settings: Settings {
-            roots: Vec::new(),
-            locked_slots: Vec::new(),
-            max_rules: 5,
-            shortlist: 24,
-            sfb_limit: search.sfb_limit,
-            sfs_limit: search.sfs_limit,
-            travel_limit: search.travel_limit,
-            sftravel_limit: search.sftravel_limit,
-        },
-        passes: 3,
-        workers: search.workers,
-        archive: 20,
-        placement: PlacementMode::ExtraBothPinkies,
+    action_ui::action_optimizer_magic(term, original, corpus)
+}
+
+/// The optimizer's Magic tab, kept across visits in one optimizer session:
+/// its own design settings, the last search's candidates and what they
+/// replace.
+pub(crate) struct MagicTab {
+    /// Finger groups (`MAGIC_FINGER_GROUPS`) that may hold the magic key.
+    groups: [bool; 5],
+    passes: usize,
+    shortlist: usize,
+    retain: usize,
+    archive: Option<crate::magic_design::DesignArchive>,
+    /// The layout searched, before a magic key it added and with its
+    /// adaptive swaps; the searched layout's locks, magic key, and swaps.
+    seed: Option<MagicSeed>,
+    /// The selected row: a setting, then the candidates.
+    selected: usize,
+}
+
+struct MagicSeed {
+    before: action_keys::Layout,
+    before_locks: Vec<bool>,
+    locks: Vec<bool>,
+    root: usize,
+    swaps: Vec<crate::swap_fit::Swap>,
+}
+
+/// What a Magic tab search starts from: the optimizer's layout without its
+/// adaptive swaps (`swaps`), with a magic key added on an outer key when it
+/// has none, its locks, the keys the magic key may take and the locked keys
+/// no letter leaves.
+struct MagicPlan {
+    seed: action_keys::Layout,
+    root: usize,
+    locks: Vec<bool>,
+    allowed: Vec<usize>,
+    locked_slots: Vec<usize>,
+    swaps: Vec<crate::swap_fit::Swap>,
+}
+
+/// The `MagicPlan` for `layout`: a locked magic key keeps its key; an
+/// unlocked one may take any unlocked key the finger `groups` and `magic`
+/// settings allow.
+fn magic_search_plan(
+    layout: &action_keys::Layout,
+    locks: &[bool],
+    magic_root: Option<usize>,
+    groups: &[bool; 5],
+    magic: &MagicSettings,
+) -> Result<MagicPlan, String> {
+    let swaps = crate::swap_fit::swaps_of(layout);
+    let base = crate::swap_fit::split(layout).0;
+    // A layout's own magic key, even one of several the optimizer does not
+    // search, before a new one.
+    let existing = magic_root.or_else(|| {
+        base.slots.iter().position(|slot| {
+            matches!(slot.binding, action_keys::Binding::Named(_))
+                && crate::layout_io::dedicated_magic_label(&slot.label)
+        })
+    });
+    let (seed, root, seed_locks) = match existing {
+        Some(root) => (base, root, locks.to_vec()),
+        None => crate::magic_optimizer::inject_default(&base, locks)
+            .map_err(|error| format!("Cannot add a magic key: {error}"))?,
     };
-    let mut status = String::new();
-    let mut preview = match crate::magic_design::prepare(&original, settings.placement) {
-        Ok(layout) => layout,
-        Err(error) => {
-            status = error;
-            settings.placement = PlacementMode::Existing;
-            original.clone()
-        }
+    let keys = action_ui::physical_keys(&seed);
+    let allowed: Vec<usize> = if seed_locks.get(root).copied().unwrap_or(false) {
+        vec![root]
+    } else {
+        crate::magic_design::placement_roots(&seed)
+            .into_iter()
+            .filter(|&slot| {
+                (slot == root || !seed_locks[slot])
+                    && magic.allows(keys[slot])
+                    && MAGIC_FINGER_GROUPS
+                        .iter()
+                        .zip(groups)
+                        .any(|((_, fingers), &on)| on && fingers.contains(&seed.slots[slot].finger))
+            })
+            .collect()
     };
-    let mut allowed: Vec<usize> = crate::magic_design::placement_roots(&preview)
-        .into_iter()
-        .filter(|&i| {
-            let slot = &preview.slots[i];
-            config
-                .magic
-                .allowed_keys
-                .as_ref()
-                .map_or(config.magic.allowed_fingers[slot.finger], |keys| {
-                    keys.contains(&(slot.row as usize, slot.col as usize))
-                })
+    if allowed.is_empty() {
+        return Err("No key may hold the magic key: unblock a finger (p) or unlock a key.".into());
+    }
+    let locked_slots = (0..seed_locks.len())
+        .filter(|&slot| {
+            seed_locks[slot]
+                && matches!(
+                    seed.slots[slot].binding,
+                    action_keys::Binding::Text(_) | action_keys::Binding::Empty
+                )
         })
         .collect();
-    let mut reference = preview.clone();
-    // Keys the search keeps in place, as in the optimizer: click a key, or
-    // H/U/L. Thumbs and spare keys start locked.
-    let mut locks = action_ui::optimizer_locks(&reference, action_ui::action_default_locks(&reference));
-    let mut root = allowed
-        .first()
-        .copied()
-        .unwrap_or_else(|| magic_preview_root(&preview));
-    magic_move_preview(&mut preview, &reference, root);
-    let mut archive: Option<crate::magic_design::DesignArchive> = None;
-    let mut candidate = 0usize;
-    let mut candidates_page = false;
-    let mut selected_setting = 0usize;
-    let mut candidate_offset = 0usize;
-    let mut rule_report: Option<(String, Vec<String>)> = None;
-    loop {
-        term.refresh_size()?;
-        let viewport_size = term.size;
-        let chosen = archive.as_ref().and_then(|a| a.candidates.get(candidate));
-        let shown = if candidates_page {
-            chosen.map(|c| &c.layout).unwrap_or(&preview)
-        } else {
-            &preview
-        };
-        let selected_root = if candidates_page {
-            chosen.map(|c| c.root)
-        } else {
-            Some(root)
-        };
-        let height = term.size.1.max(1);
-        let footer = height.saturating_sub(2);
-        let mut candidate_rows = 1usize;
-        let mut c = Canvas::new(term.width(), height);
-        let tabs = if c.w >= 30 {
-            [" [1] Design ", " [2] Candidates "]
-        } else {
-            [" [1] ", " [2] "]
-        };
-        workspace_tabs(&mut c, usize::from(candidates_page), &tabs);
-        c.text(
-            0,
-            1,
-            &short(&format!("{} · {}", original.name, data.name), c.w),
-            MUTED,
-        );
-        if locks.len() != reference.slots.len() {
-            locks = action_ui::optimizer_locks(
-                &reference,
-                action_ui::action_default_locks(&reference),
-            );
+    Ok(MagicPlan { seed, root, locks: seed_locks, allowed, locked_slots, swaps })
+}
+
+/// A candidate as the optimizer's layout and locks: its adaptive swaps
+/// back, and the magic key's lock moved with it, as is the displaced
+/// letter's.
+fn magic_applied(
+    entry: &crate::magic_design::Candidate,
+    seed: &MagicSeed,
+) -> (action_keys::Layout, Vec<bool>) {
+    let mut locks = seed.locks.clone();
+    if entry.root != seed.root && entry.root < locks.len() && seed.root < locks.len() {
+        locks.swap(entry.root, seed.root);
+    }
+    let mut layout = entry.layout.clone();
+    if !seed.swaps.is_empty() {
+        layout = crate::swap_fit::install(&layout, &seed.swaps);
+    }
+    (layout, locks)
+}
+
+/// How the Magic tab was left.
+pub(crate) enum MagicTabExit {
+    /// Another tab's key, or `q` to leave the optimizer.
+    Key(char),
+    /// A candidate became the optimizer's layout; the message says so.
+    Applied(String),
+}
+
+const MAGIC_SETTING_ROWS: usize = 4;
+
+impl MagicTab {
+    pub(crate) fn new() -> Self {
+        let fingers = load_app_config()
+            .map(|config| config.magic.allowed_fingers)
+            .unwrap_or([true; 10]);
+        Self {
+            groups: std::array::from_fn(|group| {
+                MAGIC_FINGER_GROUPS[group].1.iter().any(|&finger| fingers[finger])
+            }),
+            passes: 3,
+            shortlist: 24,
+            retain: 20,
+            archive: None,
+            seed: None,
+            selected: 0,
         }
+    }
+
+    fn blocked(&self) -> String {
+        let names: Vec<_> = MAGIC_FINGER_GROUPS
+            .iter()
+            .zip(self.groups)
+            .filter(|(_, on)| !on)
+            .map(|((name, _), _)| name.to_ascii_lowercase())
+            .collect();
+        if names.is_empty() {
+            "none".into()
+        } else {
+            names.join(", ")
+        }
+    }
+}
+
+/// The Magic tab of the action optimizer: searches magic-key positions,
+/// rules and the letters around them on the optimizer's layout, with its
+/// locks, corpus, weights, caps, workers and magic rule limit. A locked
+/// magic key keeps its key; locked letters stay put. Applying a candidate
+/// makes it the optimizer's layout, whose run then fits adaptive swaps and
+/// combos as its settings say.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn optimizer_magic_tab(
+    term: &mut Terminal,
+    state: &mut MagicTab,
+    layout: &mut action_keys::Layout,
+    original: &action_keys::Layout,
+    corpus: &action_ngrams::NgramCorpus,
+    weights: &Weights,
+    settings: &SearchSettings,
+    max_rules: usize,
+    locks: &mut Vec<bool>,
+    magic_root: &mut Option<usize>,
+    before_magic: &mut Option<(action_keys::Layout, Vec<bool>)>,
+) -> AppResult<MagicTabExit> {
+    use crate::magic_design::{IterativeSettings, PlacementMode, Settings};
+    let mut status = String::new();
+    let mut scroll = 0;
+    loop {
+        let candidates = state
+            .archive
+            .as_ref()
+            .map_or(&[][..], |archive| &archive.candidates[..]);
+        state.selected = state
+            .selected
+            .min(MAGIC_SETTING_ROWS + candidates.len().saturating_sub(1));
+        let chosen = state
+            .selected
+            .checked_sub(MAGIC_SETTING_ROWS)
+            .and_then(|index| candidates.get(index));
+        let mut c = Canvas::new(term.width(), 200);
+        optimizer_tabs(&mut c, 4, &corpus.name, &layout.name, &settings.mode);
+        let shown = chosen.map_or(&*layout, |candidate| &candidate.layout);
+        let root = chosen.map(|candidate| candidate.root).or(*magic_root);
         let mut y = action_ui::action_keyboard(
             &mut c,
             2,
             shown,
-            if candidates_page && shown.slots.len() == reference.slots.len() {
-                &reference
-            } else {
-                shown
-            },
-            (!candidates_page && locks.len() == shown.slots.len()).then_some(&locks[..]),
-            selected_root,
+            if shown.slots.len() == layout.slots.len() { &*layout } else { shown },
+            (chosen.is_none() && locks.len() == layout.slots.len()).then_some(&locks[..]),
+            root,
         ) + 1;
-        if candidates_page {
-            if let Some(a) = &archive {
-                if let Some(entry) = chosen {
-                    y = grouped_metric_table(
-                        &mut c,
-                        y,
-                        &a.before.metrics,
-                        &entry.metrics,
-                        &entry.raw,
-                        &entry.totals,
-                        term.decimals(),
-                        if term.simple_stats {
-                            &SIMPLE_TABLE_GROUPS
-                        } else {
-                            &EDITOR_TABLE_GROUPS
-                        },
-                        true,
-                        false,
-                    );
-                    y = finger_table(
-                        &mut c,
-                        y + 1,
-                        &a.before.metrics,
-                        &entry.metrics,
-                        term.decimals(),
-                    );
-                    y = score_panel(
-                        &mut c,
-                        y + 1,
-                        &breakdown(&a.before.metrics, &data.weights),
-                        &breakdown(&entry.metrics, &data.weights),
-                        None,
-                        term.decimals(),
-                    );
-                    y += 1;
-                    if let Some(off) = entry.rules_off_score {
-                        c.text(
-                            0,
-                            y,
-                            &format!(
-                                "Rules off {:.4} · Rules on {:.4} · Rules gain ",
-                                off, entry.score
-                            ),
-                            MUTED,
-                        );
-                        let x = format!(
-                            "Rules off {:.4} · Rules on {:.4} · Rules gain ",
-                            off, entry.score
-                        )
-                        .chars()
-                        .count();
-                        c.text(
-                            x,
-                            y,
-                            &format!("{:+.4}", off - entry.score),
-                            if off > entry.score + 1e-9 {
-                                GREEN
-                            } else if off < entry.score - 1e-9 {
-                                RED
-                            } else {
-                                FG
-                            },
-                        );
-                    } else {
-                        c.text(
-                            0,
-                            y,
-                            &short(
-                                &format!(
-                                    "Rules comparison: n/a · {}",
-                                    entry.rules_off_note.as_deref().unwrap_or("unavailable")
-                                ),
-                                c.w,
-                            ),
-                            MUTED,
-                        );
-                    }
-                    y += 2;
-                }
-                // Keep three result rows available when the terminal can hold them.
-                let list_reserve = 5usize;
-                if y + list_reserve > footer {
-                    c = Canvas::new(term.width(), height);
-                    workspace_tabs(&mut c, 1, &tabs);
-                    c.text(
-                        0,
-                        1,
-                        &short(&format!("{} · {}", original.name, data.name), c.w),
-                        MUTED,
-                    );
-                    y = 2;
-                    let mut keyboard = Canvas::new(c.w, 40);
-                    let keyboard_end = action_ui::action_keyboard(
-                        &mut keyboard,
-                        0,
-                        shown,
-                        &reference,
-                        None,
-                        selected_root,
-                    );
-                    if y + keyboard_end + 3 + list_reserve <= footer {
-                        for row in 0..keyboard_end {
-                            c.cells[(y + row) * c.w..(y + row + 1) * c.w]
-                                .clone_from_slice(&keyboard.cells[row * c.w..(row + 1) * c.w]);
-                        }
-                        for (mut rect, action) in keyboard.hits {
-                            rect.y += y;
-                            c.hit(rect, action);
-                        }
-                        y += keyboard_end + 1;
-                    } else if y + 2 + list_reserve <= footer {
-                        c.text(
-                            0,
-                            y,
-                            &short(
-                                &format!(
-                                    "Keys: {}",
-                                    shown
-                                        .slots
-                                        .iter()
-                                        .filter(|slot| slot.main)
-                                        .map(|slot| slot.label.as_str())
-                                        .collect::<Vec<_>>()
-                                        .join(" ")
-                                ),
-                                c.w,
-                            ),
-                            MUTED,
-                        );
-                        y += 1;
-                    }
-                    if let Some(entry) = chosen {
-                        let m = &entry.metrics.v;
-                        c.text(
-                            0,
-                            y,
-                            &short(
-                                &format!(
-                                    "Score {:.5} · SFB {:.4} · SFS {:.4} · LSB {:.4}",
-                                    entry.score, m[SFB], m[SFS], m[LSB]
-                                ),
-                                c.w,
-                            ),
-                            FG,
-                        );
-                        y += 1;
-                    }
-                }
-                // Very short terminals prioritize the candidate list.
-                y = y.min(footer.saturating_sub(list_reserve));
-                let results_start = y;
+        let own_root = magic_root.or_else(|| {
+            layout.slots.iter().position(|slot| {
+                matches!(slot.binding, action_keys::Binding::Named(_))
+                    && crate::layout_io::dedicated_magic_label(&slot.label)
+            })
+        });
+        let magic_line = match own_root {
+            Some(root) if locks.get(root).copied().unwrap_or(false) => format!(
+                "Magic key {} is locked: the search finds the best layout around it. Click it to let it move.",
+                layout.slots[root].label
+            ),
+            Some(root) => format!(
+                "Magic key {}: the search tries each allowed key for it. Click it to lock it in place.",
+                layout.slots[root].label
+            ),
+            None => "No magic key yet: the search adds one on an outer key and moves it to an allowed key.".into(),
+        };
+        if chosen.is_some() {
+            c.text(0, y, "Candidate shown; select a setting row to edit locks.", MUTED);
+        } else {
+            c.text(0, y, &short(&magic_line, c.w), CYAN);
+        }
+        y += 2;
+        let setting_rows = [
+            format!("Finger blocks: {}", state.blocked()),
+            format!("Passes: {}", state.passes),
+            format!("Rule shortlist: {}", state.shortlist),
+            format!("Positions shown: {}", state.retain),
+        ];
+        for (index, text) in setting_rows.iter().enumerate() {
+            let row = Rect { x: 0, y, w: c.w, h: 1 };
+            c.text(1, y, text, FG);
+            if index == state.selected {
+                c.row_style(row, Some((42, 42, 42)), false);
+            }
+            c.hit(row, Action::Setting(index));
+            y += 1;
+        }
+        c.text(
+            1,
+            y,
+            &short(
+                &format!(
+                    "Rules per key {} (Settings · Magic rules); caps, workers and weights as the optimizer's",
+                    max_rules.clamp(1, crate::magic_design::MAX_RULES)
+                ),
+                c.w.saturating_sub(1),
+            ),
+            MUTED,
+        );
+        y += 2;
+        if let Some(archive) = &state.archive {
+            c.text(0, y, "  Magic key        Score       SFB      SFS      LSB  Rules gain", FG);
+            y += 1;
+            let m = &archive.before.metrics.v;
+            c.text(
+                0,
+                y,
+                &format!(
+                    "  Start      {:>10.5} {:>8.4} {:>8.4} {:>8.4}",
+                    archive.before.score, m[SFB], m[SFS], m[LSB]
+                ),
+                MUTED,
+            );
+            y += 1;
+            let before = &archive.before.metrics.v;
+            for (index, entry) in candidates.iter().enumerate() {
+                let row = MAGIC_SETTING_ROWS + index;
+                let m = &entry.metrics.v;
+                c.text(0, y, if row == state.selected { "●" } else { " " }, CYAN);
+                let key = &entry.layout.slots[entry.root];
                 c.text(
-                    0,
+                    2,
                     y,
-                    "     Score       SFB      SFS      LSB      FJB      RED  Rules gain",
+                    &short(
+                        &format!(
+                            "{} r{}c{}",
+                            FINGER_NAMES.get(key.finger).copied().unwrap_or("?"),
+                            key.row + 1,
+                            key.col + 1
+                        ),
+                        10,
+                    ),
                     FG,
                 );
-                y += 1;
-                let m = &a.before.metrics.v;
-                c.text(
-                    0,
-                    y,
-                    &format!(
-                        "B {:>10.5} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4}",
-                        a.before.score,
-                        m[SFB],
-                        m[SFS],
-                        m[LSB],
-                        m[DAFJB] + m[CAFJB] + m[DNFJB] + m[CNFJB],
-                        m[REDIR]
-                    ),
-                    MUTED,
-                );
-                y += 1;
-                candidate_rows = footer.saturating_sub(y).max(1);
-                candidate_offset =
-                    candidate_offset.min(a.candidates.len().saturating_sub(candidate_rows));
-                if candidate < candidate_offset {
-                    candidate_offset = candidate;
-                } else if candidate >= candidate_offset + candidate_rows {
-                    candidate_offset = candidate + 1 - candidate_rows;
-                }
-                for (i, entry) in a
-                    .candidates
-                    .iter()
-                    .enumerate()
-                    .skip(candidate_offset)
-                    .take(candidate_rows)
-                {
-                    let m = &entry.metrics.v;
-                    c.text(
-                        0,
-                        y,
-                        &format!(
-                            "{} {:>10.5} {:>8.4} {:>8.4} {:>8.4} {:>8.4} {:>8.4}",
-                            if i == candidate { '●' } else { ' ' },
-                            entry.score,
-                            m[SFB],
-                            m[SFS],
-                            m[LSB],
-                            m[DAFJB] + m[CAFJB] + m[DNFJB] + m[CNFJB],
-                            m[REDIR]
-                        ),
-                        if i == candidate { CYAN } else { FG },
-                    );
-                    let before = &a.before.metrics.v;
-                    for (x, value, baseline, width, precision) in [
-                        (2, entry.score, a.before.score, 10, 5),
-                        (13, m[SFB], before[SFB], 8, 4),
-                        (22, m[SFS], before[SFS], 8, 4),
-                        (31, m[LSB], before[LSB], 8, 4),
-                        (
-                            40,
-                            m[DAFJB] + m[CAFJB] + m[DNFJB] + m[CNFJB],
-                            before[DAFJB] + before[CAFJB] + before[DNFJB] + before[CNFJB],
-                            8,
-                            4,
-                        ),
-                        (49, m[REDIR], before[REDIR], 8, 4),
-                    ] {
-                        let color = if (value - baseline).abs() < 1e-9 {
-                            FG
-                        } else if value < baseline {
-                            GREEN
-                        } else {
-                            RED
-                        };
-                        c.text(x, y, &format!("{value:>width$.precision$}"), color);
-                    }
-                    if let Some(off) = entry.rules_off_score {
-                        c.text(
-                            58,
-                            y,
-                            &format!("{:+10.4}", off - entry.score),
-                            if off > entry.score + 1e-9 {
-                                GREEN
-                            } else if off < entry.score - 1e-9 {
-                                RED
-                            } else {
-                                FG
-                            },
-                        );
+                for (x, value, baseline, width, precision) in [
+                    (13, entry.score, archive.before.score, 10, 5),
+                    (24, m[SFB], before[SFB], 8, 4),
+                    (33, m[SFS], before[SFS], 8, 4),
+                    (42, m[LSB], before[LSB], 8, 4),
+                ] {
+                    let color = if (value - baseline).abs() < 1e-9 {
+                        FG
+                    } else if value < baseline {
+                        GREEN
                     } else {
-                        c.text(58, y, "       n/a", MUTED);
-                    }
-                    let row = Rect {
-                        x: 0,
-                        y,
-                        w: c.w.min(69),
-                        h: 1,
+                        RED
                     };
-                    if i == candidate {
-                        c.row_style(row, Some((42, 42, 42)), false);
-                    }
-                    c.hit(row, Action::Item(i));
-                    y += 1;
+                    c.text(x, y, &format!("{value:>width$.precision$}"), color);
                 }
-                if c.w >= 120 && footer.saturating_sub(results_start) >= 8 {
-                    if let Some(entry) = chosen {
-                        magic_score_changes(
-                            &mut c,
-                            74,
-                            results_start,
-                            &a.before.metrics,
-                            &entry.metrics,
-                            &data.weights,
-                        );
-                    }
+                match entry.rules_off_score {
+                    Some(off) => c.text(
+                        51,
+                        y,
+                        &format!("{:+10.4}", off - entry.score),
+                        if off > entry.score + 1e-9 { GREEN } else { FG },
+                    ),
+                    None => c.text(51, y, "       n/a", MUTED),
                 }
-            } else {
-                c.text(
-                    0,
-                    y.min(footer.saturating_sub(1)),
-                    "No candidates yet.",
-                    MUTED,
-                );
+                let rect = Rect { x: 0, y, w: c.w.min(63), h: 1 };
+                if row == state.selected {
+                    c.row_style(rect, Some((42, 42, 42)), false);
+                }
+                c.hit(rect, Action::Item(index));
+                y += 1;
+            }
+            if candidates.is_empty() {
+                c.text(0, y, "No allowed position kept the layout within the caps.", MUTED);
+                y += 1;
+            }
+            if c.w >= 120 {
+                if let Some(entry) = chosen {
+                    magic_score_changes(
+                        &mut c,
+                        66,
+                        y.saturating_sub(candidates.len() + 2),
+                        &archive.before.metrics,
+                        &entry.metrics,
+                        weights,
+                    );
+                }
             }
         } else {
-            if y + 6 > footer {
-                c = Canvas::new(term.width(), height);
-                workspace_tabs(&mut c, 0, &tabs);
-                c.text(
-                    0,
-                    1,
-                    &short(&format!("{} · {}", original.name, data.name), c.w),
-                    MUTED,
-                );
-                y = 2.min(footer.saturating_sub(5));
-                if y + 6 <= footer {
-                    c.text(
-                        0,
-                        y,
-                        &short(
-                            &format!(
-                                "Keys: {}",
-                                shown
-                                    .slots
-                                    .iter()
-                                    .filter(|slot| slot.main)
-                                    .map(|slot| slot.label.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(" ")
-                            ),
-                            c.w,
-                        ),
-                        MUTED,
-                    );
-                    y += 1;
-                }
-            }
-            let setting_rows = footer.saturating_sub(y).max(1);
-            let setting_offset = selected_setting.saturating_sub(setting_rows.saturating_sub(1));
-            for (index, (key, text)) in [
-                (
-                    'p',
-                    format!(
-                        "Blocked fingers: {}",
-                        magic_blocked_fingers(&reference, &allowed)
-                    ),
-                ),
-                ('3', format!("Passes: {}", settings.passes)),
-                (
-                    '4',
-                    format!("Rules per key: {}", settings.rule_settings.max_rules),
-                ),
-                (
-                    '5',
-                    format!("Rule shortlist: {}", settings.rule_settings.shortlist),
-                ),
-                ('6', format!("Retain candidates: {}", settings.archive)),
-            ]
-            .into_iter()
-            .enumerate()
-            .skip(setting_offset)
-            .take(setting_rows)
-            {
-                c.text(1, y, &text, FG);
-                if index == selected_setting {
-                    c.row_style(
-                        Rect {
-                            x: 0,
-                            y,
-                            w: c.w,
-                            h: 1,
-                        },
-                        Some((42, 42, 42)),
-                        false,
-                    );
-                }
-                c.hit(
-                    Rect {
-                        x: 0,
-                        y,
-                        w: c.w,
-                        h: 1,
-                    },
-                    Action::Command(key),
-                );
-                y += 1;
-            }
+            c.text(
+                0,
+                y,
+                "Space searches. The best layout for each magic-key position appears here; Enter applies one.",
+                MUTED,
+            );
+            y += 1;
         }
-        // Rendering helpers may grow their canvas; the workspace always stays in the viewport.
-        c.h = height;
-        c.cells.truncate(c.w * height);
-        c.hits.retain(|(rect, _)| rect.y < footer);
-        c.text(0, footer, "? Help", MUTED);
-        c.text(0, height.saturating_sub(1), &short(&status, c.w), FG);
-        term.present(&c, 0)?;
+        y += 1;
+        c.text(
+            0,
+            y,
+            &short(
+                "Space search · j/k select · Enter edit / apply · click keys to lock (H/U/L) · c details · v rules · s/S save · o open · ? help",
+                c.w,
+            ),
+            MUTED,
+        );
+        y += 1;
+        c.text(0, y, &short(&status, c.w), FG);
+        c.h = y + 1;
+        c.cells.truncate(c.w * c.h);
+        scroll = scroll.min(c.h.saturating_sub(term.size.1));
+        term.present(&c, scroll)?;
         let mut event = term.event()?;
-        if term.size != viewport_size {
+        if scroll_event(&event, &mut scroll, c.h, term.size.1) {
             continue;
         }
-        if let Event::Mouse {
-            x,
-            y,
-            button: 0,
-            release: false,
-            motion: false,
-            ..
-        } = event
-        {
-            match term.hit(&c, x, y, 0) {
-                Some(Action::Key(i)) if candidates_page && Some(i) == selected_root => {
-                    event = Event::Enter
-                }
-                Some(Action::Key(i)) if !candidates_page && i < locks.len() => {
-                    locks[i] = !locks[i];
+        if let Event::Mouse { x, y, button: 0, release: false, motion: false, .. } = event {
+            match term.hit(&c, x, y, scroll) {
+                Some(Action::Key(slot)) if chosen.is_none() && slot < locks.len() => {
+                    locks[slot] = !locks[slot];
                     continue;
                 }
-                Some(Action::Item(i)) => candidate = i,
-                Some(Action::Command(ch)) => {
-                    if !candidates_page {
-                        if let Some(index) =
-                            ['p', '3', '4', '5', '6'].iter().position(|&key| key == ch)
-                        {
-                            selected_setting = index;
-                        }
-                    }
-                    event = Event::Char(ch);
+                Some(Action::Setting(index)) => {
+                    state.selected = index;
+                    event = Event::Enter;
                 }
+                Some(Action::Item(index)) => {
+                    state.selected = MAGIC_SETTING_ROWS + index;
+                    continue;
+                }
+                Some(Action::Command(ch)) => event = Event::Char(ch),
                 _ => {}
             }
         }
-        if !candidates_page && matches!(event, Event::Enter) {
-            event = Event::Char(['p', '3', '4', '5', '6'][selected_setting]);
-        }
         match event {
-            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
-            Event::Char('j') | Event::Down if !candidates_page => {
-                selected_setting = (selected_setting + 1).min(4);
+            Event::Char(tab @ ('1'..='4')) => return Ok(MagicTabExit::Key(tab)),
+            Event::Escape | Event::Char('q') => return Ok(MagicTabExit::Key('1')),
+            Event::Quit => return Ok(MagicTabExit::Key('q')),
+            Event::Char('j') | Event::Down => state.selected += 1,
+            Event::Char('k') | Event::Up => state.selected = state.selected.saturating_sub(1),
+            Event::Char('H') => {
+                *locks = action_ui::optimizer_locks(layout, action_ui::action_home_locks(layout));
             }
-            Event::Char('k') | Event::Up if !candidates_page => {
-                selected_setting = selected_setting.saturating_sub(1);
-            }
-            Event::Char('m') if candidates_page => term.toggle_stats_view(),
-            Event::Char('H') if !candidates_page => {
-                locks = action_ui::optimizer_locks(
-                    &reference,
-                    action_ui::action_home_locks(&reference),
-                );
-            }
-            Event::Char('U') if !candidates_page => locks.fill(false),
-            Event::Char('L') if !candidates_page => locks.fill(true),
-            Event::Char('1') => {
-                candidates_page = false;
-                candidate_offset = 0;
-            }
-            Event::Char('2') => {
-                candidates_page = true;
-                candidate_offset = 0;
-            }
-            Event::Char('p') if !candidates_page => {
-                magic_finger_picker(term, &reference, &mut allowed)?;
-                if !allowed.contains(&root) {
-                    root = allowed
-                        .first()
-                        .copied()
-                        .unwrap_or_else(|| magic_preview_root(&reference));
-                }
-                magic_move_preview(&mut preview, &reference, root);
-                status.clear();
-            }
-            Event::Char(ch @ ('3'..='6')) if !candidates_page => {
-                let (title, value, max) = match ch {
-                    '3' => ("Passes", &mut settings.passes, 100),
-                    '4' => (
-                        "Rules per key",
-                        &mut settings.rule_settings.max_rules,
-                        crate::magic_design::MAX_RULES,
-                    ),
-                    '5' => ("Rule shortlist", &mut settings.rule_settings.shortlist, 256),
-                    _ => ("Retain candidates", &mut settings.archive, 200),
+            Event::Char('U') => locks.fill(false),
+            Event::Char('L') => locks.fill(true),
+            Event::Char('p') => magic_finger_groups(term, &mut state.groups)?,
+            Event::Enter if state.selected == 0 => magic_finger_groups(term, &mut state.groups)?,
+            Event::Enter if state.selected < MAGIC_SETTING_ROWS => {
+                let (title, value, max) = match state.selected {
+                    1 => ("Passes", &mut state.passes, 100),
+                    2 => ("Rule shortlist", &mut state.shortlist, 256),
+                    _ => ("Positions shown", &mut state.retain, 200),
                 };
                 if let Some(text) = input_box(
                     term,
@@ -630,37 +477,213 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                     &value.to_string(),
                 )? {
                     match text.parse::<usize>() {
-                        Ok(n) if n > 0 && n <= max => *value = n,
+                        Ok(n) if (1..=max).contains(&n) => *value = n,
                         _ => status = format!("{title}: enter an integer from 1 to {max}."),
                     }
                 }
             }
-            Event::Char('j') | Event::Down if candidates_page => {
-                if let Some(a) = &archive {
-                    candidate = (candidate + 1).min(a.candidates.len().saturating_sub(1));
+            Event::Enter => {
+                let index = state.selected - MAGIC_SETTING_ROWS;
+                let (Some(archive), Some(seed)) = (&state.archive, &state.seed) else {
+                    continue;
+                };
+                let Some(entry) = archive.candidates.get(index) else {
+                    continue;
+                };
+                let (applied, applied_locks) = magic_applied(entry, seed);
+                if before_magic.is_none() {
+                    *before_magic = Some((seed.before.clone(), seed.before_locks.clone()));
+                }
+                *layout = applied;
+                *locks = applied_locks;
+                *magic_root = Some(entry.root);
+                return Ok(MagicTabExit::Applied(format!(
+                    "Magic candidate {} applied; Space runs the optimizer, which fits adaptive swaps and combos as Settings says.",
+                    index + 1
+                )));
+            }
+            Event::Char(' ') => {
+                let plan = match magic_search_plan(
+                    layout,
+                    locks,
+                    *magic_root,
+                    &state.groups,
+                    &load_app_config()?.magic,
+                ) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        status = error;
+                        continue;
+                    }
+                };
+                let MagicPlan { seed, root, locks: seed_locks, allowed, locked_slots, swaps } = plan;
+                let run = IterativeSettings {
+                    rule_settings: Settings {
+                        roots: allowed,
+                        locked_slots,
+                        max_rules: max_rules.clamp(1, crate::magic_design::MAX_RULES),
+                        shortlist: state.shortlist,
+                        sfb_limit: settings.sfb_limit,
+                        sfs_limit: settings.sfs_limit,
+                        travel_limit: settings.travel_limit,
+                        sftravel_limit: settings.sftravel_limit,
+                    },
+                    passes: state.passes,
+                    workers: settings.workers,
+                    archive: state.retain,
+                    placement: PlacementMode::Existing,
+                };
+                // Caps and the Start row measure the layout searched: its own
+                // magic keys, without its adaptive swaps.
+                let job_seed = seed.clone();
+                let job_original = seed.clone();
+                let job_corpus = corpus.clone();
+                let job_weights = weights.clone();
+                let Some(result) = action_ui::ngram_job(term, move |stop, progress| {
+                    crate::magic_design::iterative_refine(
+                        &job_seed,
+                        &job_original,
+                        &job_corpus,
+                        &job_weights,
+                        &run,
+                        stop,
+                        progress,
+                    )
+                })?
+                else {
+                    status = "Magic search cancelled.".into();
+                    continue;
+                };
+                status = format!(
+                    "{} evaluations; {} candidates.",
+                    result.candidate_count,
+                    result.candidates.len()
+                );
+                state.archive = Some(result);
+                state.seed = Some(MagicSeed {
+                    before: layout.clone(),
+                    before_locks: locks.clone(),
+                    locks: seed_locks,
+                    root,
+                    swaps,
+                });
+                state.selected = MAGIC_SETTING_ROWS;
+            }
+            Event::Char('s') => {
+                if let Some(entry) = chosen {
+                    let mut standalone = entry.layout.clone();
+                    let stem: String = original
+                        .name
+                        .chars()
+                        .map(|ch| if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') { ch } else { '_' })
+                        .collect();
+                    standalone.path = Path::new(LAYOUT_DIR).join(format!("{stem}-magic.jsonc"));
+                    status = match crate::layout_export::save_jsonc_copy(&standalone) {
+                        Ok(path) => saved_layout_message(&path),
+                        Err(error) => format!("Save failed: {error}"),
+                    };
                 }
             }
-            Event::Char('k') | Event::Up if candidates_page => {
-                candidate = candidate.saturating_sub(1);
-            }
-            Event::Wheel(_) | Event::PageUp | Event::PageDown if candidates_page => {
-                let delta = match event {
-                    Event::Wheel(n) => n as i64,
-                    Event::PageUp => -(candidate_rows as i64),
-                    _ => candidate_rows as i64,
+            Event::Char('o') => {
+                let Some(path) =
+                    input_box(term, "Open magic candidates", "Saved folder", "layouts/magic/")?
+                else {
+                    continue;
                 };
-                let last = archive
-                    .as_ref()
-                    .map_or(0, |a| a.candidates.len().saturating_sub(1));
-                candidate = (candidate as i64 + delta).clamp(0, last as i64) as usize;
+                let folder = std::path::PathBuf::from(path);
+                let loaded = crate::magic_archive::load_baseline(&folder).and_then(|base| {
+                    crate::magic_archive::load_candidates(&folder).map(|layouts| (base, layouts))
+                });
+                let (base, layouts) = match loaded {
+                    Ok(loaded) => loaded,
+                    Err(error) => {
+                        status = format!("Open failed: {error}");
+                        continue;
+                    }
+                };
+                let Some(first) = layouts.first().cloned() else {
+                    status = "Open failed: no candidates in that folder.".into();
+                    continue;
+                };
+                let first_root = match magic_recovery_root(&first) {
+                    Ok(root) => root,
+                    Err(error) => {
+                        status = format!("Open failed: {error}");
+                        continue;
+                    }
+                };
+                let job_corpus = corpus.clone();
+                let job_weights = weights.clone();
+                let Some(result) = action_ui::ngram_job(term, move |stop, progress| {
+                    let before =
+                        action_summary::evaluate(&base, &job_corpus, &job_weights, stop, progress)?;
+                    let mut entries = Vec::new();
+                    for layout in layouts {
+                        let root = magic_recovery_root(&layout)?;
+                        let summary = action_summary::evaluate(
+                            &layout, &job_corpus, &job_weights, stop, progress,
+                        )?;
+                        let rules = magic_recovered_rules(&layout, root);
+                        entries.push(crate::magic_design::Candidate {
+                            layout,
+                            score: summary.score,
+                            rules_off_score: None,
+                            rules_off_note: None,
+                            raw: summary.raw,
+                            totals: summary.totals,
+                            metrics: summary.metrics,
+                            root,
+                            rules,
+                            pass: 0,
+                        });
+                    }
+                    entries.sort_by(|a, b| a.score.total_cmp(&b.score));
+                    crate::magic_design::fill_rules_off_comparisons(
+                        &mut entries,
+                        &job_corpus,
+                        &job_weights,
+                        stop,
+                        progress,
+                    )?;
+                    Ok(crate::magic_design::DesignArchive {
+                        baseline: base,
+                        before,
+                        candidate_count: entries.len(),
+                        candidates: entries,
+                        warnings: Vec::new(),
+                        settings: IterativeSettings::default(),
+                        source_order: job_corpus.order,
+                    })
+                })?
+                else {
+                    continue;
+                };
+                state.seed = Some(MagicSeed {
+                    before: layout.clone(),
+                    before_locks: locks.clone(),
+                    locks: action_ui::optimizer_locks(&first, action_ui::action_default_locks(&first)),
+                    root: first_root,
+                    swaps: Vec::new(),
+                });
+                state.archive = Some(result);
+                state.selected = MAGIC_SETTING_ROWS;
+                status = "Saved candidates rescored with this corpus and these weights.".into();
             }
-            Event::Char('c') if candidates_page => {
-                if let (Some(a), Some(entry)) = (&archive, chosen) {
+            Event::Char('S') => {
+                if let Some(archive) = &state.archive {
+                    status = match crate::magic_archive::save(archive, &corpus.name, weights) {
+                        Ok(path) => format!("Saved candidates: {}", path.display()),
+                        Err(error) => format!("Save failed: {error}"),
+                    };
+                }
+            }
+            Event::Char('c') => {
+                if let (Some(archive), Some(entry)) = (&state.archive, chosen) {
                     let mut detail = Canvas::new(term.width(), 100);
                     let mut end = grouped_metric_table(
                         &mut detail,
                         0,
-                        &a.before.metrics,
+                        &archive.before.metrics,
                         &entry.metrics,
                         &entry.raw,
                         &entry.totals,
@@ -672,7 +695,7 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                     end = finger_table(
                         &mut detail,
                         end + 1,
-                        &a.before.metrics,
+                        &archive.before.metrics,
                         &entry.metrics,
                         term.decimals(),
                     );
@@ -680,11 +703,11 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                         &mut detail,
                         0,
                         end + 1,
-                        &a.before.metrics,
+                        &archive.before.metrics,
                         &entry.metrics,
-                        &data.weights,
+                        weights,
                     );
-                    let mut lines: Vec<String> = (0..end)
+                    let lines: Vec<String> = (0..end)
                         .map(|row| {
                             detail.cells[row * detail.w..(row + 1) * detail.w]
                                 .iter()
@@ -694,419 +717,113 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                                 .to_owned()
                         })
                         .collect();
-                    lines.push(String::new());
-                    lines.push(match entry.rules_off_score {
-                        Some(off) => format!(
-                            "Rules off {off:.4} · Rules on {:.4} · Rules gain {:+.4}",
-                            entry.score,
-                            off - entry.score
-                        ),
-                        None => format!(
-                            "Rules comparison: n/a · {}",
-                            entry.rules_off_note.as_deref().unwrap_or("unavailable")
-                        ),
-                    });
                     help_popup(term, &c, "Candidate details", &lines)?;
                 }
             }
-            Event::Enter if candidates_page => {
-                if let Some(entry) = archive.as_ref().and_then(|a| a.candidates.get(candidate)) {
-                    let key = format!(
-                        "{}\nroot={}",
-                        crate::layout_export::jsonc_text(&entry.layout)?,
-                        entry.root
-                    );
-                    let lines = if let Some((_, lines)) =
-                        rule_report.as_ref().filter(|(cached, _)| cached == &key)
-                    {
-                        lines.clone()
-                    } else {
-                        let layout = entry.layout.clone();
-                        let root = entry.root;
-                        let label = magic_root_label(&layout, root);
-                        let weights = data.weights.clone();
-                        let corpus = Arc::clone(&corpus);
-                        let Some(effects) = action_ui::ngram_job(
-                            term,
-                            move |stop, progress| {
-                                crate::magic_design::rule_effects(
-                                    &layout, root, &corpus, &weights, stop, progress,
-                                )
-                            },
-                        )?
-                        else {
-                            continue;
-                        };
-                        let mut lines = vec![label, String::new()];
-                        for effect in effects {
-                            lines.push(format!(
-                                "After {:?}: types {:?}",
-                                char::from(effect.rule.context),
-                                char::from(effect.rule.output)
-                            ));
-                            if effect.direct_pair_saved > 1e-9 {
-                                let repaired: Vec<_> = (0..N_METRICS)
-                                    .filter(|&i| effect.direct_contribution_saved[i] > 1e-9)
-                                    .map(|i| METRIC_NAMES[i])
-                                    .collect();
-                                lines.push(format!(
-                                    "  Direct pair repair: {}.",
-                                    repaired.join(", ")
-                                ));
-                            } else {
-                                lines.push(
-                                    "  No direct pair repair: excluded from new designs.".into(),
-                                );
-                            }
-                            let penalty = if effect.penalty_saved > 1e-9 {
-                                format!("Penalty reduced by {:.4} points", effect.penalty_saved)
-                            } else if effect.penalty_saved < -1e-9 {
-                                format!("Penalty increased by {:.4} points", -effect.penalty_saved)
-                            } else {
-                                "No penalty reduction".into()
-                            };
-                            let score = if effect.score_saved > 1e-9 {
-                                format!("score improves by {:.4} points", effect.score_saved)
-                            } else if effect.score_saved < -1e-9 {
-                                format!("score worsens by {:.4} points", -effect.score_saved)
-                            } else {
-                                "no score change".into()
-                            };
-                            lines.push(format!("  {penalty}; {score}."));
-                            let mut fixes: Vec<_> = (0..N_WEIGHTS)
-                                .filter(|&i| {
-                                    (i >= N_METRICS || !higher_better(i))
-                                        && effect.contribution_saved[i] > 1e-9
-                                })
-                                .collect();
-                            fixes.sort_by(|&a, &b| {
-                                effect.contribution_saved[b]
-                                    .total_cmp(&effect.contribution_saved[a])
-                                    .then(a.cmp(&b))
-                            });
-                            for i in fixes.into_iter().take(3) {
-                                if i < N_METRICS {
-                                    lines.push(format!("  {}: {} without rule, {} with rule; {:.4} score points saved.", METRIC_NAMES[i], metric_value_text(i, effect.metrics_without[i], 4), metric_value_text(i, effect.metrics_with[i], 4), effect.contribution_saved[i]));
-                                } else {
-                                    lines.push(format!(
-                                        "  {}: {:.4} score points saved.",
-                                        weight_display_name(i),
-                                        effect.contribution_saved[i]
-                                    ));
-                                }
-                            }
-                            lines.push(String::new());
-                        }
-                        if lines.len() == 2 {
-                            lines.push("No explicit rules; this key uses its fallback.".into());
-                        }
-                        lines.push(
-                            "Benefits compare this layout with that one rule removed.".into(),
-                        );
-                        rule_report = Some((key, lines.clone()));
-                        lines
+            Event::Char('v') => {
+                if let Some(entry) = chosen {
+                    let candidate = entry.layout.clone();
+                    let root = entry.root;
+                    let label = magic_root_label(&candidate, root);
+                    let job_corpus = corpus.clone();
+                    let job_weights = weights.clone();
+                    let Some(effects) = action_ui::ngram_job(term, move |stop, progress| {
+                        crate::magic_design::rule_effects(
+                            &candidate, root, &job_corpus, &job_weights, stop, progress,
+                        )
+                    })?
+                    else {
+                        continue;
                     };
+                    let mut lines = vec![label, String::new()];
+                    for effect in effects {
+                        lines.push(format!(
+                            "After {:?}: types {:?}",
+                            char::from(effect.rule.context),
+                            char::from(effect.rule.output)
+                        ));
+                        if effect.direct_pair_saved > 1e-9 {
+                            let repaired: Vec<_> = (0..N_METRICS)
+                                .filter(|&i| effect.direct_contribution_saved[i] > 1e-9)
+                                .map(|i| METRIC_NAMES[i])
+                                .collect();
+                            lines.push(format!(
+                                "  Direct pair repair: {}.",
+                                repaired.join(", ")
+                            ));
+                        } else {
+                            lines.push(
+                                "  No direct pair repair: excluded from new designs.".into(),
+                            );
+                        }
+                        let penalty = if effect.penalty_saved > 1e-9 {
+                            format!("Penalty reduced by {:.4} points", effect.penalty_saved)
+                        } else if effect.penalty_saved < -1e-9 {
+                            format!("Penalty increased by {:.4} points", -effect.penalty_saved)
+                        } else {
+                            "No penalty reduction".into()
+                        };
+                        let score = if effect.score_saved > 1e-9 {
+                            format!("score improves by {:.4} points", effect.score_saved)
+                        } else if effect.score_saved < -1e-9 {
+                            format!("score worsens by {:.4} points", -effect.score_saved)
+                        } else {
+                            "no score change".into()
+                        };
+                        lines.push(format!("  {penalty}; {score}."));
+                        let mut fixes: Vec<_> = (0..N_WEIGHTS)
+                            .filter(|&i| {
+                                (i >= N_METRICS || !higher_better(i))
+                                    && effect.contribution_saved[i] > 1e-9
+                            })
+                            .collect();
+                        fixes.sort_by(|&a, &b| {
+                            effect.contribution_saved[b]
+                                .total_cmp(&effect.contribution_saved[a])
+                                .then(a.cmp(&b))
+                        });
+                        for i in fixes.into_iter().take(3) {
+                            if i < N_METRICS {
+                                lines.push(format!("  {}: {} without rule, {} with rule; {:.4} score points saved.", METRIC_NAMES[i], metric_value_text(i, effect.metrics_without[i], 4), metric_value_text(i, effect.metrics_with[i], 4), effect.contribution_saved[i]));
+                            } else {
+                                lines.push(format!(
+                                    "  {}: {:.4} score points saved.",
+                                    weight_display_name(i),
+                                    effect.contribution_saved[i]
+                                ));
+                            }
+                        }
+                        lines.push(String::new());
+                    }
+                    if lines.len() == 2 {
+                        lines.push("No explicit rules; this key uses its fallback.".into());
+                    }
+                    lines.push("Benefits compare this layout with that one rule removed.".into());
                     help_popup(term, &c, "Magic rules", &lines)?;
                 }
             }
-            Event::Char(' ') | Event::Char('r') => {
-                if !candidates_page {
-                    match crate::magic_design::prepare(&reference, PlacementMode::Existing) {
-                        Ok(seed) if seed.slots == reference.slots => {}
-                        Ok(_) => {
-                            status = "Placement preview changed; select a placement again before starting.".into();
-                            continue;
-                        }
-                        Err(error) => {
-                            status = format!("Cannot start this placement: {error}");
-                            continue;
-                        }
-                    }
-                }
-                if allowed.is_empty() {
-                    status = "Unblock at least one finger (p) before searching.".into();
-                    continue;
-                }
-                settings.rule_settings.roots = allowed.clone();
-                // Only letters and empty keys move; a locked magic key would
-                // read as a fixed placement.
-                settings.rule_settings.locked_slots = (0..locks.len())
-                    .filter(|&slot| {
-                        locks[slot]
-                            && matches!(
-                                reference.slots[slot].binding,
-                                action_keys::Binding::Text(_) | action_keys::Binding::Empty
-                            )
-                    })
-                    .collect();
-                let seed = if candidates_page {
-                    let Some(entry) = archive.as_ref().and_then(|a| a.candidates.get(candidate))
-                    else {
-                        status = "Select a candidate to refine.".into();
-                        continue;
-                    };
-                    entry.layout.clone()
-                } else {
-                    reference.clone()
-                };
-                let baseline = original.clone();
-                let weights = data.weights.clone();
-                let corpus = Arc::clone(&corpus);
-                let mut run_settings = settings.clone();
-                run_settings.placement = PlacementMode::Existing;
-
-                let Some(mut next) = action_ui::ngram_job(
-                    term,
-                    move |stop, progress| {
-                        crate::magic_design::iterative_refine(
-                            &seed,
-                            &baseline,
-                            &corpus,
-                            &weights,
-                            &run_settings,
-                            stop,
-                            progress,
-                        )
-                    },
-                )?
-                else {
-                    status = "Design cancelled; retained candidates are available.".into();
-                    continue;
-                };
-                next.settings = settings.clone();
-                if candidates_page {
-                    if let Some(mut prior) = archive.take() {
-                        next.candidate_count += prior.candidate_count;
-                        next.candidates.append(&mut prior.candidates);
-                        next.candidates.sort_by(|a, b| a.score.total_cmp(&b.score));
-                        let mut seen = BTreeSet::new();
-                        next.candidates.retain(|entry| {
-                            let rule_count = match &entry.layout.slots[entry.root].binding {
-                                action_keys::Binding::Named(name) => {
-                                    match entry.layout.actions.get(name) {
-                                        Some(action_keys::Action::Rules { rules, .. }) => {
-                                            rules.len()
-                                        }
-                                        _ => usize::MAX,
-                                    }
-                                }
-                                _ => usize::MAX,
-                            };
-                            allowed.contains(&entry.root)
-                                && rule_count <= settings.rule_settings.max_rules
-                                && layout_export::jsonc_text(&entry.layout)
-                                    .is_ok_and(|text| seen.insert(text))
-                        });
-                        next.candidates.truncate(settings.archive);
-                        next.warnings.extend(prior.warnings);
-                    }
-                }
-                archive = Some(next);
-                candidate = 0;
-                candidates_page = true;
-                candidate_offset = 0;
-                status.clear();
-            }
-            Event::Char('S') => {
-                if let Some(a) = &archive {
-                    status = match crate::magic_archive::save(a, &data.name, &data.weights) {
-                        Ok(path) => format!("Saved archive: {}", path.display()),
-                        Err(error) => format!("Save failed: {error}"),
-                    };
-                }
-            }
-            Event::Char('s') => {
-                if let Some(entry) = archive.as_ref().and_then(|a| a.candidates.get(candidate)) {
-                    let mut standalone = entry.layout.clone();
-                    let stem: String = original
-                        .name
-                        .chars()
-                        .map(|ch| {
-                            if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
-                                ch
-                            } else {
-                                '_'
-                            }
-                        })
-                        .collect();
-                    standalone.path = Path::new(LAYOUT_DIR).join(format!("{stem}-magic.jsonc"));
-                    status = match crate::layout_export::save_jsonc_copy(&standalone) {
-                        Ok(path) => saved_layout_message(&path),
-                        Err(error) => format!("Save failed: {error}"),
-                    };
-                }
-            }
-            Event::Char('o') => {
-                if let Some(path) = input_box(
-                    term,
-                    "Open magic archive",
-                    "Saved archive folder",
-                    "layouts/magic/",
-                )? {
-                    let folder = std::path::Path::new(&path);
-                    let recovered = crate::magic_archive::load_baseline(folder).and_then(|base| {
-                        crate::magic_archive::load_candidates(folder).and_then(|layouts| {
-                            crate::magic_archive::load_roots(folder)
-                                .map(|roots| (base, layouts, roots))
-                        })
-                    });
-                    match recovered {
-                        Ok((base, layouts, saved_roots)) => {
-                            let recovery_preview = if let Some(first) = layouts.first() {
-                                first.clone()
-                            } else {
-                                crate::magic_design::prepare(
-                                    &base,
-                                    PlacementMode::ExtraBothPinkies,
-                                )?
-                            };
-                            let eligible = crate::magic_design::placement_roots(&recovery_preview);
-                            let recovered_allowed = match saved_roots {
-                                Some(roots) => {
-                                    if roots.iter().any(|root| !eligible.contains(root)) {
-                                        status = "Open failed: archive contains an unsupported allowed key.".into();
-                                        continue;
-                                    }
-                                    roots
-                                }
-                                None => eligible
-                                    .into_iter()
-                                    .filter(|&i| {
-                                        config
-                                            .magic
-                                            .allows(action_ui::physical_keys(&recovery_preview)[i])
-                                    })
-                                    .collect(),
-                            };
-                            let mut recovery_settings = settings.clone();
-                            recovery_settings.rule_settings.roots = recovered_allowed;
-                            let weights = data.weights.clone();
-                            let corpus = Arc::clone(&corpus);
-                            if let Some(loaded) = action_ui::ngram_job(
-                                term,
-                                move |stop, progress| {
-                                    let before = action_summary::evaluate(
-                                        &base, &corpus, &weights, stop, progress,
-                                    )?;
-                                    let mut entries = Vec::new();
-                                    for layout in layouts {
-                                        let root = magic_recovery_root(&layout)?;
-                                        if !recovery_settings.rule_settings.roots.contains(&root) {
-                                            continue;
-                                        }
-                                        let summary = action_summary::evaluate(
-                                            &layout, &corpus, &weights, stop, progress,
-                                        )?;
-                                        let rules = magic_recovered_rules(&layout, root);
-                                        entries.push(crate::magic_design::Candidate {
-                                            layout,
-                                            score: summary.score,
-                                            rules_off_score: None,
-                                            rules_off_note: None,
-                                            raw: summary.raw,
-                                            totals: summary.totals,
-                                            metrics: summary.metrics,
-                                            root,
-                                            rules,
-                                            pass: 0,
-                                        });
-                                    }
-                                    entries.sort_by(|a, b| a.score.total_cmp(&b.score));
-                                    crate::magic_design::fill_rules_off_comparisons(
-                                        &mut entries,
-                                        &corpus,
-                                        &weights,
-                                        stop,
-                                        progress,
-                                    )?;
-                                    Ok(crate::magic_design::DesignArchive { baseline: base, before, candidate_count: entries.len(), candidates: entries,
-                                        warnings: vec!["Recovered candidates rescored with the current corpus and weights; pass history and rule frequencies are unavailable.".into()], settings: recovery_settings, source_order: corpus.order })
-                                },
-                            )? {
-                                original = loaded.baseline.clone();
-                                settings.placement = PlacementMode::Existing;
-                                preview = recovery_preview;
-                                allowed = loaded.settings.rule_settings.roots.clone();
-                                allowed.retain(|&i| i < preview.slots.len());
-                                reference = preview.clone();
-                                root = allowed
-                                    .first()
-                                    .copied()
-                                    .unwrap_or_else(|| magic_preview_root(&preview));
-                                magic_move_preview(&mut preview, &reference, root);
-                                archive = Some(loaded);
-                                candidate = 0;
-                                candidates_page = true;
-                                candidate_offset = 0;
-                                status = "Recovered layouts rescored with the current corpus and weights.".into();
-                            }
-                        }
-                        Err(error) => status = format!("Open failed: {error}"),
-                    }
-                }
-            }
-            Event::Char('?') => {
-                let mut lines = vec![
-                    "Workspace".into(),
-                    "1/2\tDesign / Candidates".into(),
-                    "o\tOpen an archive".into(),
-                    "q\tBack".into(),
+            Event::Char('?') => help_popup(
+                term,
+                &c,
+                "Magic tab",
+                &[
+                    "Space\tFind the best layout for each allowed magic-key position".into(),
+                    "j/k ↑/↓\tSelect a setting or candidate".into(),
+                    "Enter\tEdit the setting, or apply the candidate to the optimizer".into(),
+                    "Click key\tLock or unlock it; a locked magic key keeps its key".into(),
+                    "H / U / L\tDefault locks with the home row / unlock all / lock all".into(),
+                    "p\tFinger blocks: blocked fingers on both hands cannot hold the magic key".into(),
+                    "c / v\tSelected candidate's metrics / rules and their effects".into(),
+                    "s / S\tSave the selected candidate to layouts/ / every candidate under layouts/magic/".into(),
+                    "o\tOpen saved candidates, rescored with this corpus and these weights".into(),
+                    "1–4\tOther optimizer tabs".into(),
                     "".into(),
-                    "Design".into(),
-                    "j/k ↑/↓\tSelect setting".into(),
-                    "Enter\tEdit selected setting".into(),
-                    "p\tToggle finger blocks (both hands)".into(),
-                    "Click key\tLock or unlock it: the search keeps it in place".into(),
-                    "H\tUse default locks with the home row locked".into(),
-                    "U\tUnlock all keys".into(),
-                    "L\tLock all keys".into(),
-                    "3\tPasses".into(),
-                    "4\tRules per key".into(),
-                    "5\tRule shortlist".into(),
-                    "6\tRetained candidates".into(),
-                    "Space/r\tStart search".into(),
-                    "".into(),
-                    "Candidates".into(),
-                    "j/k, wheel, PgUp/PgDn\tSelect candidate".into(),
-                    "c\tAll cached metrics and score contributions".into(),
-                    "Enter\tRules and their measured benefits".into(),
-                    "m\tSimple / Detailed stats".into(),
-                    "Click magic key\tShow selected magic rules".into(),
-                    "r\tRefine candidate".into(),
-                    "S\tSave all candidates".into(),
-                    "s\tSave selected layout".into(),
-                    "".into(),
-                    "Search tries every location permitted by the finger blocks.".into(),
-                    "Automatic searches only allowed physical keys; binding swaps do not change them.".into(),
-                    "Rules must repair their own pair, then improve the finished layout.".into(),
-                    "Rules are fitted from both the current dictionary and an empty dictionary.".into(),
-                    "Search carries eight diverse designs between passes.".into(),
-                    "At the rule limit, stalled fits try replacing one context with another.".into(),
-                    "Stalled fitting refreshes its shortlist and tries bounded two-rule changes.".into(),
-                    "Two refined designs feed one extra placement-search cycle.".into(),
-                    "Joint rounds try ten single swaps, four two-swap designs, and six SFB-repair swaps.".into(),
-                    "Joint refinement is followed by another allowed-location check.".into(),
-                    "Two relocation finalists get a letter/rule round before comparison.".into(),
-                    "Rules gain compares identical bindings with this dictionary cleared; the fallback stays active.".into(),
-                    "Rules comparison is n/a if coverage or populations change.".into(),
-                    "Search uses [search] workers; 0 uses available CPUs.".into(),
-                    "Search uses the current corpus and Detailed weights; caps use the original layout.".into(),
-                    "SFB: same-finger bigrams. SFS: same-finger skipgrams.".into(),
-                    "LSB: lateral stretch bigrams. FJB: all full-jump bigrams. RED: redirects.".into(),
-                    "Baseline is the original layout; colors compare against it.".into(),
-                    "Score uses all Detailed weights, including stretches, travel, and finger usage.".into(),
-                    "Score changes lists changed weighted terms; negative changes improve the score.".into(),
-                ];
-                if let Some(a) = &archive {
-                    lines.push(format!(
-                        "{} evaluations; {} retained candidates.",
-                        a.candidate_count,
-                        a.candidates.len()
-                    ));
-                    lines.extend(a.warnings.iter().cloned());
-                }
-                help_popup(term, &c, "Magic designer", &lines)?;
-            }
+                    "The search uses the optimizer's layout, locks, corpus, weights, caps,".into(),
+                    "workers and Magic rules setting. Adaptive swaps are set aside while it".into(),
+                    "runs and come back on the applied candidate; Space on another tab then".into(),
+                    "runs the optimizer, which fits swaps and combos as Settings says.".into(),
+                ],
+            )?,
             _ => {}
         }
     }
@@ -1119,131 +836,6 @@ const MAGIC_FINGER_GROUPS: [(&str, [usize; 2]); 5] = [
     ("Index", [3, 4]),
     ("Thumb", [8, 9]),
 ];
-
-fn magic_blocked_fingers(layout: &action_keys::Layout, allowed: &[usize]) -> String {
-    let names: Vec<_> = MAGIC_FINGER_GROUPS
-        .iter()
-        .filter(|(_, fingers)| {
-            !allowed
-                .iter()
-                .any(|&i| fingers.contains(&layout.slots[i].finger))
-        })
-        .map(|(name, _)| name.to_ascii_lowercase())
-        .collect();
-    if names.is_empty() {
-        "none".into()
-    } else {
-        names.join(", ")
-    }
-}
-
-fn magic_finger_picker(
-    term: &mut Terminal,
-    layout: &action_keys::Layout,
-    allowed: &mut Vec<usize>,
-) -> AppResult<()> {
-    let mut enabled: [bool; 5] = std::array::from_fn(|group| {
-        allowed.iter().any(|&i| {
-            MAGIC_FINGER_GROUPS[group]
-                .1
-                .contains(&layout.slots[i].finger)
-        })
-    });
-    let mut selected = 0;
-    let mut changed = false;
-    loop {
-        let mut c = Canvas::new(term.width(), 10);
-        c.text(0, 0, "Magic finger blocks · both hands", FG);
-        for (i, (name, _)) in MAGIC_FINGER_GROUPS.iter().enumerate() {
-            c.text(
-                1,
-                i + 2,
-                &format!(
-                    "{name:<8}  Block: {}",
-                    if enabled[i] { "off" } else { "on" }
-                ),
-                FG,
-            );
-            if i == selected {
-                c.row_style(
-                    Rect {
-                        x: 0,
-                        y: i + 2,
-                        w: c.w,
-                        h: 1,
-                    },
-                    Some((42, 42, 42)),
-                    false,
-                );
-            }
-            c.hit(
-                Rect {
-                    x: 0,
-                    y: i + 2,
-                    w: c.w,
-                    h: 1,
-                },
-                Action::Item(i),
-            );
-        }
-        c.text(0, 8, "? Help", MUTED);
-        term.present(&c, 0)?;
-        match term.event()? {
-            Event::Escape | Event::Quit | Event::Char('q') => break,
-            Event::Char('j') | Event::Down => selected = (selected + 1).min(4),
-            Event::Char('k') | Event::Up => selected = selected.saturating_sub(1),
-            Event::Char(' ')
-            | Event::Enter
-            | Event::Char('h')
-            | Event::Char('l')
-            | Event::Left
-            | Event::Right => {
-                enabled[selected] = !enabled[selected];
-                changed = true;
-            }
-            Event::Mouse {
-                x,
-                y,
-                button: 0,
-                release: false,
-                motion: false,
-                ..
-            } => {
-                if let Some(Action::Item(i)) = term.hit(&c, x, y, 0) {
-                    selected = i;
-                    enabled[i] = !enabled[i];
-                    changed = true;
-                }
-            }
-            Event::Char('?') => help_popup(
-                term,
-                &c,
-                "Magic finger blocks",
-                &[
-                    "j/k or arrows: select a finger.".into(),
-                    "h/l, Space, Enter, or click: toggle its block.".into(),
-                    "Block on excludes that finger on both hands.".into(),
-                    "q or Esc: return. Changes apply to this workspace.".into(),
-                ],
-            )?,
-            _ => {}
-        }
-    }
-    if changed {
-        *allowed = crate::magic_design::placement_roots(layout)
-            .into_iter()
-            .filter(|&i| {
-                MAGIC_FINGER_GROUPS
-                    .iter()
-                    .enumerate()
-                    .any(|(group, (_, fingers))| {
-                        enabled[group] && fingers.contains(&layout.slots[i].finger)
-                    })
-            })
-            .collect();
-    }
-    Ok(())
-}
 
 fn magic_recovery_root(layout: &action_keys::Layout) -> action_keys::Result<usize> {
     layout
@@ -1291,34 +883,44 @@ fn magic_recovered_rules(
     result
 }
 
-fn magic_preview_root(layout: &action_keys::Layout) -> usize {
-    layout
-        .slots
-        .iter()
-        .position(|slot| {
-            matches!(slot.binding, action_keys::Binding::Named(_))
-                && crate::layout_io::dedicated_magic_label(&slot.label)
-        })
-        .unwrap_or_else(|| {
-            crate::magic_design::eligible_roots(layout)
-                .first()
-                .copied()
-                .unwrap_or(0)
-        })
-}
-
-fn magic_move_preview(
-    preview: &mut action_keys::Layout,
-    reference: &action_keys::Layout,
-    target: usize,
-) {
-    *preview = reference.clone();
-    if let Some(root) = reference.slots.iter().position(|slot| {
-        matches!(slot.binding, action_keys::Binding::Named(_))
-            && crate::layout_io::dedicated_magic_label(&slot.label)
-    }) {
-        if root != target {
-            preview.swap(root, target);
+/// Toggle which finger groups may hold the magic key.
+fn magic_finger_groups(term: &mut Terminal, enabled: &mut [bool; 5]) -> AppResult<()> {
+    let mut selected = 0;
+    loop {
+        let mut c = Canvas::new(term.width(), 10);
+        c.text(0, 0, "Magic finger blocks · both hands", FG);
+        for (i, (name, _)) in MAGIC_FINGER_GROUPS.iter().enumerate() {
+            c.text(
+                1,
+                i + 2,
+                &format!("{name:<8}  Block: {}", if enabled[i] { "off" } else { "on" }),
+                FG,
+            );
+            let row = Rect { x: 0, y: i + 2, w: c.w, h: 1 };
+            if i == selected {
+                c.row_style(row, Some((42, 42, 42)), false);
+            }
+            c.hit(row, Action::Item(i));
+        }
+        c.text(0, 8, "Space/Enter/click toggles · q returns", MUTED);
+        term.present(&c, 0)?;
+        match term.event()? {
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
+            Event::Char('j') | Event::Down => selected = (selected + 1).min(4),
+            Event::Char('k') | Event::Up => selected = selected.saturating_sub(1),
+            Event::Char(' ')
+            | Event::Enter
+            | Event::Char('h')
+            | Event::Char('l')
+            | Event::Left
+            | Event::Right => enabled[selected] = !enabled[selected],
+            Event::Mouse { x, y, button: 0, release: false, motion: false, .. } => {
+                if let Some(Action::Item(i)) = term.hit(&c, x, y, 0) {
+                    selected = i;
+                    enabled[i] = !enabled[i];
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1376,4 +978,90 @@ fn magic_score_changes(
         y += 1;
     }
     y
+}
+
+#[cfg(test)]
+mod magic_tab_tests {
+    use super::*;
+
+    fn layout() -> action_keys::Layout {
+        action_keys::Layout::parse(
+            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\nswap e dr\n",
+            Path::new("magic-tab.dat"),
+        )
+        .unwrap()
+    }
+
+    fn slot_of(layout: &action_keys::Layout, letter: &[u8]) -> usize {
+        layout
+            .slots
+            .iter()
+            .position(|slot| slot.binding == action_keys::Binding::Text(letter.to_vec()))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_search_keeps_locks_and_a_locked_magic_key_in_place() {
+        let layout = layout().with_spare_keys();
+        let mut locks = action_ui::optimizer_locks(&layout, action_ui::action_default_locks(&layout));
+        let held = slot_of(&layout, b"s");
+        locks[held] = true;
+        let groups = [true; 5];
+        let magic = MagicSettings::default();
+        // Without a magic key, one is added unlocked: the search may move it
+        // to any allowed key but locked ones (it starts on the first when
+        // its outer key is not allowed), and locked letters stay put.
+        let plan = magic_search_plan(&layout, &locks, None, &groups, &magic).unwrap();
+        assert!(!plan.locks[plan.root]);
+        assert!(plan.allowed.len() > 1);
+        let seed_held = slot_of(&plan.seed, b"s");
+        assert!(plan.locks[seed_held] && plan.locked_slots.contains(&seed_held));
+        assert!(!plan.allowed.contains(&seed_held));
+        // Its adaptive swap is set aside for the search.
+        assert_eq!(plan.swaps.len(), 1);
+        assert!(crate::swap_fit::swaps_of(&plan.seed).is_empty());
+
+        // A locked magic key is the only place the search may put it.
+        let mut locked = plan.locks.clone();
+        locked[plan.root] = true;
+        let fixed = magic_search_plan(&plan.seed, &locked, Some(plan.root), &groups, &magic).unwrap();
+        assert_eq!(fixed.allowed, vec![plan.root]);
+    }
+
+    #[test]
+    fn an_applied_candidate_moves_the_magic_keys_lock_and_restores_swaps() {
+        let layout = layout().with_spare_keys();
+        let locks = action_ui::optimizer_locks(&layout, action_ui::action_default_locks(&layout));
+        let plan =
+            magic_search_plan(&layout, &locks, None, &[true; 5], &MagicSettings::default()).unwrap();
+        let mut seed_locks = plan.locks.clone();
+        seed_locks[plan.root] = true;
+        // The candidate moved the magic key onto f's key, and f onto its own.
+        let f = slot_of(&plan.seed, b"f");
+        let mut moved = plan.seed.clone();
+        moved.swap(plan.root, f);
+        let summary_metrics = metrics_totals(&Raw::default(), &[1.0; 4]);
+        let entry = crate::magic_design::Candidate {
+            layout: moved,
+            score: 0.0,
+            rules_off_score: None,
+            rules_off_note: None,
+            raw: Raw::default(),
+            totals: [1.0; 4],
+            metrics: summary_metrics,
+            root: f,
+            rules: Vec::new(),
+            pass: 0,
+        };
+        let seed = MagicSeed {
+            before: layout.clone(),
+            before_locks: locks.clone(),
+            locks: seed_locks,
+            root: plan.root,
+            swaps: plan.swaps.clone(),
+        };
+        let (applied, applied_locks) = magic_applied(&entry, &seed);
+        assert!(applied_locks[f] && !applied_locks[plan.root]);
+        assert_eq!(crate::swap_fit::swaps_of(&applied), plan.swaps);
+    }
 }

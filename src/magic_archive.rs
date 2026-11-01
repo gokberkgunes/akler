@@ -238,34 +238,6 @@ pub(crate) fn load_baseline(path: &Path) -> Result<Layout> {
     Ok(layout)
 }
 
-/// Physical slot restrictions saved with new archives; older archives use current defaults.
-pub(crate) fn load_roots(path: &Path) -> Result<Option<Vec<usize>>> {
-    let text = std::fs::read_to_string(path.join("manifest.jsonc")).map_err(|e| e.to_string())?;
-    let Json::Object(manifest) = crate::layout_io::parse_jsonc(&text)? else {
-        return Err("Invalid magic archive manifest.".into());
-    };
-    let Some(value) = manifest.get("allowed_roots") else {
-        return Ok(None);
-    };
-    let Json::Array(values) = value else {
-        return Err("Invalid magic archive allowed keys.".into());
-    };
-    let mut roots = Vec::new();
-    for value in values {
-        let Json::Number(n) = value else {
-            return Err("Invalid magic archive allowed key.".into());
-        };
-        if !n.is_finite() || *n < 0.0 || n.fract() != 0.0 || *n >= usize::MAX as f64 {
-            return Err("Invalid magic archive physical slot.".into());
-        }
-        let root = *n as usize;
-        if !roots.contains(&root) {
-            roots.push(root);
-        }
-    }
-    Ok(Some(roots))
-}
-
 pub(crate) fn load_candidates(path: &Path) -> Result<Vec<Layout>> {
     let text = std::fs::read_to_string(path.join("manifest.jsonc")).map_err(|e| e.to_string())?;
     let Json::Object(manifest) = crate::layout_io::parse_jsonc(&text)? else {

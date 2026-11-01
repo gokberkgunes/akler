@@ -4425,8 +4425,8 @@ fn optimizer_mana_weights_frame(
     c
 }
 
-const OPTIMIZER_TABS: [&str; 4] =
-    [" [1] Overview ", " [2] Settings ", " [3] Weights ", " [4] Score "];
+const OPTIMIZER_TABS: [&str; 5] =
+    [" [1] Overview ", " [2] Settings ", " [3] Weights ", " [4] Score ", " [5] Magic "];
 
 pub(crate) fn optimizer_tabs(canvas: &mut Canvas, active: usize, corpus: &str, layout: &str, mode: &str) {
     workspace_tabs_at(canvas, active, &OPTIMIZER_TABS);
@@ -4439,7 +4439,8 @@ pub(crate) fn optimizer_tabs(canvas: &mut Canvas, active: usize, corpus: &str, l
 }
 
 /// Open the action optimizer on this arrangement, with a new magic key when
-/// `magic` is set and without one otherwise (combo fitting, `[combos]`).
+/// `magic` is set and without one otherwise (combo fitting, `[combos]`), on
+/// its Magic tab when `magic_tab` is set.
 fn optimizer_actions(
     term: &mut Terminal,
     model: &Model,
@@ -4450,6 +4451,7 @@ fn optimizer_actions(
     settings: &SearchSettings,
     magic: bool,
     start: bool,
+    magic_tab: bool,
 ) -> AppResult<bool> {
     let layout = board_as_action_layout(&model.board, &model.symbols(arr))?;
     let action_locks = layout
@@ -4489,6 +4491,7 @@ fn optimizer_actions(
         action_locks,
         magic,
         start,
+        magic_tab,
     )
 }
 
@@ -4770,7 +4773,7 @@ fn optimizer_setup(
                     "Run without them".to_string(),
                 ];
                 match menu(term, "Optimize", &choices)? {
-                    Some(0) => match optimizer_actions(term, model, source, arr, locks, w, s, false, true) {
+                    Some(0) => match optimizer_actions(term, model, source, arr, locks, w, s, false, true, false) {
                         Ok(true) => return Ok(false),
                         Ok(false) => {}
                         Err(error) => status = error.to_string(),
@@ -4779,9 +4782,10 @@ fn optimizer_setup(
                     None => {}
                 }
             }
-            Event::Char('m') | Event::Char('M') | Event::Char('c') => {
+            Event::Char('m') | Event::Char('M') | Event::Char('c') | Event::Char('5') => {
                 let magic = matches!(e, Event::Char('m') | Event::Char('M'));
-                match optimizer_actions(term, model, source, arr, locks, w, s, magic, false) {
+                let tab = matches!(e, Event::Char('5'));
+                match optimizer_actions(term, model, source, arr, locks, w, s, magic, false, tab) {
                     Ok(true) => return Ok(false),
                     Ok(false) => {},
                     Err(error) => status = error.to_string(),
