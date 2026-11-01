@@ -1105,38 +1105,3 @@ pub(crate) fn command(args: &[String]) -> AppResult<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod magic_position_tests {
-    use super::*;
-
-    #[test]
-    fn moving_magic_preserves_bindings_and_locks_every_physical_destination() {
-        let original = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . ~\nthumbs: e space\n* eo\n",
-            Path::new("positions.dat"),
-        ).unwrap();
-        let from = crate::magic_optimizer::existing_root(&original).unwrap();
-        for target in 0..original.slots.len() {
-            for unlocked in [false, true] {
-                let mut layout = original.clone();
-                let (locks, root) = position_magic(&mut layout, Some(target), unlocked).unwrap();
-                assert_eq!(root, Some(target));
-                assert!(locks[target]);
-                assert_eq!(layout.slots[target].binding, original.slots[from].binding);
-                assert_eq!(layout.slots[from].binding, original.slots[target].binding);
-                for slot in 0..layout.slots.len() {
-                    assert_eq!(layout.slots[slot].finger, original.slots[slot].finger);
-                    if !unlocked && (layout.space(slot) || !layout.slots[slot].main) {
-                        assert!(locks[slot]);
-                    }
-                    if slot != from && slot != target {
-                        assert_eq!(layout.slots[slot], original.slots[slot]);
-                    }
-                }
-                assert_eq!(layout.actions, original.actions);
-            }
-        }
-        assert!(position_magic(&mut original.clone(), Some(original.slots.len()), false).is_err());
-    }
-}

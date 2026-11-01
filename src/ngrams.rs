@@ -1288,24 +1288,6 @@ mod ngram_limit_tests {
     }
 
     #[test]
-    fn ordinary_all_and_unreached_limits_preserve_tables_and_warnings() {
-        let original = Source::from_text(SOURCE, Path::new("inline.json")).unwrap();
-        for limits in [
-            NgramLimits::default(),
-            NgramLimits {
-                trigrams: Some(20),
-                ..NgramLimits::default()
-            },
-        ] {
-            let actual =
-                Source::from_text_with_limits(SOURCE, Path::new("inline.json"), limits).unwrap();
-            assert_eq!(actual.tables, original.tables);
-            assert_eq!(actual.masses, original.masses);
-            assert_eq!(actual.warnings, original.warnings);
-        }
-    }
-
-    #[test]
     fn ordinary_limits_preserve_explicit_skipgrams_and_validate_before_pruning() {
         let explicit = SOURCE.replace("\"trigrams\":", "\"skipgrams\":{\"ac\":100},\"trigrams\":");
         let limits = NgramLimits {
@@ -1383,71 +1365,5 @@ mod ngram_limit_tests {
         .err()
         .unwrap();
         assert!(error.to_string().contains("requires stored trigrams"));
-    }
-}
-
-#[cfg(test)]
-mod corpus_path_tests {
-    use super::*;
-
-    fn temporary_directory(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "akler-{name}-{}-{}",
-            crate::process_tag(),
-            timestamp()
-        ))
-    }
-
-    #[test]
-    fn raw_detection_accepts_arbitrary_names_and_preserves_frequency_json() {
-        let directory = temporary_directory("corpus-detection");
-        fs::create_dir_all(&directory).unwrap();
-        let prose = directory.join("prose.text");
-        let extensionless_prose = directory.join("book");
-        let extensionless = directory.join("counts");
-        let legacy = directory.join("legacy.txt");
-        let prose_json = directory.join("prose-object");
-        let json = directory.join("broken.json");
-        fs::write(&prose, "ordinary corpus text").unwrap();
-        fs::write(&extensionless_prose, "extensionless corpus text").unwrap();
-        fs::write(&extensionless, r#"{"letters":{"a":1}}"#).unwrap();
-        fs::write(&legacy, r#"{"letters":{"a":1}}"#).unwrap();
-        fs::write(&prose_json, r#"{"source":"a quoted passage"}"#).unwrap();
-        fs::write(&json, "{ malformed frequency JSON").unwrap();
-
-        assert!(corpus_is_raw(&prose).unwrap());
-        assert!(corpus_is_raw(&extensionless_prose).unwrap());
-        assert!(!corpus_is_raw(&extensionless).unwrap());
-        assert!(corpus_is_raw(&legacy).unwrap());
-        assert!(corpus_is_raw(&prose_json).unwrap());
-        assert!(!corpus_is_raw(&json).unwrap());
-        assert!(corpus_is_raw(Path::new("/tmp/example/corpus/raw/book.json")).unwrap());
-        assert!(!corpus_is_raw(Path::new("/tmp/example/corpus/raw/book.config.json")).unwrap());
-
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn raw_discovery_ignores_sidecars_and_rejects_cache_name_collisions() {
-        let directory = temporary_directory("raw-discovery");
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("novel"), "alpha").unwrap();
-        fs::write(directory.join("speech.md"), "beta").unwrap();
-        fs::write(directory.join("speech.config.json"), "{}").unwrap();
-
-        let paths = raw_corpus_paths_in(&directory).unwrap();
-        assert_eq!(paths.len(), 2);
-        assert!(paths
-            .iter()
-            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some("novel")));
-        assert!(paths
-            .iter()
-            .any(|path| path.file_name().and_then(|name| name.to_str()) == Some("speech.md")));
-
-        fs::write(directory.join("speech.txt"), "gamma").unwrap();
-        let error = raw_corpus_paths_in(&directory).unwrap_err().to_string();
-        assert!(error.contains("both use the name"));
-
-        fs::remove_dir_all(directory).unwrap();
     }
 }

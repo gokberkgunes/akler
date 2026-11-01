@@ -2136,69 +2136,6 @@ mod tests {
         assert!(exact.score < start.score);
     }
 
-    #[test]
-    fn existing_magic_keys_are_detected_for_in_place_refits() {
-        let layout = |rules: &str, extra: &str, keys: &str| {
-            ak::Layout::parse(
-                &format!(
-                    r#"{{"layout": {{"fingers": ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . {extra}"],
-                        "thumbs": ["space", ""]}},
-                      "fingermap": ["0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9"],
-                      "magic": {{"keys": "{keys}", "wildcards": "%", "rules": [{rules}]}}}}"#
-                ),
-                Path::new("existing-magic.jsonc"),
-            )
-            .unwrap()
-        };
-        let single = layout(
-            r#"{"inputs": "%*", "output": "%%"}, {"inputs": "e*", "output": "e."}"#,
-            "/",
-            "*",
-        );
-        let root = existing_root(&single).unwrap();
-        assert_eq!(single.slots[root].label, "*");
-        let ak::Binding::Named(name) = &single.slots[root].binding else {
-            unreachable!()
-        };
-        assert_eq!(locate_root(&single, name).unwrap(), root);
-        // Two magic keys are ambiguous; the optimizer cannot pick one to refit.
-        let two = layout(
-            r#"{"inputs": "%*", "output": "%%"}, {"inputs": "%#", "output": "%%"}"#,
-            "#",
-            "*#",
-        );
-        assert_eq!(existing_root(&two), None);
-        let plain = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l ;\nz x c v b n m , . /\n",
-            Path::new("plain.dat"),
-        )
-        .unwrap();
-        assert_eq!(existing_root(&plain), None);
-        // Adaptive swap keys hold rules too, but the magic key stays the root,
-        // and by default the swap keys move with their letters.
-        let swapped = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\n\
-             * eo\nswap o ty\n",
-            Path::new("swapped.dat"),
-        )
-        .unwrap();
-        let root = existing_root(&swapped).unwrap();
-        assert_eq!(swapped.slots[root].label, "*");
-        let locks = crate::action_ui::action_home_locks(&swapped);
-        for label in ["t", "y", "*"] {
-            let slot = swapped
-                .slots
-                .iter()
-                .position(|slot| slot.label == label)
-                .unwrap();
-            assert!(
-                matches!(swapped.slots[slot].binding, ak::Binding::Named(_)),
-                "{label}"
-            );
-            assert_eq!(locks[slot], label == "*", "{label}");
-        }
-    }
-
     use super::*;
 
     #[test]

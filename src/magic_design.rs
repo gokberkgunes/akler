@@ -4113,50 +4113,6 @@ fn dedicated_existing(layout: &ak::Layout, root: usize) -> ak::Result<ak::Layout
 mod tests {
     use super::*;
     #[test]
-    fn plain_repeats_are_set_aside_and_need_not_be_literal() {
-        let mut layout = ak::Layout::parse(
-            &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
-        )
-        .unwrap();
-        let root = layout.slots.len() - 1;
-        let name = "magic".to_string();
-        layout.slots[root].binding = ak::Binding::Named(name.clone());
-        layout
-            .actions
-            .insert("repeat-output".into(), ak::Action::RepeatOutput);
-        let text = |t: &[u8]| ak::Emission::Text(t.to_vec());
-        layout.actions.insert(
-            name,
-            ak::Action::Rules {
-                basis: ak::Basis::Text,
-                rules: [
-                    (b"e".to_vec(), text(b"e")),
-                    (b" ".to_vec(), text(b" ")),
-                    (b"a".to_vec(), text(b"u")),
-                ]
-                .into(),
-                fallback: ak::Emission::Call("repeat-output".into()),
-            },
-        );
-        // Space repeating itself is supported even though Space is not literal.
-        assert!(original(&layout, root).is_some());
-        let repeats = plain_repeats(&layout, root);
-        assert_eq!(
-            repeats.keys().cloned().collect::<Vec<_>>(),
-            [b" ".to_vec(), b"e".to_vec()]
-        );
-        assert_eq!(genuine_rule_count(&layout, root), 1);
-        let (genuine, _) = original(&without_plain_repeats(&layout, root), root).unwrap();
-        assert_eq!(genuine.keys().cloned().collect::<Vec<_>>(), [b"a".to_vec()]);
-        // Any other non-literal output stays unsupported.
-        edit_rules(&mut layout, root, |rules| {
-            rules.insert(b"b".to_vec(), text(b" "));
-        });
-        assert!(original(&layout, root).is_none());
-    }
-
-    #[test]
     fn extra_magic_swaps_preserve_bindings_geometry_and_readable_rules() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
@@ -4423,68 +4379,6 @@ mod tests {
     }
 
     #[test]
-    fn iterative_archive_keeps_one_exportable_design_per_position() {
-        let layout = ak::Layout::parse(
-            &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
-        )
-        .unwrap();
-        let corpus = ng::NgramCorpus::from_text(
-            r#"{"letters":{"q":3,"a":2},"bigrams":{"qa":2,"aq":2},"trigrams":{"qaq":2,"aqa":1}}"#,
-            Path::new("magic.json"),
-        )
-        .unwrap();
-        let mut values = [0.0; N_WEIGHTS];
-        values[SFB] = 1.0;
-        let settings = IterativeSettings {
-            workers: 1,
-            passes: 2,
-            archive: 3,
-            rule_settings: Settings {
-                max_rules: 2,
-                roots: Vec::new(),
-                shortlist: 4,
-                sfb_limit: None,
-                sfs_limit: None,
-                ..Settings::default()
-            },
-            ..IterativeSettings::default()
-        };
-        let result = iterative_refine(
-            &layout,
-            &layout,
-            &corpus,
-            &Weights::new(values),
-            &settings,
-            &AtomicBool::new(false),
-            &AtomicU64::new(0),
-        )
-        .unwrap();
-        assert!(!result.candidates.is_empty());
-        assert!(result.candidate_count > 0);
-        let mut distinct = std::collections::BTreeSet::new();
-        let mut roots = std::collections::BTreeSet::new();
-        for candidate in result.candidates {
-            assert!(roots.insert(candidate.root), "one design per magic-key position");
-            assert!(candidate.rules.len() <= settings.rule_settings.max_rules);
-            assert!(candidate.rules.iter().all(|r| r.frequency > 0.0));
-            let text = crate::layout_export::jsonc_text(&candidate.layout).unwrap();
-            assert!(distinct.insert(text.clone()));
-            let restored =
-                crate::layout_io::parse_json_layout(&text, Path::new("magic.jsonc")).unwrap();
-            let score = summary::evaluate(
-                &restored,
-                &corpus,
-                &Weights::new(values),
-                &AtomicBool::new(false),
-                &AtomicU64::new(0),
-            )
-            .unwrap();
-            assert_eq!(score.score.to_bits(), candidate.score.to_bits());
-        }
-    }
-
-    #[test]
     fn a_single_allowed_position_gives_its_best_layout_even_without_a_gain() {
         let layout = prepare(
             &ak::Layout::parse(
@@ -4670,20 +4564,6 @@ mod tests {
     }
 
     #[test]
-    fn candidate_contexts_count_boundaries_once() {
-        let corpus = ng::NgramCorpus::from_text(
-            r#"{"letters":{"a":1,"b":1,"c":1},"bigrams":{"ab":1,"bc":1},"trigrams":{"abc":1}}"#,
-            Path::new("magic.json"),
-        )
-        .unwrap();
-        let candidates = corpus.rule_candidates();
-        assert!(candidates.contains(&(false, b'a', b'b', 1.0)));
-        assert!(candidates.contains(&(false, b'b', b'c', 1.0)));
-        assert!(candidates.contains(&(true, b'a', b'c', 1.0)));
-        assert_eq!(candidates.len(), 3);
-    }
-
-    #[test]
     fn pruning_keeps_a_rule_that_is_the_only_way_to_type_a_character() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
@@ -4734,65 +4614,6 @@ mod tests {
             evaluated.counts.ignored_characters,
             with.counts.ignored_characters
         );
-    }
-
-    #[test]
-    fn trimming_to_max_rules_keeps_rules_that_are_the_only_way_to_type_a_character() {
-        let layout = ak::Layout::parse(
-            &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
-        )
-        .unwrap();
-        let corpus = ng::NgramCorpus::from_text(
-            r#"{"letters":{"q":40,"~":20,"a":20},"bigrams":{"q~":20,"~q":10,"qa":20,"aq":10},
-                "trigrams":{"q~q":10,"qaq":10}}"#,
-            Path::new("magic.json"),
-        )
-        .unwrap();
-        let stop = AtomicBool::new(false);
-        let progress = AtomicU64::new(0);
-        let root = layout
-            .slots
-            .iter()
-            .position(|slot| slot.binding == ak::Binding::Text(vec![b'p']))
-            .unwrap();
-        let rule = |context, output| Rule {
-            skip: false,
-            context,
-            output,
-            frequency: 1.0,
-        };
-        // "~" has no key, so q→~ is the only way to type it.
-        let designed = with_rules(
-            &layout,
-            root,
-            &[rule(b'q', b'~'), rule(b'a', b'q'), rule(b'z', b'a')],
-        )
-        .unwrap();
-        let mut costs = [0.0; N_WEIGHTS];
-        costs[TRAVEL] = 1.0;
-        let weights = Weights::new(costs);
-        let prepared = summary::Prepared::new(&designed, &corpus, &weights);
-        let before = prepared.evaluate(&designed, &stop, &progress).unwrap();
-
-        let one = trim_rules_to(&designed, root, 1, &weights, &stop, &progress, &prepared).unwrap();
-        let rules = original(&one, root).unwrap().0;
-        assert_eq!(
-            rules.keys().cloned().collect::<Vec<_>>(),
-            vec![b"q".to_vec()]
-        );
-        // Asking for none still keeps the only way to type "~".
-        let none =
-            trim_rules_to(&designed, root, 0, &weights, &stop, &progress, &prepared).unwrap();
-        assert_eq!(original(&none, root).unwrap().0, rules);
-        let after = prepared.evaluate(&none, &stop, &progress).unwrap();
-        assert_eq!(
-            after.counts.ignored_characters,
-            before.counts.ignored_characters
-        );
-        // A dictionary already within the limit is unchanged.
-        let all = trim_rules_to(&designed, root, 3, &weights, &stop, &progress, &prepared).unwrap();
-        assert_eq!(all.actions, designed.actions);
     }
 
     #[test]

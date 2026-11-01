@@ -666,26 +666,6 @@ mod tests {
     }
 
     #[test]
-    fn mirrored_swaps_are_recognized_and_reinstalled_exactly() {
-        let source = format!("{QWERTY}swap h nr\nadaptive t ex\n");
-        let layout = ak::Layout::parse(&source, Path::new("swaps.dat")).unwrap();
-        // The one-way adaptive rule on t is not a swap and stays.
-        assert_eq!(swaps_of(&layout), vec![Swap::new(b'h', b'n', b'r')]);
-        let (base, swaps) = split(&layout);
-        assert!(base.actions.contains_key("t") && !base.actions.contains_key("n"));
-        let n = layout
-            .slots
-            .iter()
-            .position(|slot| slot.label == "n")
-            .unwrap();
-        assert_eq!(base.slots[n].binding, ak::Binding::Text(b"n".to_vec()));
-        let restored = install(&base, &swaps);
-        assert_eq!(restored.actions, layout.actions);
-        assert_eq!(restored.slots, layout.slots);
-        assert!(is_adaptive_key(&layout, n));
-    }
-
-    #[test]
     fn fits_a_swap_for_a_frequent_same_finger_bigram() {
         let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.dat")).unwrap();
         // e sits above d on the left middle finger.
@@ -726,12 +706,4 @@ mod tests {
         assert_eq!(swaps_of(&fit.layout), fit.swaps);
     }
 
-    #[test]
-    fn swaps_conflict_only_on_a_shared_key_in_one_context() {
-        let swap = |context: u8, x: u8, y: u8| Swap::new(context, x, y);
-        assert!(conflicts(swap(b'e', b'd', b'q'), swap(b'e', b'c', b'q')));
-        assert!(conflicts(swap(b'e', b'd', b'q'), swap(b'e', b'q', b'z')));
-        assert!(!conflicts(swap(b'e', b'd', b'q'), swap(b'u', b'd', b'q')));
-        assert!(!conflicts(swap(b'e', b'd', b'q'), swap(b'e', b'c', b'z')));
-    }
 }

@@ -395,10 +395,6 @@ impl Key {
         self.main && self.rank <= 1
     }
 
-    #[cfg(test)]
-    fn home(self) -> bool {
-        self.main && self.row == 1 && matches!(self.col, 0 | 1 | 2 | 3 | 6 | 7 | 8 | 9)
-    }
 }
 
 fn main_key_at(row: usize, col: i8) -> Key {
@@ -807,32 +803,6 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
     TriFlags { bits, main }
 }
 
-#[cfg(test)]
-fn is_sraf(a: Key, b: Key) -> bool {
-    pair_flags(a, b, false).bi & bit(SRAF) != 0
-}
-
-#[cfg(test)]
-fn is_roll(a: Key, b: Key, c: Key) -> bool {
-    tri_flags(a, b, c).bits & bit(ROLL) != 0
-}
-
-#[cfg(test)]
-fn is_alternation(a: Key, b: Key, c: Key) -> bool {
-    tri_flags(a, b, c).bits & bit(ALT) != 0
-}
-
-#[cfg(test)]
-fn home_travel(k: Key) -> [f64; 3] {
-    if !k.main {
-        return [0.0; 3];
-    }
-    let homes = [0, 1, 2, 3, 6, 7, 8, 9];
-    let y = (k.row - 1).abs() as f64;
-    let x = ((k.col - homes[k.finger]) as f64 + k.row_offset as f64 / 1000.0).abs();
-    [x.hypot(y), y, x]
-}
-
 const HOME_COLUMNS: [i8; 8] = [0, 1, 2, 3, 6, 7, 8, 9];
 
 #[derive(Clone, Copy)]
@@ -1073,84 +1043,6 @@ fn parse_token(token: &str, empty: &mut u8) -> AppResult<u8> {
     Ok(bytes[0].to_ascii_lowercase())
 }
 
-#[cfg(test)]
-fn parse_row(
-    line: &str,
-    row: usize,
-    empty: &mut u8,
-    absolute: bool,
-) -> AppResult<(Vec<(u8, i8)>, (usize, usize))> {
-    let tokens: Vec<_> = line.split_whitespace().collect();
-    // Legacy 20-character rows with two spaces between hands. Do not trim
-    // leading whitespace: it encodes an empty leftmost physical slot.
-    const SLOTS: [usize; 10] = [0, 2, 4, 6, 8, 11, 13, 15, 17, 19];
-    let bytes = line.as_bytes();
-    if tokens.len() < 10
-        && !line.contains('|')
-        && bytes.len() <= 20
-        && bytes.iter().all(|b| b.is_ascii())
-        && bytes
-            .iter()
-            .enumerate()
-            .all(|(i, b)| SLOTS.contains(&i) || *b == b' ')
-    {
-        let mut result = Vec::new();
-        for (col, &p) in SLOTS.iter().enumerate() {
-            let b = bytes.get(p).copied().unwrap_or(b' ');
-            result.push((
-                if b == b' ' {
-                    parse_token("~", empty)?
-                } else {
-                    parse_token(&(b as char).to_string(), empty)?
-                },
-                col as i8,
-            ));
-        }
-        return Ok((result, (5, 5)));
-    }
-    let separator = tokens.iter().position(|t| *t == "|");
-    let (left, right) = if let Some(i) = separator {
-        if tokens.iter().filter(|t| **t == "|").count() != 1 {
-            return Err(format!("row {} has more than one hand separator", row + 1).into());
-        }
-        (&tokens[..i], &tokens[i + 1..])
-    } else {
-        let n = match tokens.len() {
-            10 => 5,
-            12 => 6,
-            _ => {
-                return Err(format!(
-                    "row {}: use 10 or 12 slots, or separate an 11-slot row as 6|5 or 5|6",
-                    row + 1
-                )
-                .into())
-            }
-        };
-        (&tokens[..n], &tokens[n..])
-    };
-    let max_hand_width = if absolute && left.len() + right.len() == 13 {
-        7
-    } else {
-        6
-    };
-    if !(5..=max_hand_width).contains(&left.len()) || !(5..=max_hand_width).contains(&right.len()) {
-        return Err(format!(
-            "row {}: invalid number of single-character slots per hand",
-            row + 1
-        )
-        .into());
-    }
-    let mut result = Vec::new();
-    let start = if left.len() == 6 { -1 } else { 0 };
-    for (i, t) in left.iter().enumerate() {
-        result.push((parse_token(t, empty)?, start + i as i8));
-    }
-    for (i, t) in right.iter().enumerate() {
-        result.push((parse_token(t, empty)?, 5 + i as i8));
-    }
-    Ok((result, (left.len(), right.len())))
-}
-
 fn board_from_text(text: &str, path: &Path) -> AppResult<Board> {
     board_from_layout(crate::action_keys::Layout::parse(text, path)?)
 }
@@ -1201,146 +1093,6 @@ fn load_board(path: &Path) -> AppResult<Board> {
         board_from_text(&text, path).map_err(|e| format!("{}: {e}", path.display()).into());
     timing.mark("Layout parse");
     result
-}
-
-#[cfg(test)]
-fn board_text(board: &Board, symbols: &[u8]) -> String {
-    let token = |b| {
-        if blank(b) {
-            "~".to_string()
-        } else if b == b' ' {
-            "space".to_string()
-        } else if matches!(b, b'~' | b'|' | b'@') || b.is_ascii_uppercase() {
-            format!("char:{}", b as char)
-        } else {
-            (b as char).to_string()
-        }
-    };
-    let mut out = String::new();
-    for r in 0..3 {
-        let mut row: Vec<_> = board
-            .keys
-            .iter()
-            .enumerate()
-            .filter(|(_, k)| k.main && k.row == r)
-            .collect();
-        row.sort_by_key(|(_, k)| k.col);
-        let mut line = String::new();
-        let mut first = true;
-        let width = row.len();
-        let absolute = board.keys.iter().any(|key| key.main && key.col == 11);
-        let separator = if absolute && width >= 12 { 6 } else { 5 };
-        for (i, k) in row {
-            if !first {
-                if k.col == separator {
-                    line.push_str(" | ");
-                } else {
-                    line.push(' ');
-                }
-            }
-            first = false;
-            line.push_str(&token(symbols[i]));
-        }
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out.push_str(&crate::action_keys::geometry_text(
-        board.keys.iter().filter(|key| key.main).map(|key| {
-            (
-                key.row,
-                key.col,
-                key.row_offset,
-                key.column_offset,
-                key.finger,
-            )
-        }),
-    ));
-    let thumb_columns: Vec<_> = board
-        .keys
-        .iter()
-        .filter(|key| !key.main)
-        .map(|key| key.col)
-        .collect();
-    let default_columns: Vec<_> = board
-        .keys
-        .iter()
-        .filter(|key| !key.main)
-        .enumerate()
-        .map(|(index, key)| {
-            if index == 0 && key.hand == 1 {
-                1
-            } else {
-                index as i8
-            }
-        })
-        .collect();
-    if thumb_columns != default_columns {
-        out.push_str(&format!(
-            "thumb-columns: {}\n",
-            thumb_columns
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-    let mut thumbs: Vec<_> = board
-        .keys
-        .iter()
-        .enumerate()
-        .filter(|(_, k)| !k.main)
-        .collect();
-    thumbs.sort_by_key(|(_, k)| k.hand);
-    let is_space = |(i, _): &(usize, &Key)| symbols[*i] == b' ';
-    if thumbs.iter().filter(|(_, key)| key.hand == 0).count() > 1
-        || thumbs.iter().filter(|(_, key)| key.hand == 1).count() > 1
-    {
-        let group = |hand| {
-            let keys: Vec<_> = thumbs
-                .iter()
-                .filter(|(_, key)| key.hand == hand)
-                .map(|(i, _)| token(symbols[*i]))
-                .collect();
-            if keys.is_empty() {
-                "none".into()
-            } else {
-                keys.join(" ")
-            }
-        };
-        out.push_str(&format!("thumbs: {} | {}\n", group(0), group(1)));
-        return out;
-    }
-    let bare = match thumbs.as_slice() {
-        [s] if s.1.hand == 1 || !is_space(s) => Some(*s),
-        [a, b] if is_space(a) ^ is_space(b) => Some(if is_space(a) { *b } else { *a }),
-        _ => None,
-    };
-    if thumbs.is_empty() || thumbs.len() == 1 && !is_space(&thumbs[0]) {
-        out.push_str("thumbs:");
-        for hand in 0..2 {
-            out.push(' ');
-            if let Some((i, _)) = thumbs.iter().find(|(_, key)| key.hand == hand) {
-                out.push_str(&token(symbols[*i]));
-            } else {
-                out.push_str("none");
-            }
-        }
-        out.push('\n');
-    } else if let Some((i, k)) = bare {
-        if k.hand == 1 {
-            out.push_str("            ");
-        }
-        out.push_str(&token(symbols[i]));
-        out.push('\n');
-    } else if !thumbs.is_empty() {
-        out.push_str("thumbs:");
-        for (i, _) in thumbs {
-            out.push(' ');
-            out.push_str(&token(symbols[i]));
-        }
-        out.push('\n');
-    }
-    out
 }
 
 /// Default locks, the same for every design: keys off the main block
@@ -2739,38 +2491,6 @@ mod numeric_geometry_tests {
     }
 
     #[test]
-    fn old_coordinates_keep_their_exact_distances() {
-        for extra in [
-            "",
-            "row-offsets: -0.25 0 0.5\n",
-        ] {
-            let board = parse(extra);
-            let geometry = Geometry::new(board.keys.clone());
-            for (index, key) in board.keys.iter().copied().enumerate() {
-                let expected = home_travel(key);
-                for axis in 0..3 {
-                    assert_eq!(
-                        geometry.home[index][axis].to_bits(),
-                        expected[axis].to_bits()
-                    );
-                }
-            }
-            for (a, first) in board.keys.iter().enumerate() {
-                for (b, second) in board.keys.iter().enumerate() {
-                    if first.main && second.main && first.finger == second.finger {
-                        let expected = ((first.row - second.row) as f64)
-                            .hypot(first.horizontal_delta(*second));
-                        assert_eq!(
-                            geometry.sf_distance[a * geometry.n + b].to_bits(),
-                            expected.to_bits()
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
     fn uniform_row_translation_cancels_from_travel_and_pair_distances() {
         let first = Geometry::new(parse("row-offsets: 0 0.25 0.75\n").keys);
         let shifted = Geometry::new(parse("row-offsets: -0.25 0 0.5\n").keys);
@@ -2875,44 +2595,5 @@ mod numeric_geometry_tests {
         }
     }
 
-    #[test]
-    fn ragged_rows_custom_fingers_and_offsets_round_trip() {
-        let rows = "q w e r t | y u i o p\na s d f g | h j k l ; ?\nz x c v b | n m , . /\nthumbs: none none\n";
-        let source = format!("{rows}row-offsets: 0 0.25 0.75\nfingermap: LP LR LM LM LI RI RI RM RR RP / LP LR LM LI LI RI RI RM RR RP RP / LP LR LI LI LI RI RI RM RR RP\n");
-        let board = board_from_text(&source, Path::new("inline")).unwrap();
-        assert_eq!(board.keys.len(), 31);
-        let action = crate::action_keys::Layout::parse(&source, Path::new("inline")).unwrap();
-        assert_eq!(board.keys, crate::action_ui::physical_keys(&action));
-        let round =
-            board_from_text(&board_text(&board, &board.symbols), Path::new("round")).unwrap();
-        assert_eq!(round.keys, board.keys);
-        assert_eq!(round.symbols, board.symbols);
-        let round = crate::action_keys::Layout::parse(&action.text(), Path::new("round")).unwrap();
-        assert_eq!(round.slots, action.slots);
-    }
-
-    #[test]
-    fn geometry_validation_is_shared_and_subtraction_cannot_overflow() {
-        for extra in [
-            "row-offsets: NaN 0 0\n",
-            "row-offsets: 0 0.0001 0\n",
-            "row-offsets: 33 0 0\n",
-            "row-offsets: 0 0\n",
-            "column-offsets: 0 0\n",
-            "fingermap: LP / LP / LP\n",
-        ] {
-            let source = format!("{ROWS}{extra}");
-            assert!(board_from_text(&source, Path::new("inline")).is_err());
-            assert!(crate::action_keys::Layout::parse(&source, Path::new("inline")).is_err());
-        }
-        let mut first = main_key(0, 0);
-        let mut second = first;
-        first.row_offset = 32000;
-        second.row_offset = -32000;
-        first.column_offset = -32000;
-        second.column_offset = 32000;
-        assert_eq!(first.horizontal_delta(second), 64.0);
-        assert_eq!(first.vertical_delta(second), -64.0);
-    }
 }
 

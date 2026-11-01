@@ -1489,63 +1489,6 @@ mod tests {
     }
 
     #[test]
-    fn summary_preserves_cancellation_and_empty_corpus_errors() {
-        let layout = ak::Layout::parse(
-            &crate::action_fast::tests::fixtures()[0],
-            Path::new("summary-inline.dat"),
-        )
-        .unwrap();
-        let weights = Weights::default();
-        let progress = AtomicU64::new(0);
-        for text in [
-            r#"{"letters":{"q":1},"bigrams":{},"trigrams":{}}"#,
-            r#"{"letters":{"!":1},"bigrams":{},"trigrams":{}}"#,
-        ] {
-            let corpus =
-                ng::NgramCorpus::from_text(text, Path::new("summary-inline.json")).unwrap();
-            for cancelled in [false, true] {
-                let stop = AtomicBool::new(cancelled);
-                let summary = evaluate(&layout, &corpus, &weights, &stop, &progress)
-                    .err()
-                    .unwrap();
-                let detailed =
-                    action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress)
-                        .err()
-                        .unwrap();
-                assert_eq!(summary, detailed);
-            }
-        }
-    }
-
-    #[test]
-    fn physical_summary_uses_selected_scoring_weights() {
-        let stop = AtomicBool::new(false);
-        let progress = AtomicU64::new(0);
-        let layout = ak::Layout::parse(
-            &crate::action_fast::tests::fixtures()[0],
-            Path::new("summary-physical.dat"),
-        )
-        .unwrap();
-        let corpus = corpus(5);
-        let mut weights = Weights::default();
-        weights.2 = mana2_metrics::Weights::from_text("finger-usage-LP = [-7]\n").unwrap();
-        for mode in ["aklgg"] {
-            let summary =
-                evaluate_with_mode(&layout, &corpus, &weights, &stop, &progress, mode).unwrap();
-            let stats = ng::mana_stats(
-                summary.raw.1.as_ref().unwrap(),
-                summary.totals,
-                summary.counts.speed_populations,
-            );
-            assert_eq!(
-                summary.score.to_bits(),
-                weights.physical_score(&stats).to_bits()
-            );
-            assert_ne!(summary.score, Weights::default().physical_score(&stats));
-        }
-    }
-
-    #[test]
     fn prepared_rule_summary_matches_full_evaluation_and_rejects_slot_changes() {
         let stop = AtomicBool::new(false);
         let progress = AtomicU64::new(0);

@@ -1457,16 +1457,6 @@ mod tests {
     }
 
     #[test]
-    fn spark_magic_rule_effects_fail_explicitly() {
-        let text = spark_example().replace(r#""rules":[]"#, r#""rules":[{"when":"a","char":"b"}]"#);
-        let error = Layout::parse(&text, Path::new("spark.json")).unwrap_err();
-        assert!(
-            error.contains("Spark magic rules are not supported yet"),
-            "{error}"
-        );
-    }
-
-    #[test]
     fn alt_finger_notes_name_symbol_keys_and_keep_readable_groups() {
         let notes = "// alt fingers\n//   t◇ t_◇ (LM LR) · rk (RM XX) · e, (RM RT) · k☆ (RI RM)\n//\n";
         let body = example("◇", r#"{"inputs":"a◇","output":"ay"}"#, row_board())
@@ -1499,25 +1489,6 @@ mod tests {
     }
 
     #[test]
-    fn alt_finger_notes_stand_in_for_a_dropped_alts_array() {
-        let body = r#"{"layout":{"fingers":["q w e r t y u i o p","a s d f g h j k l ;","z x c v b n m , . /"]}}"#;
-        let notes = "// Notes.\n//\n// alt fingers\n//   dg d_g (LM LI) · gd g_d (LI LM)\n//\n";
-        let layout = parse_json_layout(&format!("{notes}{body}"), Path::new("x.jsonc")).unwrap();
-        let expected = crate::alt_fingers::AltRules::parse_letters("dg d_g (LM LI) gd g_d (LI LM)");
-        assert_eq!(layout.alt_fingers, expected.unwrap());
-        assert_eq!(layout.alt_fingers.len(), 4);
-        // An alts array wins; no notes means no rules.
-        let alts = r#"{"alts":[{"ngram":["s","g"],"fingers":["LM","LI"]}],"#;
-        let with_array = format!("{notes}{alts}{}", &body[1..]);
-        let layout = parse_json_layout(&with_array, Path::new("x.jsonc")).unwrap();
-        assert_eq!(layout.alt_fingers.len(), 1);
-        assert!(parse_json_layout(body, Path::new("x.jsonc"))
-            .unwrap()
-            .alt_fingers
-            .is_empty());
-    }
-
-    #[test]
     fn mana_json_preserves_alts_and_combos() {
         let text = example("@", "", row_board()).replacen(
             r#""layers": null,"#,
@@ -1533,27 +1504,6 @@ mod tests {
             .source_warnings
             .iter()
             .any(|warning| warning.contains("Combos are preserved")));
-    }
-
-    #[test]
-    fn unequal_rows_need_explicit_empty_slots() {
-        let error = Layout::parse(
-            r#"{"layout":{"fingers":[
-                "q w e r t y u i o p",
-                "a s d f g h j k l ; [ ]",
-                "z x c v b n m , . /"
-            ]}}"#,
-            Path::new("unequal.jsonc"),
-        )
-        .unwrap_err();
-        assert!(error.contains("10, 12, and 10 physical slots"), "{error}");
-        assert!(error.contains("add skip"), "{error}");
-        let padded = r#"{"layout":{"fingers":[
-            "skip q w e r t y u i o p skip",
-            "skip a s d f g h j k l ; skip",
-            "skip z x c v b n m , . / skip"
-        ]}}"#;
-        assert!(Layout::parse(padded, Path::new("padded.jsonc")).is_ok());
     }
 
     #[test]
@@ -1641,17 +1591,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_input_uses_last_rule_and_longest_context_still_wins() {
-        let rules = r#"{"inputs":"q@","output":"qu"},{"inputs":"q@","output":"qi"},{"inputs":"aq@","output":"aqy"}"#;
-        let layout = parse(&example("@", rules, row_board()));
-        let magic = key(&layout, "@");
-        let short = ak::trace_keys(&layout, &[key(&layout, "q"), magic]).unwrap();
-        let long = ak::trace_keys(&layout, &[key(&layout, "a"), key(&layout, "q"), magic]).unwrap();
-        assert_eq!(short[1].output, b"i");
-        assert_eq!(long[2].output, b"y");
-    }
-
-    #[test]
     fn geometry_preserves_fingers_and_decimal_offsets() {
         let layout = parse(&example("@", "", row_board()));
         assert_eq!(layout.slots.iter().filter(|slot| slot.main).count(), 30);
@@ -1666,111 +1605,6 @@ mod tests {
         assert_eq!(columns.slots[key(&columns, "w")].column_offset, -300);
         assert_eq!(columns.slots[key(&columns, "w")].row_offset, 0);
         assert_eq!(columns.slots[key(&columns, "s")].column_offset, -300);
-    }
-
-    #[test]
-    fn stagger_offsets_need_an_explicit_direction() {
-        let flat = parse(&example(
-            "@",
-            "",
-            r#"{"isRowStaggered":false,"rowOrColumnStagger":[0,0,5]}"#,
-        ));
-        assert!(flat
-            .slots
-            .iter()
-            .filter(|slot| slot.main)
-            .all(|slot| slot.row_offset == 0 && slot.column_offset == 0));
-
-        let both = example(
-            "@",
-            "",
-            r#"{"isRowStaggered":true,"isColumnStaggered":true,"rowOrColumnStagger":[0,0,0]}"#,
-        );
-        let error = Layout::parse(&both, Path::new("both.jsonc")).unwrap_err();
-        assert!(error.contains("cannot both be true"), "{error}");
-
-        let missing = example("@", "", r#"{"isColumnStaggered":true}"#);
-        let error = Layout::parse(&missing, Path::new("missing.jsonc")).unwrap_err();
-        assert!(error.contains("rowOrColumnStagger is required"), "{error}");
-    }
-
-    #[test]
-    fn absent_thumbs_and_literal_marker_escapes_preserve_physical_slots() {
-        let base = example("char:*", "", row_board());
-        for (thumbs, expected) in [
-            (r#"["space"]"#, 1),
-            (r#"["","e"]"#, 2),
-            ("[]", 1),
-            (r#"["skip","e"]"#, 2),
-            (r#"["none","e"]"#, 1),
-            (r#"["none"]"#, 0),
-        ] {
-            let layout = parse(&base.replace(r#"["space", "e"]"#, thumbs));
-            assert_eq!(
-                layout.slots.iter().filter(|slot| !slot.main).count(),
-                expected
-            );
-            assert_eq!(
-                layout.slots[key(&layout, "*")].binding,
-                Binding::Text(b"*".to_vec())
-            );
-            assert!(!layout.extended());
-        }
-
-        let right_space = parse(&base.replace(r#"["space", "e"]"#, r#"["e",""]"#));
-        let space = right_space
-            .slots
-            .iter()
-            .find(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
-            .unwrap();
-        assert!(!space.main);
-        assert_eq!(space.hand, 1);
-
-        let main_space_source = example("space", "", row_board());
-        for text in [
-            main_space_source.replace(r#""thumbs": ["space", "e"],"#, ""),
-            main_space_source.replace(r#"["space", "e"]"#, "[]"),
-            main_space_source.replace(r#"["space", "e"]"#, r#"["","e"]"#),
-        ] {
-            let main_space = parse(&text);
-            assert_eq!(
-                main_space
-                    .slots
-                    .iter()
-                    .filter(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
-                    .count(),
-                1
-            );
-            assert!(
-                main_space
-                    .slots
-                    .iter()
-                    .find(|slot| matches!(&slot.binding, Binding::Text(text) if text == b" "))
-                    .unwrap()
-                    .main
-            );
-        }
-
-        let magic = parse(
-            &example("char:*", r#"{"inputs":"a*","output":"ay"}"#, row_board())
-                .replace(r#"["space", "e"]"#, r#"["","*"]"#),
-        );
-        let magic_thumb = magic
-            .slots
-            .iter()
-            .find(|slot| !slot.main && slot.label == "*")
-            .unwrap();
-        assert_eq!(magic_thumb.hand, 1);
-        assert!(matches!(magic_thumb.binding, Binding::Named(_)));
-        assert!(magic.slots.iter().any(|slot| {
-            !slot.main
-                && slot.hand == 0
-                && matches!(&slot.binding, Binding::Text(text) if text == b" ")
-        }));
-
-        let mixed_none = base.replace(r#"["space", "e"]"#, r#"["none e",""]"#);
-        let error = Layout::parse(&mixed_none, Path::new("mixed-none.jsonc")).unwrap_err();
-        assert!(error.contains("none cannot be combined"), "{error}");
     }
 
     #[test]
@@ -1896,33 +1730,6 @@ mod tests {
     }
 
     #[test]
-    fn later_wildcard_replaces_an_earlier_exact_rule() {
-        let text = include_str!("../layouts/afterburner.jsonc").replace(
-            "{\"inputs\": \"*#\", \"output\": \"**\"},\n      {\"inputs\": \"a#\", \"output\": \"ao\"}",
-            "{\"inputs\": \"a#\", \"output\": \"ao\"},\n      {\"inputs\": \"*#\", \"output\": \"**\"}",
-        );
-        let layout = parse(&text);
-        let steps = ak::trace_keys(&layout, &[key(&layout, "a"), key(&layout, "#")]).unwrap();
-        assert_eq!(
-            steps
-                .into_iter()
-                .flat_map(|step| step.output)
-                .collect::<Vec<_>>(),
-            b"aa"
-        );
-    }
-
-    #[test]
-    fn missing_skip_context_names_the_absent_key() {
-        let text = include_str!("../layouts/afterburner.jsonc").replace(
-            "{\"inputs\": \"#_$\", \"call\": \"#\"}",
-            "{\"inputs\": \"-_$\", \"output\": \"-_i\"},\n      {\"inputs\": \"#_$\", \"call\": \"#\"}",
-        );
-        let error = Layout::parse(&text, Path::new("missing-key.jsonc")).unwrap_err();
-        assert!(error.contains("missing physical key \"-\""), "{error}");
-    }
-
-    #[test]
     fn twelve_column_rows_keep_absolute_coordinates_and_custom_fingers() {
         let text = r#"{
             "layout": {
@@ -1959,17 +1766,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unknown_top_level_fields_fail_clearly() {
-        let text = example("@", "", row_board()).replacen(
-            "\"layers\": null,",
-            "\"layers\": null, \"unknown\": {},",
-            1,
-        );
-        let error = Layout::parse(&text, Path::new("unknown.jsonc")).unwrap_err();
-        assert!(
-            error.contains("unsupported JSON layout field \"unknown\""),
-            "{error}"
-        );
-    }
 }

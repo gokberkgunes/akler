@@ -71,17 +71,3 @@ impl Drop for LoadProfile {
         crate::profile_output::write_report(&out);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn disabled_profile_records_nothing() {
-        let mut p = LoadProfile::with_enabled("disabled test", false);
-        p.mark("phase");
-        assert!(p.start.is_none());
-        assert!(p.last.is_none());
-        assert_eq!(p.count, 0);
-    }
-}

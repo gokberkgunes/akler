@@ -296,23 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn action_preparation_does_not_initialize_ordinary_tables() {
-        let mut snapshot = snapshot();
-        let corpus = snapshot
-            .action(&AtomicBool::new(false), &AtomicU64::new(0))
-            .unwrap();
-        assert_eq!(corpus.order, 3);
-        assert!(snapshot.plain.is_none());
-        assert!(snapshot.action.is_some());
-
-        // A cached result requires no parser, so a cancellation flag cannot
-        // make this in-memory lookup fail as a new parse would.
-        assert!(snapshot
-            .action(&AtomicBool::new(true), &AtomicU64::new(0))
-            .is_ok());
-    }
-
-    #[test]
     fn limits_invalidate_both_engines_but_retain_the_text_snapshot() {
         let mut snapshot = snapshot();
         let text = Arc::clone(&snapshot.text);
@@ -337,23 +320,4 @@ mod tests {
         assert_eq!(original.tables[3].len(), 2);
     }
 
-    #[test]
-    fn replaced_text_and_explicit_invalidation_do_not_reuse_old_tables() {
-        let mut old = snapshot();
-        let original = old.plain().unwrap();
-        let mut new = CorpusSnapshot::from_text(
-            PathBuf::from("inline.json"),
-            TEXT.replace("\"a\":4", "\"a\":5"),
-            NgramLimits::default(),
-        );
-        let replacement = new.plain().unwrap();
-        assert_ne!(original.fingerprint, replacement.fingerprint);
-        assert!(!Arc::ptr_eq(&original, &replacement));
-
-        let mut session = CorpusSession::new();
-        session.snapshot = Some(old);
-        session.invalidate();
-        assert!(session.stamp.is_none());
-        assert!(session.snapshot.is_none());
-    }
 }

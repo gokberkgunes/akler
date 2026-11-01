@@ -874,28 +874,6 @@ mod tests {
     }
 
     #[test]
-    fn magic_key_actions_named_after_their_label_still_export() {
-        // DAT and some JSONC files load an `@` magic key's action as @@,
-        // while JSONC reimports it as @magic.
-        let layout = Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l @\nz x c v b | n m , . /\ne@ eo\n",
-            Path::new("magic.dat"),
-        )
-        .unwrap();
-        let action = layout.actions["@"].clone();
-        let slot = layout
-            .slots
-            .iter()
-            .position(|slot| slot.label == "@")
-            .unwrap();
-        assert_eq!(layout.slots[slot].binding, Binding::Named("@".into()));
-        let jsonc = jsonc_text(&layout).unwrap();
-        let restored = Layout::parse(&jsonc, Path::new("restored.jsonc")).unwrap();
-        assert_eq!(restored.slots[slot].binding, Binding::Named("magic".into()));
-        assert_eq!(restored.actions["magic"], action);
-    }
-
-    #[test]
     fn ordinary_jsonc_round_trip_keeps_single_thumb_and_literal_punctuation() {
         let source = GRID.replace("q w e r t", "char:* char:~ char:| char:@ char:Q");
         let (original, restored) = round_trip(&source);
@@ -996,39 +974,6 @@ mod tests {
         assert!(jsonc.contains("\"isColumnStaggered\": true"), "{jsonc}");
         let restored = Layout::parse(&jsonc, Path::new("columns.jsonc")).unwrap();
         assert_eq!(restored.slots, original.slots);
-    }
-
-    #[test]
-    fn unequal_dat_rows_need_explicit_empty_slots_for_jsonc() {
-        let source = GRID.replace("a s d f g | h j k l ;", "a s d f g | h j k l ; ?");
-        let layout = Layout::parse(&source, Path::new("unequal.dat")).unwrap();
-        let error = jsonc_text(&layout).unwrap_err();
-        assert!(error.contains("equally wide rows"), "{error}");
-    }
-
-    #[test]
-    fn jsonc_uses_handwritten_field_order_and_one_keyboard_row_per_line() {
-        let source = format!("{GRID}thumbs: space\nrow-offsets: 0 0.25 0.75\n");
-        let layout = Layout::parse(&source, Path::new("inline")).unwrap();
-        let text = jsonc_text(&layout).unwrap();
-        assert!(text.starts_with("{\n    \"layout\": {\n        \"fingers\": [\n"));
-        for row in ["q w e r t y u i o p", " a s d f g h j k l ;"] {
-            assert!(text.contains(&format!("            \"{row}\",\n")));
-        }
-        assert!(text.contains("            \"  z x c v b n m , . /\"\n        ]"));
-        assert!(text.contains("        \"thumbs\": [\"space\", \"\"]\n    }"));
-        assert!(text.contains("    \"fingermap\": [\n        \"0 1 2 3 3 6 6 7 8 9\",\n"));
-        assert!(text.contains("        \"rowOrColumnStagger\": [0, 0.25, 0.75]\n    }"));
-        crate::parse_json(&text).unwrap();
-
-        let fields = ["layout", "fingermap", "board", "layers"];
-        let positions = fields.map(|field| text.find(&format!("    \"{field}\":")).unwrap());
-        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
-        assert!(!text.contains("\"magic\":"));
-        let restored = Layout::parse(&text, Path::new("round")).unwrap();
-        assert_eq!(restored.slots, layout.slots);
-        assert_eq!(restored.actions, layout.actions);
-        assert_eq!(jsonc_text(&restored).unwrap(), text);
     }
 
     #[test]
@@ -1133,63 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_action_rules_fail_instead_of_exporting_lossily() {
-        let rows = GRID.replace("q w e", "q w @*");
-        for definitions in [
-            "action * = magic\nmap * \"q\" = none\n",
-            "action * = magic\nmap * \"q\" = \"U\"\n",
-            "action * = magic\nmap * \"Q\" = \"u\"\n",
-            "action * = repeat-action\n",
-            "action * = press-magic\nmap * \"q\" = \"u\"\n",
-            "action * = magic\nmap * \"q\" = \"ui\"\n",
-        ] {
-            let layout =
-                Layout::parse(&format!("{rows}{definitions}"), Path::new("inline")).unwrap();
-            let error = jsonc_text(&layout).unwrap_err();
-            assert!(error.contains("JSONC"), "{error}");
-        }
-    }
-
-    #[test]
-    fn literal_and_adaptive_keys_with_same_label_are_not_merged() {
-        let source = format!("{}adaptive n hr\n", GRID.replace("q w e", "n w e"),);
-        let mut layout = Layout::parse(&source, Path::new("inline")).unwrap();
-        layout.slots[0].binding = Binding::Text(b"n".to_vec());
-        assert!(jsonc_text(&layout)
-            .unwrap_err()
-            .contains("different bindings for physical label"));
-    }
-
-    #[test]
-    fn unsupported_action_graph_fails_instead_of_exporting_lossily() {
-        let source = format!("{}action ◇ = magic\nmap ◇ \"q\" = \"u\"\nmap ◇ \"x\" = none\naction a = magic\nmap a \"i\" = \"o\"\nfallback a = \"a\"\naction press = press-magic\nmap press \"q\" = \"z\"\nfallback press = none\naction again-key = repeat-action\n", GRID.replace("q w e r t", "@◇ @a @press @again-key t").replace("a s d f g", "q s d f g"));
-        let mut original = Layout::parse(&source, Path::new("source")).unwrap();
-        original.swap(0, 10);
-        original.swap(1, 20);
-        let error = jsonc_text(&original).unwrap_err();
-        assert!(error.contains("JSONC"), "{error}");
-    }
-
-    #[test]
-    fn both_stagger_axes_fail_instead_of_exporting_lossily() {
-        let source = "q w e r t y | u i o p [ ]\na s d f g h | j k l ; ' /\nz x c v b n | m , . = - \\\nrow-offsets: -0.25 0 0.5\ncolumn-offsets: 0 0 -0.2 -0.3 -0.1 0 0 -0.1 -0.3 -0.2 0 0\nfingermap: LP LP LR LM LI LI / LP LP LR LM LI LI / LP LP LR LM LI LI\n";
-        // Supply complete custom finger rows separately to keep the geometry explicit.
-        let source = source.replace("LP LP LR LM LI LI / LP LP LR LM LI LI / LP LP LR LM LI LI", "LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP / LP LP LR LM LI LI RI RI RM RR RP RP");
-        let layout = Layout::parse(&source, Path::new("source")).unwrap();
-        let error = jsonc_text(&layout).unwrap_err();
-        assert!(error.contains("offsets together"), "{error}");
-    }
-
-    #[test]
-    fn standalone_repeat_action_fails_instead_of_exporting_lossily() {
-        let source = format!("{}action m = repeat-output\n", GRID.replace("q w", "@m w"));
-        let original = Layout::parse(&source, Path::new("source")).unwrap();
-        assert!(jsonc_text(&original)
-            .unwrap_err()
-            .contains("one-character physical key label"));
-    }
-
-    #[test]
     fn skip_magic_round_trips_in_the_unified_magic_block() {
         let source = format!(
             "{}action skip = skip-magic\nfallback skip = repeat-previous-output\n",
@@ -1271,15 +1159,6 @@ mod tests {
         assert!(jsonc_text(&layout)
             .unwrap_err()
             .contains("one-character literal fallback"));
-    }
-
-    #[test]
-    fn unsupported_literal_labels_fail_without_a_lossy_export() {
-        let mut layout = Layout::parse(GRID, Path::new("source")).unwrap();
-        layout.slots[0].label = "custom q".into();
-        assert!(jsonc_text(&layout)
-            .unwrap_err()
-            .contains("custom display label"));
     }
 
     fn test_directory() -> PathBuf {

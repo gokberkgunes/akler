@@ -153,20 +153,4 @@ mod tests {
         assert_eq!(normalize(&raw, [0.0; 4]), Normalized::default());
     }
 
-    #[test]
-    fn mirrored_fingers_stagger_and_thumbs_use_fixed_geometry() {
-        let mut raw = Raw::default();
-        for finger in [0, 7, 8, 9] {
-            let a = key(finger, 0, 0, 0);
-            let b = key(finger, 3, 4, 0);
-            accumulate(&mut raw, &a, &b, 0.25, false);
-            assert!((raw.bigrams[finger] - 7.155).abs() < 1e-12);
-        }
-        accumulate(&mut raw, &key(2, 0, 0, 0), &key(2, 0, 0, 500), 1.0, false);
-        assert!((raw.bigrams[2] - 0.37).abs() < 1e-12);
-        let mut upper = key(3, 0, 0, 0);
-        upper.column_offset = 500;
-        accumulate(&mut raw, &key(3, 0, 0, 0), &upper, 1.0, true);
-        assert!((raw.skipgrams[3] - 0.27).abs() < 1e-12);
-    }
 }

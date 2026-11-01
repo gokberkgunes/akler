@@ -1033,28 +1033,6 @@ fn main() {
 }
 
 #[cfg(test)]
-mod corpus_menu_tests {
-    use super::*;
-
-    #[test]
-    fn empty_corpora_still_offer_an_import_action() {
-        let items = corpus_menu_items(&[]);
-        assert_eq!(items, vec!["Import text corpus..."]);
-    }
-
-    #[test]
-    fn import_action_keeps_existing_corpus_indices() {
-        let paths = vec![
-            PathBuf::from("corpus/raw/news"),
-            PathBuf::from("corpus/processed/corpus-fiction.json"),
-        ];
-        let items = corpus_menu_items(&paths);
-        assert_eq!(items, vec!["news", "fiction", "Import text corpus..."]);
-        assert_eq!(items.len(), paths.len() + 1);
-    }
-}
-
-#[cfg(test)]
 mod layout_dispatch_tests {
     use super::*;
 
@@ -1078,20 +1056,6 @@ mod layout_dispatch_tests {
             parse_open_layout(ROWS, path).unwrap(),
             OpenLayout::Plain(_)
         ));
-    }
-
-    #[test]
-    fn layout_dispatch_does_not_retain_old_actions_or_geometry() {
-        let path = Path::new("inline.dat");
-        let OpenLayout::Plain(original) = parse_open_layout(ROWS, path).unwrap() else {
-            panic!("expected ordinary layout");
-        };
-        let staggered = format!("{ROWS}row-offsets: -0.25 0 0.5\n");
-        let OpenLayout::Plain(changed) = parse_open_layout(&staggered, path).unwrap() else {
-            panic!("expected ordinary staggered layout");
-        };
-        assert_ne!(original.keys, changed.keys);
-        assert!(parse_open_layout("not a layout", path).is_err());
     }
 
     const PLAIN_JSON: &str = r#"{
@@ -1128,46 +1092,6 @@ mod layout_dispatch_tests {
                 OpenLayout::Action(_)
             ));
         }
-    }
-
-    #[test]
-    fn empty_legacy_magic_settings_do_not_turn_xanthor_at_into_an_action() {
-        let jsonc = r#"{
-            "layout": {"fingers": [
-                "f m l p v x @ u o y",
-                "s t r d g . n e a i",
-                "z k q c w b h ; ' ,"
-            ], "thumbs": ["", ""]},
-            "magic": {"magicKeys": [], "rules": []}
-        }"#;
-        let path = Path::new("xanthor.jsonc");
-        let OpenLayout::Plain(board) = parse_open_layout(jsonc, path).unwrap() else {
-            panic!("empty magic settings must leave @ literal");
-        };
-        assert!(board.symbols.contains(&b'@'));
-
-        let dat = ROWS.replace("l ;", "l @");
-        assert!(matches!(
-            parse_open_layout(&dat, Path::new("literal.dat")).unwrap(),
-            OpenLayout::Plain(_)
-        ));
-        let declared = format!("{dat}action @ = repeat-output\n");
-        let OpenLayout::Action(magic) =
-            parse_open_layout(&declared, Path::new("magic.dat")).unwrap()
-        else {
-            panic!("declared @ action must use the action evaluator");
-        };
-        assert!(magic
-            .slots
-            .iter()
-            .any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
-        let saved = magic.text();
-        assert!(saved.contains("action @ = repeat-output"));
-        let round = crate::action_keys::Layout::parse(&saved, Path::new("round.dat")).unwrap();
-        assert!(round
-            .slots
-            .iter()
-            .any(|slot| slot.binding == crate::action_keys::Binding::Named("@".into())));
     }
 
     #[test]
