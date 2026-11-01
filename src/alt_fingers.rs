@@ -613,6 +613,9 @@ pub(crate) struct Compiled {
     by_first: Option<Vec<Vec<u16>>>,
     /// Slots that no rule can move off their default finger.
     fixed: Vec<bool>,
+    /// Slots whose key a rule names or can move, or whose finger a rule
+    /// moves keys onto, as a bit mask (`reaches`).
+    involved: u64,
     /// A rule can move some key, so keys after it can matter: a three-key
     /// rule can move its first key, and any moved key's clash check reads
     /// up to two keys after it.
@@ -649,6 +652,21 @@ impl Compiled {
             })
             .collect();
         let has_future_change = fixed.iter().any(|&fixed| !fixed);
+        let targets = rules
+            .iter()
+            .flat_map(|rule| rule.fingers.iter().flatten())
+            .fold(0u32, |mask, &finger| mask | 1 << finger);
+        let involved = match &codes {
+            Some(codes) if codes.len() <= 64 => (0..codes.len())
+                .filter(|&slot| {
+                    let code = codes[slot];
+                    !fixed[slot]
+                        || named[usize::from(code) / 64] & (1 << (code % 64)) != 0
+                        || targets & (1 << layout.slots[slot].finger) != 0
+                })
+                .fold(0, |mask, slot| mask | 1 << slot),
+            _ => u64::MAX,
+        };
         let mut unique_bytes = [0u64; 4];
         if has_future_change {
             if let Ok(program) = crate::action_fast::Program::new(layout, 5) {
@@ -666,6 +684,7 @@ impl Compiled {
             named,
             by_first,
             fixed,
+            involved,
             has_future_change,
             unique_bytes,
         }
@@ -827,10 +846,15 @@ impl Compiled {
     }
 
     /// Whether a move can change a rule's effect outside the moved keys'
-    /// own tails. A key next to a moved one, even the one after a context's
-    /// counted key, can clash with its assigned finger, so any rule can.
+    /// own tails: whether it moves a key some rule names or can move, or one
+    /// on a finger a rule moves keys onto, whose neighbours' clash checks
+    /// read it. Any other key keeps no rule from matching or applying, so
+    /// it takes its new slot's own finger and every other finger stays.
     pub(crate) fn reaches(&self, slots: &[usize]) -> bool {
-        !self.rules.is_empty() && !slots.is_empty()
+        !self.rules.is_empty()
+            && slots
+                .iter()
+                .any(|&slot| slot >= 64 || self.involved & (1 << slot) != 0)
     }
 
     /// `resolve` over one window, matching position rules against the codes

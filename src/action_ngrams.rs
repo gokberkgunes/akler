@@ -5647,9 +5647,7 @@ impl Incremental {
         marks: &mut Vec<u64>,
     ) -> bool {
         let direct = self.finite_effort
-            && (self.finger_tails.is_none()
-                || !self.alt_fingers.reaches(slots)
-                || readers.is_some());
+            && (self.finger_tails.is_none() || !self.rules_reach(slots) || readers.is_some());
         if self.affected_by_bytes(slots, extra, direct, grouped, ids, marks) {
             return true;
         }
@@ -5832,6 +5830,17 @@ impl Incremental {
             read_marks(marks, ids);
         }
         false
+    }
+
+    /// `alt_fingers::Compiled::reaches`, but always for chord contexts, which
+    /// an alternate-finger or combo program maps whole and the dependency
+    /// postings do not cover.
+    fn rules_reach(&self, slots: &[usize]) -> bool {
+        self.alt_fingers.reaches(slots)
+            || self
+                .combos
+                .as_ref()
+                .is_some_and(|program| program.ahead() || program.has_combos())
     }
 
     /// Recount `rule_readers` for the current arrangement.
@@ -6148,7 +6157,7 @@ impl Incremental {
         // and takes its new slot's finger, the others keep theirs. Static
         // contexts then move by tail group.
         let rules_unmoved = self.alt_fingers.positional()
-            && !self.alt_fingers.reaches(&movement.slots[..movement.len]);
+            && !self.rules_reach(&movement.slots[..movement.len]);
         // Each trial owns its small key masks and permutation. Corpus, tails,
         // geometry and contribution tables are shared by independent trials.
         let mut keys = self.keys.clone();
@@ -6171,6 +6180,7 @@ impl Incremental {
         // for the ones some rule may read, which are mapped one by one.
         let readers = ruled.as_ref().filter(|_| {
             aggregate
+                && !rules_unmoved
                 && self.few_rule_readers
                 && !self.tail_groups.is_empty()
                 && !self.combos.as_ref().is_some_and(crate::combos::Program::has_combos)
@@ -8106,10 +8116,22 @@ mod tests {
         };
         let mut own = layout.clone();
         own.alt_fingers.clear();
+        // Thumb rules: moving letter keys reaches no rule, so each context
+        // just relabels its tail.
+        let mut thumbs = ak::Layout::parse(
+            "q w x d t | y u i o p\na s h f g | j k l n ;\nz c v b m | , . / ' -\nthumbs: e space | r\n",
+            Path::new("grouped-thumbs.dat"),
+        )
+        .unwrap();
+        thumbs.alt_fingers =
+            crate::alt_fingers::AltRules::parse_letters("e␣ e_␣ (LT RT) ␣e ␣_e (RT LT)").unwrap();
+        crate::alt_fingers::pin(&mut thumbs);
         for (layout, alts) in [
             (&layout, crate::alt_fingers::AltPolicy::layout(true)),
             (&own, positions),
+            (&thumbs, crate::alt_fingers::AltPolicy::layout(true)),
         ] {
+            let geometry = Geometry::new(crate::action_ui::physical_keys(layout));
             let fresh = |layout: &ak::Layout| {
                 let mut cache = Incremental::new_with_policy(
                     &corpus,
