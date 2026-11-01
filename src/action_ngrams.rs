@@ -4752,6 +4752,11 @@ pub(crate) struct Proposal {
     /// were computed with.
     projections: HashMap<u64, TailProjection, FastHash>,
     projection_geometry: Arc<Geometry>,
+    /// Projections of tails on their keys' own fingers, by tail index
+    /// (`Incremental::project`): 1 + their index in `dense_projections`, or
+    /// 0 before first use.
+    dense_index: Vec<u32>,
+    dense_projections: Vec<TailProjection>,
     /// The net tails a screened trial drained, before projecting them.
     drained: Vec<(u64, f64)>,
     /// A projected trial's screened score and capped metrics (SFB, SFS,
@@ -4787,6 +4792,8 @@ impl Proposal {
             contextual_geometry: Arc::new(Geometry::new(Vec::new())),
             projections: HashMap::default(),
             projection_geometry: Arc::new(Geometry::new(Vec::new())),
+            dense_index: Vec::new(),
+            dense_projections: Vec::new(),
             drained: Vec::new(),
             screened: None,
             group_changes: Vec::new(),
@@ -7449,19 +7456,33 @@ impl Incremental {
     /// from the counters' in the last bits, as screened sums do.
     fn project(&self, proposal: &mut Proposal, drained: &[(u64, f64)]) {
         let terms = self.score_terms.as_deref().unwrap();
+        // A tail's index: GAP after every slot, in base `side`.
+        let side = self.positions.len() + 1;
         if !Arc::ptr_eq(&proposal.projection_geometry, &self.geometry) {
             proposal.projections.clear();
+            proposal.dense_index.clear();
+            proposal.dense_index.resize(side * side * side, 0);
+            proposal.dense_projections.clear();
             proposal.projection_geometry = Arc::clone(&self.geometry);
         }
         let mut sum = [0.0; PROJECTED];
         for &(key, weight) in drained {
-            let projection = proposal
-                .projections
-                .entry(key)
-                .or_insert_with(|| {
-                    let (tail, fingers, _) = unpack_key(key);
-                    self.tail_projection(tail, fingers, terms)
-                });
+            let (tail, fingers, _) = unpack_key(key);
+            let projection = if fingers.is_none() && side <= 256 {
+                let index = tail
+                    .iter()
+                    .fold(0, |index, &slot| index * side + usize::from(slot).min(side - 1));
+                if proposal.dense_index[index] == 0 {
+                    proposal.dense_projections.push(self.tail_projection(tail, None, terms));
+                    proposal.dense_index[index] = proposal.dense_projections.len() as u32;
+                }
+                &proposal.dense_projections[proposal.dense_index[index] as usize - 1]
+            } else {
+                proposal
+                    .projections
+                    .entry(key)
+                    .or_insert_with(|| self.tail_projection(tail, fingers, terms))
+            };
             for (total, value) in sum.iter_mut().zip(projection.0) {
                 *total += weight * value;
             }
