@@ -47,33 +47,6 @@ fn stagger_cells(offset: i16, minimum: i16, step: usize) -> usize {
     (((i32::from(offset) - i32::from(minimum)).max(0) as usize * step) + 500) / 1000
 }
 
-/// The status after `save_in_place` wrote `saved` for the layout at `source`.
-fn saved_in_place_message(source: &Path, saved: &Path) -> String {
-    if source == saved {
-        format!("saved over {}", saved.display())
-    } else {
-        format!(
-            "saved {}; JSONC can't hold this layout, so {} is unchanged",
-            saved.display(),
-            source.display()
-        )
-    }
-}
-
-fn saved_layout_message(path: &Path) -> String {
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "jsonc")
-    {
-        format!("saved {}", path.display())
-    } else {
-        format!(
-            "saved {} and {}",
-            path.display(),
-            path.with_extension("jsonc").display()
-        )
-    }
-}
 
 fn ansi_color(color: u8) -> String {
     // In a browser the page's theme sets the palette, so muted text, the
@@ -4069,21 +4042,18 @@ fn editor_with_analysis(
                 status = "reset to loaded layout".into();
             },
             Event::Char('s') => {
-                let path = model.board.path.with_extension("dat");
-                let targets = format!("{} and {}", path.display(), path.with_extension("jsonc").display());
-                if confirm_box(term, "Save layout", &targets, "Save")? {
-                    let symbols = model.symbols(&arr);
-                    let dat = board_text(&model.board, &symbols);
-                    let jsonc = crate::layout_export::jsonc_text(&board_as_action_layout(&model.board, &symbols)?)?;
-                    crate::layout_export::replace_pair(&path, &dat, &jsonc, true)?;
+                let path = &model.board.path;
+                if confirm_box(term, "Save layout", &path.display().to_string(), "Save")? {
+                    let layout = board_as_action_layout(&model.board, &model.symbols(&arr))?;
+                    crate::layout_export::save_in_place(&layout)?;
                     baseline = arr.clone();
                     baseline_metrics = current_metrics.clone();
-                    status = format!("{}; comparison baseline updated", saved_layout_message(&path));
+                    status = format!("saved {}; comparison baseline updated", path.display());
                 }
             },
             Event::Char('S') => {
                 let p = save_new_layout(&model.board, &model.symbols(&arr))?;
-                status = saved_layout_message(&p);
+                status = format!("saved {}", p.display());
             },
             Event::Char('c') => {
                 if let Some(path) = select_source_path(term, false)? {
@@ -4847,7 +4817,7 @@ fn optimizer_setup(
                 let target = layout.path.display().to_string();
                 if confirm_box(term, "Save over the layout", &target, "Save")? {
                     status = match crate::layout_export::save_in_place(&layout) {
-                        Ok(p) => saved_in_place_message(&layout.path, &p),
+                        Ok(p) => format!("saved over {}", p.display()),
                         Err(e) => e,
                     };
                 }
@@ -5199,7 +5169,7 @@ fn save_result(
             ));
         }
     }
-    atomic_write(&path.with_extension("run.txt"), &report, false)?;
+    atomic_write(&path.with_extension("run.txt"), &report)?;
     Ok(path)
 }
 
@@ -5393,7 +5363,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     Event::Char('s') => {
                         status = match save_result(&problem, &arr, &start, &locks, &result.progress)
                         {
-                            Ok(p) => saved_layout_message(&p),
+                            Ok(p) => format!("saved {}", p.display()),
                             Err(e) => e.to_string(),
                         }
                     }
@@ -5402,7 +5372,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                         let target = layout.path.display().to_string();
                         if confirm_box(term, "Save over the layout", &target, "Save")? {
                             status = match crate::layout_export::save_in_place(&layout) {
-                                Ok(p) => saved_in_place_message(&layout.path, &p),
+                                Ok(p) => format!("saved over {}", p.display()),
                                 Err(e) => e,
                             };
                         }

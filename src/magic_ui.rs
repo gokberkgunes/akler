@@ -617,7 +617,7 @@ pub(crate) fn optimizer_magic_tab(
                         .collect();
                     standalone.path = Path::new(LAYOUT_DIR).join(format!("{stem}-magic.jsonc"));
                     status = match crate::layout_export::save_jsonc_copy(&standalone) {
-                        Ok(path) => saved_layout_message(&path),
+                        Ok(path) => format!("saved {}", path.display()),
                         Err(error) => format!("Save failed: {error}"),
                     };
                 }

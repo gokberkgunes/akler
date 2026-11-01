@@ -1619,16 +1619,13 @@ fn timestamp() -> u128 {
         .as_nanos()
 }
 
-fn atomic_write(path: &Path, text: &str, backup: bool) -> AppResult<()> {
-    if backup && path.exists() {
-        let old = path.with_file_name(format!(
-            "{}.{}.bak",
-            path.file_name().unwrap_or_default().to_string_lossy(),
-            timestamp()
-        ));
-        fs::copy(path, old)?;
-    }
-    let tmp = path.with_file_name(format!(".akler-{}-{}.tmp", crate::process_tag(), timestamp()));
+fn atomic_write(path: &Path, text: &str) -> AppResult<()> {
+    let tmp = path.with_file_name(format!(
+        "{}.{}-{}.tmp",
+        path.file_name().unwrap_or_default().to_string_lossy(),
+        crate::process_tag(),
+        timestamp()
+    ));
     let result = (|| -> AppResult<()> {
         let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         if let Ok(metadata) = fs::metadata(path) {
@@ -1659,17 +1656,12 @@ fn save_new_layout(board: &Board, symbols: &[u8]) -> AppResult<PathBuf> {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("layout");
-    let dat = board_text(board, symbols);
-    let jsonc = crate::layout_export::jsonc_text(&board_as_action_layout(board, symbols)?)?;
-    for n in 1..10000 {
-        let path = dir.join(format!("{stem}-optimized-{n:03}.dat"));
-        match crate::layout_export::save_pair(&path, &dat, &jsonc) {
-            Ok(()) => return Ok(path),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    Err("no unused result filename".into())
+    let layout = board_as_action_layout(board, symbols)?;
+    Ok(crate::layout_export::save_numbered_jsonc(
+        &layout,
+        dir,
+        &format!("{stem}-optimized"),
+    )?)
 }
 
 fn discover(dir: &str, extension: &str, prefix: &str) -> AppResult<Vec<PathBuf>> {

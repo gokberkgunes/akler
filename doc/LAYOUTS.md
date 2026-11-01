@@ -3,8 +3,7 @@
 [README](../README.md) · [Metrics](METRICS.md) · [Usage](USAGE.md)
 
 AKLER reads DAT, Mana JSON/JSONC and Spark `spark/1` files, detected from the
-contents. Saving writes both `.dat` and `.jsonc` with the same stem; comments
-and formatting are not kept. Unsupported features (layers, tap-hold, split
+contents. Saving writes `.jsonc`; comments and formatting are not kept. Unsupported features (layers, tap-hold, split
 angle) are errors.
 
 ## DAT

@@ -859,9 +859,7 @@ fn save_config_sections(sections: &[(&str, String)]) -> AppResult<()> {
     if read_rank_hidden_layouts()?.is_none() {
         atomic_write(
             Path::new(RANK_HIDDEN_LAYOUTS_FILE),
-            &rank_hidden_layouts_text(&config.rank_hidden_layouts)?,
-            false,
-        )?;
+            &rank_hidden_layouts_text(&config.rank_hidden_layouts)?)?;
     }
 
     for (section, replacement) in sections {
@@ -875,7 +873,7 @@ fn save_config_sections(sections: &[(&str, String)]) -> AppResult<()> {
         &rank_config_text(&updated.rank_columns, updated.rank_filters),
     )?;
     parse_app_config(&text).map_err(|error| format!("{APP_CONFIG_FILE}: {error}"))?;
-    atomic_write(Path::new(APP_CONFIG_FILE), &text, false)
+    atomic_write(Path::new(APP_CONFIG_FILE), &text)
 }
 
 fn save_optimizer_settings(weights: &Weights, search: &SearchSettings) -> AppResult<()> {
@@ -927,14 +925,14 @@ fn save_rank_columns(hidden: &[bool; RANK_COUNT]) -> AppResult<()> {
     let (text, _, filters) = rank_settings_for_save()?;
     let replacement = rank_replacement_for_save(&text, hidden, filters)?;
     let text = replace_config_section(&text, "ranker", &replacement)?;
-    atomic_write(Path::new(APP_CONFIG_FILE), &text, false)
+    atomic_write(Path::new(APP_CONFIG_FILE), &text)
 }
 
 fn save_rank_filters(filters: RankFilters) -> AppResult<()> {
     let (text, columns, _) = rank_settings_for_save()?;
     let replacement = rank_replacement_for_save(&text, &columns, filters)?;
     let text = replace_config_section(&text, "ranker", &replacement)?;
-    atomic_write(Path::new(APP_CONFIG_FILE), &text, false)
+    atomic_write(Path::new(APP_CONFIG_FILE), &text)
 }
 
 fn save_rank_selection(
@@ -954,10 +952,10 @@ fn save_rank_selection(
         &rank_config_text(columns.unwrap_or(&saved_columns), filters),
     )?;
     let hidden_text = rank_hidden_layouts_text(hidden)?;
-    atomic_write(Path::new(APP_CONFIG_FILE), &text, false)?;
-    if let Err(error) = atomic_write(Path::new(RANK_HIDDEN_LAYOUTS_FILE), &hidden_text, false) {
+    atomic_write(Path::new(APP_CONFIG_FILE), &text)?;
+    if let Err(error) = atomic_write(Path::new(RANK_HIDDEN_LAYOUTS_FILE), &hidden_text) {
         let rollback = match previous {
-            Some(text) => atomic_write(Path::new(APP_CONFIG_FILE), &text, false),
+            Some(text) => atomic_write(Path::new(APP_CONFIG_FILE), &text),
             None => fs::remove_file(APP_CONFIG_FILE).map_err(|error| error.into()),
         };
         return match rollback {
@@ -973,9 +971,7 @@ fn save_rank_selection(
 fn save_rank_hidden_layouts(hidden_layouts: &BTreeSet<PathBuf>) -> AppResult<()> {
     atomic_write(
         Path::new(RANK_HIDDEN_LAYOUTS_FILE),
-        &rank_hidden_layouts_text(hidden_layouts)?,
-        false,
-    )
+        &rank_hidden_layouts_text(hidden_layouts)?)
 }
 
 #[cfg(test)]

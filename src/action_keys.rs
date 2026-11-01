@@ -1961,18 +1961,7 @@ impl Layout {
 
     pub fn save_new(&self) -> Result<PathBuf> {
         let dir = self.path.parent().unwrap_or(Path::new("layouts"));
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        let dat = self.text();
-        let jsonc = crate::layout_export::jsonc_text(self)?;
-        for i in 1..10000 {
-            let path = dir.join(format!("{}-actions-{i:03}.dat", self.name));
-            match crate::layout_export::save_pair(&path, &dat, &jsonc) {
-                Ok(()) => return Ok(path),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return err(e.to_string()),
-            }
-        }
-        err("no unused save filename")
+        crate::layout_export::save_numbered_jsonc(self, dir, &format!("{}-actions", self.name))
     }
 }
 

@@ -1899,7 +1899,7 @@ fn action_editor_core(
             Event::Char('p') => trace_view(term, &l, &w, true)?,
             Event::Char('s') => {
                 status = match l.save_new() {
-                    Ok(p) => saved_layout_message(&p),
+                    Ok(p) => format!("saved {}", p.display()),
                     Err(e) => e,
                 }
             }
@@ -2709,7 +2709,7 @@ fn action_optimizer_setup(
                 let target = layout.path.display().to_string();
                 if confirm_box(term, "Save over the layout", &target, "Save")? {
                     *status = match crate::layout_export::save_in_place(layout) {
-                        Ok(path) => saved_in_place_message(&layout.path, &path),
+                        Ok(path) => format!("saved over {}", path.display()),
                         Err(error) => error,
                     };
                 }
@@ -3355,7 +3355,7 @@ fn save_action_result(
             report.push_str(&format!("# {warning}\n"));
         }
     }
-    atomic_write(&path.with_extension("run.txt"), &report, false)?;
+    atomic_write(&path.with_extension("run.txt"), &report)?;
     Ok(path)
 }
 
@@ -3703,7 +3703,7 @@ fn action_optimizer_session(
                             &result.progress,
                             magic_root.is_some(),
                         ) {
-                            Ok(path) => saved_layout_message(&path),
+                            Ok(path) => format!("saved {}", path.display()),
                             Err(error) => error.to_string(),
                         };
                     }
@@ -3711,7 +3711,7 @@ fn action_optimizer_session(
                         let target = layout.path.display().to_string();
                         if confirm_box(term, "Save over the layout", &target, "Save")? {
                             status = match crate::layout_export::save_in_place(&layout) {
-                                Ok(path) => saved_in_place_message(&layout.path, &path),
+                                Ok(path) => format!("saved over {}", path.display()),
                                 Err(error) => error,
                             };
                         }

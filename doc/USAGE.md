@@ -119,16 +119,15 @@ thumbs are excluded.
   population is missing.
 - **Editor:** click a metric to see its contributors. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
-  the loaded layout, `c` changes the corpus. `s` saves `.dat` and `.jsonc`
-  (with backups), `S` saves a copy.
+  the loaded layout, `c` changes the corpus. `s` saves over the layout's
+  `.jsonc` (after asking), `S` saves a numbered copy.
 - **Optimizer:** every layout gets an outer pinky column on each side and two
   thumb keys per hand; the added keys start empty and locked. Click keys to
   lock them, `H` locks the home row, `U`/`L` unlock/lock everything. Space
   starts a search, `q` stops it and keeps the best result. `s` saves the
   result under `layouts/optimized/` with a `.run.txt` record, `S` saves it
-  over the layout's own file in its format (after asking; the old file is
-  kept as a backup; a layout JSONC can't hold goes to the DAT of the same
-  name), and `A` saves every candidate; added keys still empty are left out.
+  over the layout's own file (after asking; it reports an error when JSONC
+  can't hold the layout), and `A` saves every candidate; added keys still empty are left out.
   `S` in setup saves the current layout the same way.
 
 `f`, `F` and `z` toggle alternate fingers, combos and spacegrams.

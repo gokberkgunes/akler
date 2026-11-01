@@ -1,4 +1,4 @@
-//! Lossless JSONC layout exports and coordinated DAT/JSONC saves.
+//! Lossless JSONC layout exports and saves.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
@@ -46,37 +46,20 @@ pub(crate) fn save_jsonc_copy(layout: &Layout) -> Result<PathBuf> {
     save_numbered_jsonc(layout, dir, stem)
 }
 
-/// Replace the layout's own file, in its format (DAT or JSONC), keeping the
-/// previous file as a backup beside it. A layout JSONC can't hold goes to
-/// the DAT file of the same name instead. The optimizer's spare keys are
-/// saved only when they hold something.
+/// Replace the layout's own file with its JSONC. The optimizer's spare keys
+/// are saved only when they hold something.
 pub(crate) fn save_in_place(layout: &Layout) -> Result<PathBuf> {
     let layout = &layout.without_spare_keys();
-    let mut path = layout.path.clone();
-    let is_dat = match fs::read_to_string(&path) {
-        Ok(text) => !crate::layout_io::is_json_layout(&text),
-        Err(_) => path.extension().is_some_and(|ext| ext == "dat"),
-    };
-    let text = if is_dat {
-        layout.text()
-    } else {
-        match jsonc_text(layout) {
-            Ok(text) => text,
-            Err(_) => {
-                path = path.with_extension("dat");
-                layout.text()
-            }
-        }
-    };
-    let staged = staged_file(&path, &text).map_err(|e| e.to_string())?;
-    if let Err(error) = backup_file(&path).and_then(|_| fs::rename(&staged, &path)) {
+    let text = jsonc_text(layout).map_err(|error| format!("JSONC can't hold this layout: {error}"))?;
+    let staged = staged_file(&layout.path, &text).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::rename(&staged, &layout.path) {
         let _ = fs::remove_file(&staged);
         return Err(error.to_string());
     }
-    Ok(path)
+    Ok(layout.path.clone())
 }
 
-fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBuf> {
+pub(crate) fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBuf> {
     let text = jsonc_text(layout)?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     for n in 1..10000 {
@@ -102,66 +85,15 @@ fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBu
     Err("no unused result filename".into())
 }
 
-/// Claim both result names before writing either. Only files created by this
-/// call are removed on failure; an existing sibling or run record is retained.
-pub(crate) fn save_pair(dat_path: &Path, dat: &str, jsonc: &str) -> io::Result<()> {
-    let jsonc_path = dat_path.with_extension("jsonc");
-    if dat_path == jsonc_path {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a DAT save path",
-        ));
-    }
-    if dat_path
-        .with_extension("run.txt")
-        .symlink_metadata()
-        .is_ok()
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "a run record already uses this result name",
-        ));
-    }
-    let mut dat_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dat_path)?;
-    let mut jsonc_file = match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&jsonc_path)
-    {
-        Ok(file) => file,
-        Err(error) => {
-            drop(dat_file);
-            let _ = fs::remove_file(dat_path);
-            return Err(error);
-        }
-    };
-    let result = (|| {
-        dat_file.write_all(dat.as_bytes())?;
-        jsonc_file.write_all(jsonc.as_bytes())?;
-        crate::sync_file(&dat_file)?;
-        crate::sync_file(&jsonc_file)
-    })();
-    drop(dat_file);
-    drop(jsonc_file);
-    if result.is_err() {
-        let _ = fs::remove_file(dat_path);
-        let _ = fs::remove_file(&jsonc_path);
-    }
-    result
-}
-
 static SAVE_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 fn temporary_file(path: &Path, suffix: &str) -> io::Result<(PathBuf, File)> {
     for _ in 0..1000 {
         let serial = SAVE_SERIAL.fetch_add(1, Ordering::Relaxed);
         let name = format!(
-            ".akler-{}-{}-{serial}.{suffix}",
+            "{}.{}-{serial}.{suffix}",
+            path.file_name().unwrap_or_default().to_string_lossy(),
             crate::process_tag(),
-            crate::timestamp()
         );
         let candidate = path.with_file_name(name);
         match OpenOptions::new()
@@ -201,101 +133,6 @@ fn staged_file(path: &Path, text: &str) -> io::Result<PathBuf> {
         return Err(error);
     }
     Ok(temporary)
-}
-
-fn backup_file(path: &Path) -> io::Result<Option<PathBuf>> {
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "save target is not a file",
-            ))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    }
-    let (backup, mut file) = temporary_file(path, "bak")?;
-    let result = (|| {
-        let mut source = File::open(path)?;
-        io::copy(&mut source, &mut file)?;
-        crate::copy_permissions(&file, source.metadata()?.permissions())?;
-        crate::sync_file(&file)
-    })();
-    drop(file);
-    if let Err(error) = result {
-        let _ = fs::remove_file(&backup);
-        return Err(error);
-    }
-    Ok(Some(backup))
-}
-
-/// The editor's explicitly confirmed overwrite. Prepare and back up both
-/// siblings first; a failed second replacement restores the first sibling.
-pub(crate) fn replace_pair(
-    dat_path: &Path,
-    dat: &str,
-    jsonc: &str,
-    backup: bool,
-) -> io::Result<()> {
-    let jsonc_path = dat_path.with_extension("jsonc");
-    if dat_path == jsonc_path {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "expected a DAT save path",
-        ));
-    }
-    let dat_temporary = staged_file(dat_path, dat)?;
-    let jsonc_temporary = match staged_file(&jsonc_path, jsonc) {
-        Ok(path) => path,
-        Err(error) => {
-            let _ = fs::remove_file(dat_temporary);
-            return Err(error);
-        }
-    };
-    let mut backups = Vec::new();
-    for path in [dat_path, jsonc_path.as_path()] {
-        match backup_file(path) {
-            Ok(saved) => backups.push(saved),
-            Err(error) => {
-                let _ = fs::remove_file(&dat_temporary);
-                let _ = fs::remove_file(&jsonc_temporary);
-                for saved in backups.into_iter().flatten() {
-                    let _ = fs::remove_file(saved);
-                }
-                return Err(error);
-            }
-        }
-    }
-    if let Err(error) = fs::rename(&dat_temporary, dat_path) {
-        let _ = fs::remove_file(&dat_temporary);
-        let _ = fs::remove_file(&jsonc_temporary);
-        for saved in backups.into_iter().flatten() {
-            let _ = fs::remove_file(saved);
-        }
-        return Err(error);
-    }
-    if let Err(error) = fs::rename(&jsonc_temporary, &jsonc_path) {
-        let rollback = match &backups[0] {
-            Some(saved) => fs::rename(saved, dat_path),
-            None => fs::remove_file(dat_path),
-        };
-        let _ = fs::remove_file(&jsonc_temporary);
-        if let Err(restore_error) = rollback {
-            // Keep the backup for recovery if the filesystem also rejects rollback.
-            return Err(io::Error::new(error.kind(), format!("JSONC save failed: {error}; DAT recovery failed: {restore_error}; backups: {backups:?}")));
-        }
-        for saved in backups.into_iter().flatten() {
-            let _ = fs::remove_file(saved);
-        }
-        return Err(error);
-    }
-    if !backup {
-        for saved in backups.into_iter().flatten() {
-            let _ = fs::remove_file(saved);
-        }
-    }
-    Ok(())
 }
 
 fn object(fields: impl IntoIterator<Item = (&'static str, Json)>) -> Json {
@@ -1106,7 +943,8 @@ mod tests {
         let directory = test_directory();
         layout.path = directory.join("lead.jsonc");
         let saved = layout.save_new().unwrap();
-        for path in [saved.clone(), saved.with_extension("jsonc")] {
+        assert_eq!(saved.extension().and_then(|value| value.to_str()), Some("jsonc"));
+        for path in [saved] {
             let restored = Layout::parse(&fs::read_to_string(&path).unwrap(), &path).unwrap();
             assert_eq!(restored.slots, layout.slots);
             assert_eq!(restored.actions, layout.actions);
@@ -1251,13 +1089,12 @@ mod tests {
         assert!(jsonc.contains(r#""output": "%%""#), "{jsonc}");
 
         let directory = test_directory();
-        let dat_path = directory.join("chog.dat");
-        save_pair(&dat_path, &chog.text(), &jsonc).unwrap();
-        for path in [dat_path.clone(), dat_path.with_extension("jsonc")] {
+        chog.path = directory.join("chog.jsonc");
+        let saved = chog.save_new().unwrap();
+        for path in [saved] {
             let restored = Layout::parse(&fs::read_to_string(&path).unwrap(), &path).unwrap();
             assert_eq!(restored.slots, chog.slots);
             assert_eq!(restored.actions, chog.actions);
-            assert_eq!(restored.text(), chog.text());
             let presses = [key(&restored, "a"), key(&restored, "*")];
             let output = crate::action_keys::trace_keys(&restored, &presses)
                 .unwrap()
@@ -1431,100 +1268,31 @@ mod tests {
     }
 
     #[test]
-    fn saving_in_place_keeps_each_files_format_and_a_backup() {
+    fn saving_in_place_writes_jsonc_without_extra_files() {
         let directory = test_directory();
-        let source = Layout::parse(GRID, Path::new("source.dat")).unwrap();
+        let source = Layout::parse(GRID, Path::new("source")).unwrap();
         let mut swapped = source.clone();
         swapped.swap(0, 1);
-        // An extensionless JSONC file stays JSONC; a DAT file stays DAT.
-        for (name, original) in [("plain", jsonc_text(&source).unwrap()), ("grid.dat", GRID.into())] {
+        // An extensionless file keeps its name.
+        for name in ["plain", "grid.jsonc"] {
             let path = directory.join(name);
-            fs::write(&path, &original).unwrap();
+            fs::write(&path, jsonc_text(&source).unwrap()).unwrap();
             let mut layout = swapped.clone();
             layout.path = path.clone();
             assert_eq!(save_in_place(&layout).unwrap(), path);
             let saved = fs::read_to_string(&path).unwrap();
-            assert_eq!(
-                crate::layout_io::is_json_layout(&saved),
-                crate::layout_io::is_json_layout(&original)
-            );
+            assert!(crate::layout_io::is_json_layout(&saved));
             assert_eq!(Layout::parse(&saved, &path).unwrap().slots, swapped.slots);
-            let backups: Vec<_> = fs::read_dir(&directory)
-                .unwrap()
-                .map(|entry| fs::read_to_string(entry.unwrap().path()).unwrap())
-                .filter(|text| *text == original)
-                .collect();
-            assert_eq!(backups.len(), 1, "{name}");
         }
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn new_pair_preserves_existing_sibling_and_run_record() {
-        let directory = test_directory();
-        let path = directory.join("result.dat");
-        let jsonc_path = path.with_extension("jsonc");
-        fs::write(&jsonc_path, "original JSONC").unwrap();
-        assert_eq!(
-            save_pair(&path, "DAT", "JSONC").unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert!(!path.exists());
-        assert_eq!(fs::read_to_string(&jsonc_path).unwrap(), "original JSONC");
-        fs::remove_file(&jsonc_path).unwrap();
-        fs::write(path.with_extension("run.txt"), "original record").unwrap();
-        assert_eq!(
-            save_pair(&path, "DAT", "JSONC").unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert!(!path.exists());
-        assert!(!jsonc_path.exists());
-        assert_eq!(
-            fs::read_to_string(path.with_extension("run.txt")).unwrap(),
-            "original record"
-        );
-        fs::remove_file(path.with_extension("run.txt")).unwrap();
-        fs::write(&path, "original DAT").unwrap();
-        assert_eq!(
-            save_pair(&path, "DAT", "JSONC").unwrap_err().kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        assert_eq!(fs::read_to_string(&path).unwrap(), "original DAT");
-        assert!(!jsonc_path.exists());
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn overwrite_prepares_both_siblings_before_changing_existing_dat() {
-        let directory = test_directory();
-        let path = directory.join("result.dat");
-        fs::write(&path, "original DAT").unwrap();
-        fs::create_dir(path.with_extension("jsonc")).unwrap();
-        assert!(replace_pair(&path, "new DAT", "new JSONC", true).is_err());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "original DAT");
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn new_and_confirmed_overwrite_save_both_files() {
-        let directory = test_directory();
-        let path = directory.join("result.dat");
-        save_pair(&path, "DAT one", "JSONC one").unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "DAT one");
-        assert_eq!(
-            fs::read_to_string(path.with_extension("jsonc")).unwrap(),
-            "JSONC one"
-        );
-        replace_pair(&path, "DAT two", "JSONC two", false).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), "DAT two");
-        assert_eq!(
-            fs::read_to_string(path.with_extension("jsonc")).unwrap(),
-            "JSONC two"
-        );
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 2);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
-        let mut layout = Layout::parse(GRID, Path::new("source.dat")).unwrap();
-        layout.path = directory.join("source.dat");
+    #[test]
+    fn optimized_saves_claim_fresh_jsonc_names() {
+        let directory = test_directory();
+        let mut layout = Layout::parse(GRID, Path::new("source")).unwrap();
+        layout.path = directory.join("source.jsonc");
         let first = save_optimized(&layout).unwrap();
         let first_text = fs::read_to_string(&first).unwrap();
         assert_eq!(first.parent(), Some(directory.join("optimized").as_path()));

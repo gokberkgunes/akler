@@ -708,6 +708,7 @@ fn internal_layout_artifact(path: &Path) -> bool {
     };
     name.starts_with(".akler-")
         || name.starts_with(".layouter-")
+        || name.ends_with(".tmp")
         || name
             .strip_suffix(".bak")
             .and_then(|name| name.rsplit_once('.'))
