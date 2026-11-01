@@ -2146,7 +2146,7 @@ pub(crate) fn action_default_locks(layout: &ak::Layout) -> Vec<bool> {
 }
 
 /// `locks` with the empty spare keys locked too.
-fn optimizer_locks(layout: &ak::Layout, locks: Vec<bool>) -> Vec<bool> {
+pub(crate) fn optimizer_locks(layout: &ak::Layout, locks: Vec<bool>) -> Vec<bool> {
     locks.into_iter().zip(layout.spare_slots()).map(|(a, b)| a || b).collect()
 }
 

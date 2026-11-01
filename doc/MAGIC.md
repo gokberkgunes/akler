@@ -50,6 +50,8 @@ table of candidates, always using `normal` weights.
 |---|---|
 | `1` / `2` | Design / Candidates tab |
 | `p` | Choose which fingers may hold the magic key |
+| Click a key | Lock or unlock it (Design), as in the optimizer |
+| `H` / `U` / `L` | Default locks plus the home row / unlock all / lock all |
 | `3`–`6` | Passes, rule limit, shortlist, archive size |
 | Space / `r` | Start search (Design) / refine candidate (Candidates) |
 | Enter | Edit setting / inspect a candidate's rules |
@@ -58,7 +60,9 @@ table of candidates, always using `normal` weights.
 | `o` | Open a saved table |
 
 Each pass tries magic locations, fits rules, optimizes the letters around
-the key and refits. A rule is kept only if it fixes a real movement problem
+the key and refits. Locks start as the optimizer's defaults (thumbs and spare
+keys); the search moves no locked letter, and the magic key never takes a
+locked letter's key. A rule is kept only if it fixes a real movement problem
 (SFB, same key, jump, stretch, same-finger travel) and lowers the score.
 **Rules gain** compares a candidate with its rules removed.
 

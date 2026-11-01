@@ -3471,6 +3471,12 @@ pub(crate) fn iterative_refine(
             .filter(|&slot| !matches!(current.slots[slot].finger, 0 | 1 | 6 | 7))
             .collect();
     }
+    // The magic key never displaces a locked letter.
+    let locked = effective_settings.rule_settings.locked_slots.clone();
+    effective_settings.rule_settings.roots.retain(|&slot| {
+        !(locked.contains(&slot)
+            && matches!(current.slots[slot].binding, ak::Binding::Text(_) | ak::Binding::Empty))
+    });
     let settings = &effective_settings;
     let opts = &settings.rule_settings;
     if opts.roots.is_empty() {
@@ -4454,6 +4460,72 @@ mod tests {
             )
             .unwrap();
             assert_eq!(score.score.to_bits(), candidate.score.to_bits());
+        }
+    }
+
+    #[test]
+    fn locked_slots_keep_their_letters_in_every_candidate() {
+        // As the designer prepares it: a magic key on an added outer key.
+        let layout = prepare(
+            &ak::Layout::parse(
+                &crate::action_fast::tests::fixtures()[0],
+                Path::new("magic.dat"),
+            )
+            .unwrap(),
+            PlacementMode::ExtraBothPinkies,
+        )
+        .unwrap();
+        let corpus = ng::NgramCorpus::from_text(
+            r#"{"letters":{"f":3,"r":2},"bigrams":{"fr":2,"rf":2},"trigrams":{"frf":2,"rfr":1}}"#,
+            Path::new("magic.json"),
+        )
+        .unwrap();
+        let mut values = [0.0; N_WEIGHTS];
+        values[SFB] = 1.0;
+        // f is one of the two letters the corpus types, on an index-finger
+        // key the magic key may take: the search would move it if it could.
+        let locked: Vec<_> = (0..layout.slots.len())
+            .filter(|&slot| layout.slots[slot].binding == ak::Binding::Text(b"f".to_vec()))
+            .collect();
+        assert_eq!(locked.len(), 1);
+        let magic = (0..layout.slots.len())
+            .find(|&slot| matches!(layout.slots[slot].binding, ak::Binding::Named(_)))
+            .unwrap();
+        let settings = IterativeSettings {
+            workers: 1,
+            passes: 2,
+            archive: 3,
+            rule_settings: Settings {
+                max_rules: 2,
+                shortlist: 4,
+                sfb_limit: None,
+                sfs_limit: None,
+                // The magic key may stay or take f's key, which is locked.
+                roots: vec![magic, locked[0]],
+                locked_slots: locked.clone(),
+                ..Settings::default()
+            },
+            // As the designer runs it: its preview already holds the keys.
+            placement: PlacementMode::Existing,
+            ..IterativeSettings::default()
+        };
+        let result = iterative_refine(
+            &layout,
+            &layout,
+            &corpus,
+            &Weights::new(values),
+            &settings,
+            &AtomicBool::new(false),
+            &AtomicU64::new(0),
+        )
+        .unwrap();
+        assert!(!result.candidates.is_empty());
+        for candidate in &result.candidates {
+            assert_ne!(candidate.root, locked[0]);
+            assert_eq!(candidate.layout.slots.len(), layout.slots.len());
+            for &slot in &locked {
+                assert_eq!(candidate.layout.slots[slot].binding, layout.slots[slot].binding);
+            }
         }
     }
 

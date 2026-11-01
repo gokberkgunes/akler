@@ -108,6 +108,9 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
         })
         .collect();
     let mut reference = preview.clone();
+    // Keys the search keeps in place, as in the optimizer: click a key, or
+    // H/U/L. Thumbs and spare keys start locked.
+    let mut locks = action_ui::optimizer_locks(&reference, action_ui::action_default_locks(&reference));
     let mut root = allowed
         .first()
         .copied()
@@ -149,6 +152,12 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
             &short(&format!("{} · {}", original.name, data.name), c.w),
             MUTED,
         );
+        if locks.len() != reference.slots.len() {
+            locks = action_ui::optimizer_locks(
+                &reference,
+                action_ui::action_default_locks(&reference),
+            );
+        }
         let mut y = action_ui::action_keyboard(
             &mut c,
             2,
@@ -158,7 +167,7 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
             } else {
                 shown
             },
-            None,
+            (!candidates_page && locks.len() == shown.slots.len()).then_some(&locks[..]),
             selected_root,
         ) + 1;
         if candidates_page {
@@ -546,6 +555,10 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                 Some(Action::Key(i)) if candidates_page && Some(i) == selected_root => {
                     event = Event::Enter
                 }
+                Some(Action::Key(i)) if !candidates_page && i < locks.len() => {
+                    locks[i] = !locks[i];
+                    continue;
+                }
                 Some(Action::Item(i)) => candidate = i,
                 Some(Action::Command(ch)) => {
                     if !candidates_page {
@@ -572,6 +585,14 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                 selected_setting = selected_setting.saturating_sub(1);
             }
             Event::Char('m') if candidates_page => term.toggle_stats_view(),
+            Event::Char('H') if !candidates_page => {
+                locks = action_ui::optimizer_locks(
+                    &reference,
+                    action_ui::action_home_locks(&reference),
+                );
+            }
+            Event::Char('U') if !candidates_page => locks.fill(false),
+            Event::Char('L') if !candidates_page => locks.fill(true),
             Event::Char('1') => {
                 candidates_page = false;
                 candidate_offset = 0;
@@ -807,6 +828,17 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                     continue;
                 }
                 settings.rule_settings.roots = allowed.clone();
+                // Only letters and empty keys move; a locked magic key would
+                // read as a fixed placement.
+                settings.rule_settings.locked_slots = (0..locks.len())
+                    .filter(|&slot| {
+                        locks[slot]
+                            && matches!(
+                                reference.slots[slot].binding,
+                                action_keys::Binding::Text(_) | action_keys::Binding::Empty
+                            )
+                    })
+                    .collect();
                 let seed = if candidates_page {
                     let Some(entry) = archive.as_ref().and_then(|a| a.candidates.get(candidate))
                     else {
@@ -1024,6 +1056,10 @@ fn magic_design_open(term: &mut Terminal, data: &RankingData, selected: usize) -
                     "j/k ↑/↓\tSelect setting".into(),
                     "Enter\tEdit selected setting".into(),
                     "p\tToggle finger blocks (both hands)".into(),
+                    "Click key\tLock or unlock it: the search keeps it in place".into(),
+                    "H\tUse default locks with the home row locked".into(),
+                    "U\tUnlock all keys".into(),
+                    "L\tLock all keys".into(),
                     "3\tPasses".into(),
                     "4\tRules per key".into(),
                     "5\tRule shortlist".into(),
