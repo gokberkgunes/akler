@@ -685,21 +685,11 @@ fn layout_companion_priority(path: &Path) -> Option<u8> {
     }
 }
 
+/// Hidden files and the staging files of a save in progress.
 fn internal_layout_artifact(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-    name.starts_with(".akler-")
-        || name.starts_with(".layouter-")
-        || name.ends_with(".tmp")
-        || name
-            .strip_suffix(".bak")
-            .and_then(|name| name.rsplit_once('.'))
-            .is_some_and(|(original, stamp)| {
-                !original.is_empty()
-                    && stamp.len() >= 16
-                    && stamp.bytes().all(|byte| byte.is_ascii_digit())
-            })
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.') || name.ends_with(".tmp"))
 }
 
 fn discover_layouts(directory: &Path) -> AppResult<Vec<PathBuf>> {
@@ -1140,8 +1130,6 @@ mod layout_dispatch_tests {
             ("different.json", PLAIN_JSON),
             ("rows.txt", rows),
             (".akler-123-456-0.bak", PLAIN_JSON),
-            (".layouter-123-456-0.bak", PLAIN_JSON),
-            ("saved.json.1800000000000000000.bak", PLAIN_JSON),
             ("saved.jsonc.123-0.tmp", PLAIN_JSON),
             ("broken.json", "{\"layout\":"),
             ("broken.txt", "q w e r t | y u i o p\nshort row\n"),
