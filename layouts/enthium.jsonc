@@ -1,0 +1,23 @@
+{
+    "layout": {
+        "fingers": [
+            "skip q y o u = x l d p z skip",
+            "b c i a e - k h t n s w",
+            "skip ' , . ; / j m g f v skip"
+        ],
+        "thumbs": ["space", "r"]
+    },
+    "fingermap": [
+        "0 0 1 2 3 3 6 6 7 8 9 9",
+        "0 0 1 2 3 3 6 6 7 8 9 9",
+        "0 0 1 2 3 3 6 6 7 8 9 9"
+    ],
+    "board": {
+        "isRowStaggered": false,
+        "isColumnStaggered": false,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "layers": null
+}
