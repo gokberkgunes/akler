@@ -1909,6 +1909,7 @@ impl Layout {
     pub(crate) fn without_spare_keys(&self) -> Layout {
         let spare = self.spare_slots();
         let mut drop = vec![false; self.slots.len()];
+        let mut dropped_outer = [false; 2];
         for hand in 0..2i8 {
             // Only the columns it adds: magic seeds shift columns to put
             // theirs at 0 and 11, and rows need those to be written back.
@@ -1923,6 +1924,7 @@ impl Layout {
                 .collect();
             if outer.len() == 3 {
                 outer.iter().for_each(|&i| drop[i] = true);
+                dropped_outer[hand as usize] = true;
             }
             for i in 0..self.slots.len() {
                 if spare[i] && !self.slots[i].main && self.slots[i].hand == hand {
@@ -1936,15 +1938,14 @@ impl Layout {
             index += 1;
             !drop[index - 1]
         });
-        for (hand, flag) in [(0, &mut out.left_outer), (1, &mut out.right_outer)] {
-            *flag = (0..3).any(|row| {
-                self.slots
-                    .iter()
-                    .zip(&drop)
-                    .filter(|(s, &dropped)| !dropped && s.main && s.row == row && s.hand == hand)
-                    .count()
-                    >= 6
-            });
+        // A side keeps its outer column unless it was the one dropped. Keys
+        // are on a side by position, as the parsers place them, not by hand:
+        // a key may use a finger of the other hand.
+        if dropped_outer[0] {
+            out.left_outer = false;
+        }
+        if dropped_outer[1] {
+            out.right_outer = false;
         }
         out.order_slots();
         out
