@@ -61,6 +61,8 @@ The table has one row per magic-key position: the best layout found with the
 key there, whether or not it beats the start, so a locked key gives one row.
 **Positions shown** caps the rows. Start is the layout searched, with its own
 magic keys and without its swaps; values are green where better than Start.
+The columns are the ranker's visible ones (`[ranker] columns`), as many as fit,
+with SCORE kept and `←` / `→` scrolling the rest.
 
 Enter on a candidate makes it the optimizer's layout, with the magic key's
 lock moving with it. Space on another tab then runs the optimizer, which fits
@@ -70,6 +72,7 @@ adaptive swaps and combos as **Settings** says.
 |---|---|
 | Space | Search |
 | `j` / `k` | Select a setting or candidate |
+| `←` / `→` | Scroll the candidate table's columns, which follow the ranker's (`[ranker] columns`) |
 | Enter | Edit the setting / apply the candidate |
 | Click a key | Lock or unlock it, as on the overview |
 | `H` / `U` / `L` | Default locks plus the home row / unlock all / lock all |

@@ -356,45 +356,97 @@ impl RankRow {
 }
 
 fn rank_value(row: &RankRow, m: usize) -> Option<f64> {
+    if m == RANK_COVERAGE {
+        // The action adapter's coverage is over decoded physical grams, not the
+        // source text bigrams measured by ordinary coverage. Do not label it 100%.
+        return match row {
+            RankRow::Plain { corpus, .. } => Some(corpus.coverage[1]),
+            RankRow::Action { .. } => None,
+        };
+    }
+    let mana = |raw: &mana2_metrics::RawStats| mana2_rank_stats(row, raw);
+    rank_figure(m, row.score(), row.raw(), row.totals(), row.metrics(), &mana)
+}
+
+/// A ranker column's value from a layout's figures; `mana` gives its
+/// Mana2 stats. Coverage needs the ranker's corpus, so it has none here.
+fn rank_figure(
+    m: usize,
+    score: f64,
+    raw: &Raw,
+    totals: &[f64; 4],
+    metrics: &Metrics,
+    mana: &dyn Fn(&mana2_metrics::RawStats) -> mana2_metrics::Stats,
+) -> Option<f64> {
     if m >= RANK_PRESET_START {
         let preset = &RANK_PRESETS[m - RANK_PRESET_START];
-        let sum = |metrics: &[usize]| {
-            metrics
-                .iter()
-                .try_fold(0.0, |sum, &id| Some(sum + rank_value(row, id)?))
+        let sum = |ids: &[usize]| {
+            ids.iter().try_fold(0.0, |sum, &id| {
+                Some(sum + rank_figure(id, score, raw, totals, metrics, mana)?)
+            })
         };
         Some(4.0 * sum(preset.bigram)? + sum(preset.skipgram)?)
     } else if m >= RANK_MANA_START {
-        let raw = row.raw().1.as_ref()?;
-        let stats = mana2_rank_stats(row, raw);
-        Some(stats.values[m - RANK_MANA_START])
+        Some(mana(raw.1.as_ref()?).values[m - RANK_MANA_START])
     } else if m == RANK_SCORE {
-        Some(row.score())
+        Some(score)
     } else if m == RANK_FJB || m == RANK_FJS {
         let component = if m == RANK_FJB {
             [DAFJB, CAFJB, DNFJB, CNFJB]
         } else {
             [DAFJS, CAFJS, DNFJS, CNFJS]
         };
-        let denominator = denominator_totals(component[0], row.raw(), row.totals());
+        let denominator = denominator_totals(component[0], raw, totals);
         (denominator > 0.0).then(|| {
             pct(
-                component.iter().map(|&id| row.raw().0[id].max(0.0)).sum(),
+                component.iter().map(|&id| raw.0[id].max(0.0)).sum(),
                 denominator,
             )
         })
     } else if m == RANK_COVERAGE {
-        // The action adapter's coverage is over decoded physical grams, not the
-        // source text bigrams measured by ordinary coverage. Do not label it 100%.
-        match row {
-            RankRow::Plain { corpus, .. } => Some(corpus.coverage[1]),
-            RankRow::Action { .. } => None,
-        }
-    } else if denominator_totals(m, row.raw(), row.totals()) > 0.0 {
-        Some(row.metrics().v[m])
+        None
+    } else if denominator_totals(m, raw, totals) > 0.0 {
+        Some(metrics.v[m])
     } else {
         None
     }
+}
+
+/// The ranker's visible columns under `config`, in its order, for tables
+/// elsewhere that show the same figures (the optimizer's Magic tab).
+pub(crate) fn configured_rank_columns(config: &AppConfig) -> (Vec<usize>, bool) {
+    let mana2 = config.search.mode == "aklgg";
+    let mut columns = RankColumns::new(mana2);
+    columns.hidden = if mana2 {
+        mana2_rank_columns_with_presets(&config.rank_columns)
+    } else {
+        config.rank_columns
+    };
+    (columns.visible(), mana2)
+}
+
+/// `rank_value` for an action layout's summary figures.
+pub(crate) fn action_rank_value(
+    m: usize,
+    score: f64,
+    raw: &Raw,
+    totals: &[f64; 4],
+    metrics: &Metrics,
+    speed_populations: [f64; 2],
+) -> Option<f64> {
+    let mana = |stats: &mana2_metrics::RawStats| {
+        action_ngrams::mana_stats(stats, *totals, speed_populations)
+    };
+    rank_figure(m, score, raw, totals, metrics, &mana)
+}
+
+/// A ranker cell's text: `number` with a percent sign where the ranker shows one.
+pub(crate) fn rank_text(m: usize, value: f64, decimals: usize) -> String {
+    let mut text = number(value, decimals);
+    if rank_percent(m) || m < N_METRICS && !physical_metric(m) {
+        text.push('%');
+    }
+    text
 }
 
 fn mana2_rank_stats(row: &RankRow, raw: &mana2_metrics::RawStats) -> mana2_metrics::Stats {

@@ -248,6 +248,10 @@ pub(crate) fn optimizer_magic_tab(
     use crate::magic_design::{IterativeSettings, PlacementMode, Settings};
     let mut status = String::new();
     let mut scroll = 0;
+    let (rank_columns, rank_mana2) = configured_rank_columns(
+        &load_app_config().unwrap_or_default(),
+    );
+    let mut first_column = 0;
     loop {
         let candidates = state
             .archive
@@ -324,23 +328,55 @@ pub(crate) fn optimizer_magic_tab(
         );
         y += 2;
         if let Some(archive) = &state.archive {
-            c.text(0, y, "  Magic key        Score       SFB      SFS      LSB  Rules gain", FG);
+            // The ranker's columns, as many as fit before the rules gain.
+            const CELL: usize = 9;
+            // SCORE stays; ← and → scroll the rest, as in the ranker.
+            let fit = (c.w.saturating_sub(13 + 11) / CELL).max(2);
+            let pinned = usize::from(rank_columns.first() == Some(&RANK_SCORE));
+            let rest = &rank_columns[pinned..];
+            let room = fit - pinned;
+            first_column = first_column.min(rest.len().saturating_sub(room));
+            let metrics: Vec<usize> = rank_columns[..pinned]
+                .iter()
+                .chain(rest.iter().skip(first_column).take(room))
+                .copied()
+                .collect();
+            let more = rest.len() > room;
+            let gain_x = 13 + metrics.len() * CELL;
+            let table_w = gain_x + 11;
+            let speed = archive.before.counts.speed_populations;
+            let value = |m, score, raw, totals, figures| {
+                action_rank_value(m, score, raw, totals, figures, speed)
+            };
+            let before = &archive.before;
+            let start: Vec<_> = metrics
+                .iter()
+                .map(|&m| value(m, before.score, &before.raw, &before.totals, &before.metrics))
+                .collect();
+            if more {
+                let hint = format!(
+                    "Ranker columns {}-{} of {}; ← → scrolls",
+                    first_column + 1,
+                    first_column + room,
+                    rest.len()
+                );
+                c.text(2, y, &hint, MUTED);
+                y += 1;
+            }
+            c.text(2, y, "Magic key", FG);
+            for (j, &m) in metrics.iter().enumerate() {
+                c.right(13 + j * CELL, y, CELL - 1, displayed_rank_name(m, rank_mana2), FG);
+            }
+            c.right(gain_x, y, 10, "Rules gain", FG);
             y += 1;
-            let m = &archive.before.metrics.v;
-            c.text(
-                0,
-                y,
-                &format!(
-                    "  Start      {:>10.5} {:>8.4} {:>8.4} {:>8.4}",
-                    archive.before.score, m[SFB], m[SFS], m[LSB]
-                ),
-                MUTED,
-            );
+            c.text(2, y, "Start", MUTED);
+            for (j, (&m, start)) in metrics.iter().zip(&start).enumerate() {
+                let text = start.map_or_else(|| "n/a".into(), |v| rank_text(m, v, 3));
+                c.right(13 + j * CELL, y, CELL - 1, &text, MUTED);
+            }
             y += 1;
-            let before = &archive.before.metrics.v;
             for (index, entry) in candidates.iter().enumerate() {
                 let row = MAGIC_SETTING_ROWS + index;
-                let m = &entry.metrics.v;
                 c.text(0, y, if row == state.selected { "●" } else { " " }, CYAN);
                 let key = &entry.layout.slots[entry.root];
                 c.text(
@@ -357,31 +393,28 @@ pub(crate) fn optimizer_magic_tab(
                     ),
                     FG,
                 );
-                for (x, value, baseline, width, precision) in [
-                    (13, entry.score, archive.before.score, 10, 5),
-                    (24, m[SFB], before[SFB], 8, 4),
-                    (33, m[SFS], before[SFS], 8, 4),
-                    (42, m[LSB], before[LSB], 8, 4),
-                ] {
-                    let color = if (value - baseline).abs() < 1e-9 {
-                        FG
-                    } else if value < baseline {
-                        GREEN
-                    } else {
-                        RED
+                for (j, (&m, start)) in metrics.iter().zip(&start).enumerate() {
+                    let found = value(m, entry.score, &entry.raw, &entry.totals, &entry.metrics);
+                    let (text, color) = match (found, start) {
+                        (None, _) => ("n/a".into(), MUTED),
+                        (Some(v), Some(baseline)) if (v - baseline).abs() > 1e-9 => {
+                            let better = (v < *baseline) == !rank_positive(m);
+                            (rank_text(m, v, 3), if better { GREEN } else { RED })
+                        }
+                        (Some(v), _) => (rank_text(m, v, 3), FG),
                     };
-                    c.text(x, y, &format!("{value:>width$.precision$}"), color);
+                    c.right(13 + j * CELL, y, CELL - 1, &text, color);
                 }
                 match entry.rules_off_score {
                     Some(off) => c.text(
-                        51,
+                        gain_x,
                         y,
                         &format!("{:+10.4}", off - entry.score),
                         if off > entry.score + 1e-9 { GREEN } else { FG },
                     ),
-                    None => c.text(51, y, "       n/a", MUTED),
+                    None => c.text(gain_x, y, "       n/a", MUTED),
                 }
-                let rect = Rect { x: 0, y, w: c.w.min(63), h: 1 };
+                let rect = Rect { x: 0, y, w: c.w.min(table_w), h: 1 };
                 if row == state.selected {
                     c.row_style(rect, Some((42, 42, 42)), false);
                 }
@@ -392,17 +425,15 @@ pub(crate) fn optimizer_magic_tab(
                 c.text(0, y, "No allowed position kept the layout within the caps.", MUTED);
                 y += 1;
             }
-            if c.w >= 120 {
-                if let Some(entry) = chosen {
-                    magic_score_changes(
-                        &mut c,
-                        66,
-                        y.saturating_sub(candidates.len() + 2),
-                        &archive.before.metrics,
-                        &entry.metrics,
-                        weights,
-                    );
-                }
+            if let Some(entry) = chosen {
+                y = magic_score_changes(
+                    &mut c,
+                    0,
+                    y + 1,
+                    &archive.before.metrics,
+                    &entry.metrics,
+                    weights,
+                );
             }
         } else {
             c.text(
@@ -456,6 +487,8 @@ pub(crate) fn optimizer_magic_tab(
             Event::Escape | Event::Char('q') => return Ok(MagicTabExit::Key('1')),
             Event::Quit => return Ok(MagicTabExit::Key('q')),
             Event::Char('j') | Event::Down => state.selected += 1,
+            Event::Left => first_column = first_column.saturating_sub(1),
+            Event::Right => first_column += 1,
             Event::Char('k') | Event::Up => state.selected = state.selected.saturating_sub(1),
             Event::Char('H') => {
                 *locks = action_ui::optimizer_locks(layout, action_ui::action_home_locks(layout));
@@ -809,6 +842,7 @@ pub(crate) fn optimizer_magic_tab(
                 &[
                     "Space\tFind the best layout for each allowed magic-key position".into(),
                     "j/k ↑/↓\tSelect a setting or candidate".into(),
+                    "← / →\tScroll the table's ranker columns ([ranker] columns)".into(),
                     "Enter\tEdit the setting, or apply the candidate to the optimizer".into(),
                     "Click key\tLock or unlock it; a locked magic key keeps its key".into(),
                     "H / U / L\tDefault locks with the home row / unlock all / lock all".into(),
