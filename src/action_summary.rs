@@ -1171,8 +1171,8 @@ mod tests {
             let corpus = scaled_corpus(5, scale);
             for mode in ["normal", "aklgg"] {
                 let mut layout = ak::Layout::parse(
-                    crate::action_keys::test_layouts::COMPACT,
-                    Path::new("screen.dat"),
+                    &crate::action_keys::test_layouts::compact(),
+                    Path::new("screen.jsonc"),
                 )
                 .unwrap();
                 layout.combos = combos.clone();
@@ -1250,14 +1250,17 @@ mod tests {
             assert_eq!(corpus.chord_contexts().unwrap().exact_sums(), scale == 1.0);
             // With a magic key, and with only adaptive swaps, which mapping
             // never chooses between (`choice_free`).
-            let plain = crate::action_keys::test_layouts::COMPACT
-                .replace("| * b", "| ~ b")
-                .replace("* 'r ay hr ik jo ke rl u' ye\n", "");
-            for (source, mode) in [crate::action_keys::test_layouts::COMPACT, plain.as_str()]
+            let compact = crate::action_keys::test_layouts::compact();
+            let plain = crate::action_keys::test_layouts::jsonc(
+                ["f d l w v q p o u ,", "s t h y g z n a e i", "x k m c j skip b ' ; ."],
+                ["r", "space"],
+                &crate::action_keys::test_layouts::magic(&[("hn", "hr"), ("hr", "hn")]),
+            );
+            for (source, mode) in [compact.as_str(), plain.as_str()]
                 .into_iter()
                 .flat_map(|source| ["normal", "aklgg"].map(|mode| (source, mode)))
             {
-                let mut layout = ak::Layout::parse(source, Path::new("exact-from.dat")).unwrap();
+                let mut layout = ak::Layout::parse(source, Path::new("exact-from.jsonc")).unwrap();
                 layout.combos = combos(
                     r#"[{"keys":["q","p"],"output":"th"},{"keys":["s","x"],"output":"qu"}]"#,
                 );
@@ -1334,8 +1337,8 @@ mod tests {
         let mut weights = Weights::default();
         weights.3 = true;
         let layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("summary-slot-pairs.dat"),
+            &crate::action_keys::test_layouts::magic_on_n(&[]),
+            Path::new("summary-slot-pairs.jsonc"),
         )
         .unwrap();
         let prepared = Prepared::new(&layout, &corpus, &weights);
@@ -1391,8 +1394,8 @@ mod tests {
         // most pairs: their costs are kept by the keys each pair presses, and
         // moves that press the same keys reuse them.
         let layout = ak::Layout::parse(
-            crate::action_keys::test_layouts::COMPACT,
-            Path::new("summary-mapped-pairs.dat"),
+            &crate::action_keys::test_layouts::compact(),
+            Path::new("summary-mapped-pairs.jsonc"),
         )
         .unwrap();
         let prepared = Prepared::new(&layout, &corpus, &weights);
@@ -1446,7 +1449,7 @@ mod tests {
             for order in 3..=5 {
                 let corpus = corpus(order);
                 let mut layout =
-                    ak::Layout::parse(&source, Path::new("summary-inline.dat")).unwrap();
+                    ak::Layout::parse(&source, Path::new("summary-inline.jsonc")).unwrap();
                 for swap in [None, Some((0, layout.slots.len() - 1)), Some((2, 17))] {
                     if let Some((a, b)) = swap {
                         layout.swap(a, b);
@@ -1498,7 +1501,7 @@ mod tests {
         weights.4 = true;
         let mut layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[1],
-            Path::new("summary-prepared.dat"),
+            Path::new("summary-prepared.jsonc"),
         )
         .unwrap();
         layout.alt_fingers.push(crate::alt_fingers::Rule {
@@ -1581,11 +1584,16 @@ mod tests {
 
         // Eligible direct text rules exercise dirty-window mapping on the
         // fractional corpus above, including its unmapped reset character.
-        let direct_source = format!(
-            "{}outer-right: ~ @m ~\naction rep = repeat-output\naction m = magic\nmap m \"q\" = \"u\"\nfallback m = @rep\n",
-            crate::action_fast::tests::fixtures()[0],
+        // A repeating magic key on an outer column, typing u after q.
+        let direct_source = crate::action_keys::test_layouts::jsonc(
+            ["q w e r t y u i o p skip", "a s d f g h j k l ; @", "z x c v b n m , . / skip"],
+            ["space", ""],
+            &format!(
+                "\"fingermap\": [\"0 1 2 3 3 6 6 7 8 9 9\", \"0 1 2 3 3 6 6 7 8 9 9\", \"0 1 2 3 3 6 6 7 8 9 9\"],\n{}",
+                crate::action_keys::test_layouts::magic(&[("q@", "qu")])
+            ),
         );
-        let direct = ak::Layout::parse(&direct_source, Path::new("summary-direct.dat")).unwrap();
+        let direct = ak::Layout::parse(&direct_source, Path::new("summary-direct.jsonc")).unwrap();
         let direct_prepared = Prepared::new(&direct, &corpus, &weights);
         let assert_exact = |actual: &Summary, expected: &Summary| {
             assert_eq!(actual.counts.tables, expected.counts.tables);
@@ -1638,7 +1646,7 @@ mod tests {
         );
         assert!(direct_prepared.rule_cache.lock().unwrap().is_some());
         let mut direct_trial = direct.clone();
-        let ak::Action::Rules { rules, .. } = direct_trial.actions.get_mut("m").unwrap() else {
+        let ak::Action::Rules { rules, .. } = direct_trial.actions.get_mut("@").unwrap() else {
             unreachable!()
         };
         rules.insert(vec![b'q'], ak::Emission::Text(vec![b'n']));
@@ -1654,7 +1662,7 @@ mod tests {
         assert!(work.mapped_windows < work.total_windows);
         assert_ne!(baseline.counts.tables, trial_summary.counts.tables);
 
-        let ak::Action::Rules { rules, .. } = direct_trial.actions.get_mut("m").unwrap() else {
+        let ak::Action::Rules { rules, .. } = direct_trial.actions.get_mut("@").unwrap() else {
             unreachable!()
         };
         rules.clear();
@@ -1675,7 +1683,7 @@ mod tests {
         );
         stop.store(false, Ordering::Relaxed);
 
-        let ak::Action::Rules { basis, .. } = direct_trial.actions.get_mut("m").unwrap() else {
+        let ak::Action::Rules { basis, .. } = direct_trial.actions.get_mut("@").unwrap() else {
             unreachable!()
         };
         *basis = ak::Basis::SkipPress;

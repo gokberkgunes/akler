@@ -1037,17 +1037,21 @@ mod layout_dispatch_tests {
     use super::*;
 
     const ROWS: &str =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+        crate::action_keys::test_layouts::QWERTY_JSONC;
 
     #[test]
     fn normal_and_action_layouts_select_only_the_required_engine() {
-        let path = Path::new("inline.dat");
+        let path = Path::new("inline.jsonc");
         assert!(matches!(
             parse_open_layout(ROWS, path).unwrap(),
             OpenLayout::Plain(_)
         ));
 
-        let magic = format!("{ROWS}outer-left: @magic ~ ~\naction magic = repeat-output\n");
+        let magic = crate::action_keys::test_layouts::jsonc(
+            ["@ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            r#""magic": {"key": "@"}"#,
+        );
         assert!(matches!(
             parse_open_layout(&magic, path).unwrap(),
             OpenLayout::Action(_)
@@ -1072,7 +1076,7 @@ mod layout_dispatch_tests {
 
     #[test]
     fn jsonc_dispatch_uses_contents_with_any_filename() {
-        for path in [Path::new("seconds"), Path::new("misleading.dat")] {
+        for path in [Path::new("seconds"), Path::new("misleading.jsonc")] {
             assert!(matches!(
                 parse_open_layout(PLAIN_JSON, path).unwrap(),
                 OpenLayout::Plain(_)
@@ -1127,14 +1131,14 @@ mod layout_dispatch_tests {
             std::env::temp_dir().join(format!("akler-discovery-{}-{unique}", crate::process_tag(),)),
         );
         fs::create_dir(&directory.0).unwrap();
-        let rows = "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
+        let rows = "q w e r t y u i o p\na s d f g h j k l ;\nz x c v b n m , . /\n";
         for (name, text) in [
             ("seconds", PLAIN_JSON),
             ("misleading.bin", PLAIN_JSON),
             ("saved.json", PLAIN_JSON),
             ("saved.jsonc", PLAIN_JSON),
             ("different.json", PLAIN_JSON),
-            ("rows.dat", rows),
+            ("rows.txt", rows),
             (".akler-123-456-0.bak", PLAIN_JSON),
             (".layouter-123-456-0.bak", PLAIN_JSON),
             ("saved.json.1800000000000000000.bak", PLAIN_JSON),

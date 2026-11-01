@@ -2049,8 +2049,8 @@ mod tests {
     #[test]
     fn combos_only_runs_fit_chordable_combos_without_a_magic_key() {
         let layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo-joint.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo-joint.jsonc"),
         )
         .unwrap();
         let tables = ak::text_ngrams(b"red bed fed led wed ted ed fur cue sea tea fun gun art ");
@@ -2141,8 +2141,8 @@ mod tests {
     #[test]
     fn joint_search_keeps_rules_geometry_scores_and_cancelled_best_together() {
         let ordinary = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("inline-injection.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("inline-injection.jsonc"),
         )
         .unwrap();
         let (injected, injected_root, injected_locks) =
@@ -2178,8 +2178,8 @@ mod tests {
         assert_eq!(empty_outer.len(), 5);
         assert!(empty_outer.iter().all(|(index, _)| injected_locks[*index]));
         let mut layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("inline-joint.dat"),
+            &crate::action_keys::test_layouts::magic_on_n(&[]),
+            Path::new("inline-joint.jsonc"),
         ).unwrap();
         // Use the canonical action name produced by magic injection/JSONC.
         let action = layout.actions.remove("@").unwrap();
@@ -2344,8 +2344,8 @@ mod tests {
     #[test]
     fn joint_search_reports_exact_physical_mode_scores() {
         let mut layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("inline-physical-joint.dat"),
+            &crate::action_keys::test_layouts::magic_on_n(&[]),
+            Path::new("inline-physical-joint.jsonc"),
         )
         .unwrap();
         let action = layout.actions.remove("@").unwrap();

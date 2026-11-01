@@ -709,8 +709,8 @@ mod tests {
 
     fn qwerty() -> ak::Layout {
         ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo-fit.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo-fit.jsonc"),
         )
         .unwrap()
     }

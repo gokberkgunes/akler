@@ -523,7 +523,7 @@ mod tests {
     use std::path::Path;
 
     const QWERTY: &str =
-        "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n";
+        crate::action_keys::test_layouts::QWERTY_JSONC;
 
     fn corpus(text: &[u8]) -> ng::NgramCorpus {
         let tables = ak::text_ngrams(text);
@@ -569,7 +569,7 @@ mod tests {
 
     #[test]
     fn full_sets_can_replace_a_useful_conflicting_swap() {
-        let base = ak::Layout::parse(QWERTY, Path::new("replacement.dat")).unwrap();
+        let base = ak::Layout::parse(QWERTY, Path::new("replacement.jsonc")).unwrap();
         let layout = install(
             &base,
             &[Swap::new(b'e', b'd', b'q'), Swap::new(b'u', b'j', b'p')],
@@ -612,7 +612,7 @@ mod tests {
 
     #[test]
     fn capped_fits_never_leave_the_caps_for_a_better_score() {
-        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.dat")).unwrap();
+        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.jsonc")).unwrap();
         let text = corpus(b"red bed fed led wed ted ed deer seed need deed sea fun ");
         let stop = AtomicBool::new(false);
         let progress = AtomicU64::new(0);
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn fits_a_swap_for_a_frequent_same_finger_bigram() {
-        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.dat")).unwrap();
+        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.jsonc")).unwrap();
         // e sits above d on the left middle finger.
         let text = corpus(b"red bed fed led wed ted ed deer seed need deed sea fun ");
         let (fit, before) = fit_swaps(&layout, &text, 1);
@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn fitted_swaps_never_give_a_key_two_outputs() {
-        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.dat")).unwrap();
+        let layout = ak::Layout::parse(QWERTY, Path::new("swap-fit.jsonc")).unwrap();
         // Several same-finger bigrams after e and after u.
         let text = corpus(b"ed ec ed ec de dec uj um uy juy ed um uj fun sea ");
         // The screen offers swaps that would give one key two outputs.

@@ -830,8 +830,8 @@ mod scissor_tests {
 
     fn qwerty() -> action_keys::Layout {
         action_keys::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-            Path::new("scissor-test.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("scissor-test.jsonc"),
         )
         .unwrap()
     }

@@ -7796,15 +7796,15 @@ mod tests {
     }
 
     const BASE: &str =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+        crate::action_keys::test_layouts::QWERTY_JSONC;
     fn plain() -> ak::Layout {
-        ak::Layout::parse(BASE, Path::new("plain.dat")).unwrap()
+        ak::Layout::parse(BASE, Path::new("plain.jsonc")).unwrap()
     }
 
     fn magic() -> ak::Layout {
         ak::Layout::parse(
-            crate::action_keys::test_layouts::SHORTHAND,
-            Path::new("magic.dat"),
+            &crate::action_keys::test_layouts::shorthand(),
+            Path::new("magic.jsonc"),
         )
         .unwrap()
     }
@@ -8004,13 +8004,13 @@ mod tests {
         // Magic repeats and adaptive swaps make letters ambiguous, so the
         // mapper looks ahead: a chord context's following character matters.
         for layout in [
-            crate::action_keys::test_layouts::COMPACT,
-            crate::action_keys::test_layouts::SHORTHAND,
+            crate::action_keys::test_layouts::compact(),
+            crate::action_keys::test_layouts::shorthand(),
         ] {
             // Chord contexts no effort choice reaches still move by
             // relabelling, checked against a remap.
             assert!(check_combo_trials_on(
-                ak::Layout::parse(layout, Path::new("magic.dat")).unwrap(),
+                ak::Layout::parse(&layout, Path::new("magic.jsonc")).unwrap(),
                 r#"[{"keys":["q","p"],"output":"th"},{"keys":["s","x"],"output":"ea"}]"#,
                 crate::combos::Policy::from(true),
                 b"the aa hr ik rl ye nr hnr thaa seat oak rkaa i' ja kea th fig gift gas sag\n",
@@ -8033,8 +8033,8 @@ mod tests {
         // Without combos, screened trials move static contexts by tail
         // group, mapping one by one only those some rule may read.
         let mut layout = ak::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\nswap e dr\n",
-            Path::new("grouped-alternates.dat"),
+            &crate::action_keys::test_layouts::qwerty(&crate::action_keys::test_layouts::magic(&[("ed", "er"), ("er", "ed")])),
+            Path::new("grouped-alternates.jsonc"),
         )
         .unwrap();
         layout.alt_fingers = crate::alt_fingers::AltRules::parse_letters("sg s_g (LM LI)").unwrap();
@@ -8059,8 +8059,12 @@ mod tests {
         // Thumb rules: moving letter keys reaches no rule, so each context
         // just relabels its tail.
         let mut thumbs = ak::Layout::parse(
-            "q w x d t | y u i o p\na s h f g | j k l n ;\nz c v b m | , . / ' -\nthumbs: e space | r\n",
-            Path::new("grouped-thumbs.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w x d t y u i o p", "a s h f g j k l n ;", "z c v b m , . / ' -"],
+                ["e space", "r"],
+                "",
+            ),
+            Path::new("grouped-thumbs.jsonc"),
         )
         .unwrap();
         thumbs.alt_fingers =
@@ -8408,9 +8412,23 @@ mod tests {
         // Neon-style uppercase/lowercase adaptive actions can each emit only
         // `y` or `#`. Moving either root therefore needs those source postings,
         // rather than every retained corpus context.
-        let source =
-            format!("{BASE}outer-left: @Y ~ ~\nadaptive Y a# by cy\nadaptive y ay b# c#\n");
-        let seed = ak::Layout::parse(&source, Path::new("adaptive-output-set.dat")).unwrap();
+        let source = crate::action_keys::test_layouts::jsonc(
+            ["Y q w e r t y u i o p", "skip a s d f g h j k l ;", "skip z x c v b n m , . /"],
+            ["space", ""],
+            &format!(
+                "{},\n{}",
+                crate::action_keys::test_layouts::LEFT_OUTER_FINGERS,
+                crate::action_keys::test_layouts::magic(&[
+                    ("aY", "a#"),
+                    ("bY", "by"),
+                    ("cY", "cy"),
+                    ("ay", "ay"),
+                    ("by", "b#"),
+                    ("cy", "c#"),
+                ])
+            ),
+        );
+        let seed = ak::Layout::parse(&source, Path::new("adaptive-output-set.jsonc")).unwrap();
         let corpus = corpus(b"away byway cab yay #y abcde pqrst uvwxy", 5);
         let stop = AtomicBool::new(false);
         let geometry = Geometry::new(crate::action_ui::physical_keys(&seed));
@@ -9274,11 +9292,15 @@ mod tests {
         );
 
         let same_finger = ak::Layout::parse(
-            "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction m = magic\nfallback m = repeat-output\n",
-            Path::new("same-finger-magic.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["@ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+                ["space", ""],
+                r#""magic": {"key": "@"}"#,
+            ),
+            Path::new("same-finger-magic.jsonc"),
         )
         .unwrap();
-        let same_finger_action = action_key(&same_finger, "m");
+        let same_finger_action = action_key(&same_finger, "magic");
         let counts = c
             .evaluate(
                 &same_finger,
@@ -9302,12 +9324,16 @@ mod tests {
     #[test]
     fn safe_skip_magic_priority_respects_the_two_back_finger() {
         let safe = ak::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , @sk /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
-            Path::new("safe-skip-magic.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , $ /"],
+                ["space", ""],
+                r#""skip": {"key": "$"}"#,
+            ),
+            Path::new("safe-skip-magic.jsonc"),
         )
         .unwrap();
         let c = corpus(b"aba", 3);
-        let safe_action = action_key(&safe, "sk");
+        let safe_action = action_key(&safe, "skip");
         let counts = c
             .evaluate(
                 &safe,
@@ -9323,11 +9349,15 @@ mod tests {
         );
 
         let same_finger = ak::Layout::parse(
-            "@sk w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\naction sk = skip-magic\nfallback sk = repeat-previous-output\n",
-            Path::new("same-finger-skip-magic.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["$ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+                ["space", ""],
+                r#""skip": {"key": "$"}"#,
+            ),
+            Path::new("same-finger-skip-magic.jsonc"),
         )
         .unwrap();
-        let same_finger_action = action_key(&same_finger, "sk");
+        let same_finger_action = action_key(&same_finger, "skip");
         let counts = c
             .evaluate(
                 &same_finger,
@@ -9403,7 +9433,7 @@ mod detailed_mapping_tests {
     use std::cell::RefCell;
 
     const BASE: &str =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
+        crate::action_keys::test_layouts::QWERTY_JSONC;
 
     fn contexts(order: usize) -> NgramCorpus {
         let mut texts = BTreeSet::new();
@@ -9538,7 +9568,7 @@ mod detailed_mapping_tests {
         for source in crate::action_fast::tests::fixtures() {
             for order in 3..=5 {
                 let corpus = contexts(order);
-                let mut layout = ak::Layout::parse(&source, Path::new("inline.dat")).unwrap();
+                let mut layout = ak::Layout::parse(&source, Path::new("inline.jsonc")).unwrap();
                 for swap in [
                     None,
                     Some((0, 1)),
@@ -9628,7 +9658,7 @@ mod detailed_mapping_tests {
             Path::new("combo-inline.json"),
         )
         .unwrap();
-        let mut layout = ak::Layout::parse(BASE, Path::new("inline.dat")).unwrap();
+        let mut layout = ak::Layout::parse(BASE, Path::new("inline.jsonc")).unwrap();
         let Json::Array(combos) = crate::parse_json(
             r#"[{"keys":["q","p"],"output":"aa"},{"keys":["s","d"],"output":"qu"}]"#,
         )
@@ -9933,8 +9963,8 @@ mod limit_tests {
             NgramCorpus::from_text_with_limits(&text, Path::new("inline.json"), limits).unwrap();
         assert_chord_reference(&limited);
         let layout = ak::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-            Path::new("inline.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("inline.jsonc"),
         )
         .unwrap();
         let stop = AtomicBool::new(false);
@@ -9989,8 +10019,8 @@ mod limit_tests {
 
         // Counted trigrams match evaluation without alternate fingers.
         let layout = ak::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-            Path::new("inline.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("inline.jsonc"),
         )
         .unwrap();
         let rules = crate::alt_fingers::AltRules::parse("ed e_d (LM LI)").unwrap();

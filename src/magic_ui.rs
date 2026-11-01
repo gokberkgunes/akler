@@ -1022,8 +1022,11 @@ mod magic_tab_tests {
 
     fn layout() -> action_keys::Layout {
         action_keys::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\nswap e dr\n",
-            Path::new("magic-tab.dat"),
+            &crate::action_keys::test_layouts::qwerty(&crate::action_keys::test_layouts::magic(&[
+                ("ed", "er"),
+                ("er", "ed"),
+            ])),
+            Path::new("magic-tab.jsonc"),
         )
         .unwrap()
     }

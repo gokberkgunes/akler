@@ -1169,8 +1169,8 @@ mod tests {
     #[test]
     fn overlapping_rules_resolve_the_same_in_either_order() {
         let layout = action_keys::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n",
-            std::path::Path::new("inline.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            std::path::Path::new("inline.jsonc"),
         )
         .unwrap();
         let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
@@ -1234,8 +1234,12 @@ mod tests {
     #[test]
     fn skipgram_rules_do_not_move_a_key_onto_a_finger_two_keys_away() {
         let layout = action_keys::Layout::parse(
-            "q w e - t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space | r\n",
-            std::path::Path::new("inline.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w e - t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+                ["space", "r"],
+                "",
+            ),
+            std::path::Path::new("inline.jsonc"),
         )
         .unwrap();
         let slot = |byte: u8| {

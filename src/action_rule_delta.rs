@@ -501,8 +501,12 @@ mod tests {
     #[test]
     fn physical_mode_rule_trials_match_canonical_scores() {
         let layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("inline-physical-delta.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b @ m , . /"],
+                ["space", ""],
+                &crate::action_keys::test_layouts::magic(&[("h@", "hr")]),
+            ),
+            Path::new("inline-physical-delta.jsonc"),
         )
         .unwrap();
         let root = layout.slots.iter().position(|s| s.label == "@").unwrap();
@@ -574,8 +578,12 @@ mod tests {
     #[test]
     fn sparse_rule_trials_match_canonical_counts_and_reject_stale_or_unsupported_states() {
         let mut layout = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("inline-delta.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b @ m , . /"],
+                ["space", ""],
+                &crate::action_keys::test_layouts::magic(&[("h@", "hr")]),
+            ),
+            Path::new("inline-delta.jsonc"),
         ).unwrap();
         // A competing action can win even where the edited action previously lost.
         let competitor = layout.slots.iter().position(|s| s.label == "p").unwrap();

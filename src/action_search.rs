@@ -2002,8 +2002,8 @@ mod tests {
 
     fn layout() -> ak::Layout {
         ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\n",
-            Path::new("inline-action-search.dat"),
+            &crate::action_keys::test_layouts::magic_on_n(&[]),
+            Path::new("inline-action-search.jsonc"),
         ).unwrap()
     }
 
@@ -2053,8 +2053,12 @@ mod tests {
     #[test]
     fn locked_thumb_alternate_fingers_check_caps_on_settled_offsets() {
         let mut seed = ak::Layout::parse(
-            "q w x d t | y u i o p\na s h f g | j k l n ;\nz c v b m | , . / ' -\nthumbs: e space | r\n",
-            Path::new("settled.dat"),
+            &crate::action_keys::test_layouts::jsonc(
+                ["q w x d t y u i o p", "a s h f g j k l n ;", "z c v b m , . / ' -"],
+                ["e space", "r"],
+                "",
+            ),
+            Path::new("settled.jsonc"),
         )
         .unwrap();
         seed.alt_fingers =
@@ -2122,8 +2126,8 @@ mod tests {
 
     fn alternate_fixture(rule: &str, text: &[u8]) -> (ak::Layout, ng::NgramCorpus, Weights) {
         let seed = ak::Layout::parse(
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-            Path::new("alternate-search.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("alternate-search.jsonc"),
         )
         .unwrap();
         let rules = crate::alt_fingers::AltRules::parse(rule).unwrap();
@@ -2737,8 +2741,8 @@ mod tests {
     #[test]
     fn letter_arrangements_see_through_refit_swaps_and_rules() {
         let seed = ak::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  @ m , . /\nthumbs: space\n@ hr\nswap h ar\n",
-            Path::new("inline-letter-arrangement.dat"),
+            &crate::action_keys::test_layouts::magic_on_n(&[("ha", "hr"), ("hr", "ha")]),
+            Path::new("inline-letter-arrangement.jsonc"),
         )
         .unwrap();
         let slot = |layout: &ak::Layout, label: &str| {

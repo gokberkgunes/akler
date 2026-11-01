@@ -661,8 +661,8 @@ mod tests {
         // "ph" is a combo; the h in "the" still starts its own skipgrams, and
         // a combo whose output never occurs changes nothing.
         let mut layout = action_keys::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo.jsonc"),
         )
         .unwrap();
         let stop = std::sync::atomic::AtomicBool::new(false);
@@ -720,8 +720,8 @@ mod tests {
     #[test]
     fn combos_are_one_chord_press() {
         let mut layout = action_keys::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo.jsonc"),
         )
         .unwrap();
         let key = |label: &str| slot(&layout, label);
@@ -795,8 +795,8 @@ mod tests {
     #[test]
     fn single_pass_plans_match_the_reference_functions() {
         let mut layout = action_keys::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo.jsonc"),
         )
         .unwrap();
         // Overlapping outputs, a three-key chord, an uppercase-insensitive
@@ -857,8 +857,8 @@ mod tests {
     #[test]
     fn parses_plans_remaps_and_rejects_ambiguous_labels() {
         let mut layout = action_keys::Layout::parse(
-            "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n",
-            Path::new("combo.dat"),
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("combo.jsonc"),
         )
         .unwrap();
         let Json::Array(values) = crate::parse_json(
@@ -997,8 +997,8 @@ mod tests {
     #[test]
     fn chords_count_once_preserve_usage_and_match_swapped_incremental_results() {
         let mut layout = action_keys::Layout::parse(
-            crate::action_keys::test_layouts::SHORTHAND,
-            Path::new("combo-magic.dat"),
+            &crate::action_keys::test_layouts::shorthand(),
+            Path::new("combo-magic.jsonc"),
         )
         .unwrap();
         let Json::Array(values) = crate::parse_json(

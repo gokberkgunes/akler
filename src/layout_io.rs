@@ -916,13 +916,9 @@ fn import_layout_with_actions(
             geometry,
             thumbs: thumb_tokens,
             thumb_columns,
-            key_labels: None,
             action_mode: !definitions.is_empty(),
             actions,
-            definitions,
             mappings,
-            compact: Vec::new(),
-            short_tables: BTreeMap::new(),
             alt_fingers: None,
             combos: None,
         },
@@ -1430,7 +1426,7 @@ mod tests {
         }));
 
         let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
-        for (path, text) in [("slate.dat", layout.text()), ("slate.jsonc", jsonc)] {
+        for (path, text) in [("slate.jsonc", jsonc)] {
             let restored = Layout::parse(&text, Path::new(path)).unwrap();
             assert_eq!(restored.slots, layout.slots, "{path}");
             assert_eq!(restored.alt_fingers, layout.alt_fingers, "{path}");
@@ -1479,12 +1475,10 @@ mod tests {
         let mut pinned = layout.clone();
         crate::alt_fingers::pin(&mut pinned);
         assert_eq!(pinned.alt_fingers.len(), 3);
-        // Both file forms write the symbol back.
+        // JSONC writes the symbol back.
         let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
         assert!(jsonc.contains("\"◇\""), "{jsonc}");
         let restored = Layout::parse(&jsonc, Path::new("x.jsonc")).unwrap();
-        assert_eq!(restored.alt_fingers, layout.alt_fingers);
-        let restored = Layout::parse(&layout.text(), Path::new("x.dat")).unwrap();
         assert_eq!(restored.alt_fingers, layout.alt_fingers);
     }
 
@@ -1512,7 +1506,7 @@ mod tests {
         assert!(is_json_layout(&format!(
             "\u{feff}// heading\n/* block */ {text}"
         )));
-        assert!(!Layout::parse(&text, Path::new("looks-like-dat.dat"))
+        assert!(!Layout::parse(&text, Path::new("looks-like-dat.jsonc"))
             .unwrap()
             .extended());
         let declared = text.replacen("\"magicKeys\": []", "\"key\": \"@\"", 1);
@@ -1632,11 +1626,6 @@ mod tests {
         );
         assert_ne!(thumbs[1].col, thumbs[2].col);
 
-        let dat = layout.text();
-        assert!(dat.contains("thumbs: space | l r\n"));
-        let from_dat = parse(&dat);
-        assert_eq!(from_dat.slots, layout.slots);
-
         let jsonc = crate::layout_export::jsonc_text(&layout).unwrap();
         assert!(jsonc.contains("\"thumbs\": [\"space\", \"l r\"]"));
         let from_jsonc = parse(&jsonc);
@@ -1649,7 +1638,8 @@ mod tests {
             thumbs.iter().map(|slot| slot.hand).collect::<Vec<_>>(),
             [0, 0, 1, 1]
         );
-        assert_eq!(parse(&both.text()).slots, both.slots);
+        let jsonc = crate::layout_export::jsonc_text(&both).unwrap();
+        assert_eq!(parse(&jsonc).slots, both.slots);
     }
 
     #[test]

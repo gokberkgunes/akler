@@ -4116,7 +4116,7 @@ mod tests {
     fn extra_magic_swaps_preserve_bindings_geometry_and_readable_rules() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
+            Path::new("magic.jsonc"),
         )
         .unwrap();
         let (mut seed, root) = extra_magic_seed(&layout, true).unwrap();
@@ -4260,7 +4260,7 @@ mod tests {
     fn quick_refinement_moves_text_bindings_but_keeps_magic_root_and_geometry() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
+            Path::new("magic.jsonc"),
         )
         .unwrap();
         let (seed, root) = extra_magic_seed(&layout, true).unwrap();
@@ -4383,7 +4383,7 @@ mod tests {
         let layout = prepare(
             &ak::Layout::parse(
                 &crate::action_fast::tests::fixtures()[0],
-                Path::new("magic.dat"),
+                Path::new("magic.jsonc"),
             )
             .unwrap(),
             PlacementMode::ExtraBothPinkies,
@@ -4440,7 +4440,7 @@ mod tests {
         let layout = prepare(
             &ak::Layout::parse(
                 &crate::action_fast::tests::fixtures()[0],
-                Path::new("magic.dat"),
+                Path::new("magic.jsonc"),
             )
             .unwrap(),
             PlacementMode::ExtraBothPinkies,
@@ -4504,7 +4504,7 @@ mod tests {
     fn parallel_placement_trials_match_serial_order_and_scores() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
+            Path::new("magic.jsonc"),
         )
         .unwrap();
         let corpus = ng::NgramCorpus::from_text(
@@ -4567,7 +4567,7 @@ mod tests {
     fn pruning_keeps_a_rule_that_is_the_only_way_to_type_a_character() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
+            Path::new("magic.jsonc"),
         )
         .unwrap();
         assert!(!layout
@@ -4620,7 +4620,7 @@ mod tests {
     fn final_rule_ablation_keeps_penalty_fixes_and_removes_reward_only_or_unused_rules() {
         let layout = ak::Layout::parse(
             &crate::action_fast::tests::fixtures()[0],
-            Path::new("magic.dat"),
+            Path::new("magic.jsonc"),
         )
         .unwrap();
         let corpus = ng::NgramCorpus::from_text(

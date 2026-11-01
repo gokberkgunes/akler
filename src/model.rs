@@ -2483,17 +2483,15 @@ fn metric_value_text(m: usize, v: f64, decimals: usize) -> String {
 mod numeric_geometry_tests {
     use super::*;
 
-    const ROWS: &str =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-
-    fn parse(extra: &str) -> Board {
-        board_from_text(&format!("{ROWS}{extra}"), Path::new("inline")).unwrap()
+    /// QWERTY with these JSONC fields.
+    fn parse(fields: &str) -> Board {
+        board_from_text(&crate::action_keys::test_layouts::qwerty(fields), Path::new("inline")).unwrap()
     }
 
     #[test]
     fn uniform_row_translation_cancels_from_travel_and_pair_distances() {
-        let first = Geometry::new(parse("row-offsets: 0 0.25 0.75\n").keys);
-        let shifted = Geometry::new(parse("row-offsets: -0.25 0 0.5\n").keys);
+        let first = Geometry::new(parse(r#""board": {"isRowStaggered": true, "rowOrColumnStagger": [0, 0.25, 0.75]}"#).keys);
+        let shifted = Geometry::new(parse(r#""board": {"isRowStaggered": true, "rowOrColumnStagger": [-0.25, 0, 0.5]}"#).keys);
         for (a, b) in first
             .home
             .iter()
@@ -2511,66 +2509,8 @@ mod numeric_geometry_tests {
     }
 
     #[test]
-    fn home_anchors_follow_translated_ten_eleven_and_twelve_column_fingermaps() {
-        let cases = [
-            (
-                "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n",
-                "LP LR LM LI LI RI RI RM RR RP",
-            ),
-            (
-                "~ q w e r t | y u i o p\n~ a s d f g | h j k l ;\n~ z x c v b | n m , . /\n",
-                "LP LP LR LM LI LI RI RI RM RR RP",
-            ),
-            (
-                "~ q w e r t | y u i o p ~\n~ a s d f g | h j k l ; ~\n~ z x c v b | n m , . / ~\n",
-                "LP LP LR LM LI LI RI RI RM RR RP RP",
-            ),
-        ];
-        for (rows, fingers) in cases {
-            let source = format!("{rows}fingermap: {fingers} / {fingers} / {fingers}\n");
-            let standard = board_from_text(&source, Path::new("standard.dat")).unwrap();
-            let absolute = board_from_text(
-                &format!("{source}col-layout: absolute\n"),
-                Path::new("absolute.dat"),
-            )
-            .unwrap();
-            let first = Geometry::new(standard.keys);
-            let shifted = Geometry::new(absolute.keys);
-            assert_eq!(first.home.len(), shifted.home.len());
-            for (a, b) in first
-                .home
-                .iter()
-                .flatten()
-                .zip(shifted.home.iter().flatten())
-            {
-                assert_eq!(a.to_bits(), b.to_bits());
-            }
-            assert_eq!(first.is_home, shifted.is_home);
-        }
-
-        let (rows, fingers) = cases[2];
-        let absolute = board_from_text(
-            &format!("{rows}fingermap: {fingers} / {fingers} / {fingers}\ncol-layout: absolute\n"),
-            Path::new("absolute.dat"),
-        )
-        .unwrap();
-        let homes = home_slot_mask(&absolute.keys);
-        let at = |finger, col| {
-            absolute
-                .keys
-                .iter()
-                .position(|key| key.main && key.row == 1 && key.finger == finger && key.col == col)
-                .unwrap()
-        };
-        assert!(!homes[at(0, 0)]);
-        assert!(homes[at(0, 1)]);
-        assert!(!homes[at(4, 6)]);
-        assert!(homes[at(4, 7)]);
-    }
-
-    #[test]
     fn column_offsets_use_actual_home_and_cross_column_same_finger_distance() {
-        let board = parse("column-offsets: 0 -0.3 -0.4 -0.3 -0.2 -0.2 -0.3 -0.4 -0.3 0\n");
+        let board = parse(r#""board": {"isColumnStaggered": true, "rowOrColumnStagger": [0, -0.3, -0.4, -0.3, -0.2, -0.2, -0.3, -0.4, -0.3, 0]}"#);
         let geometry = Geometry::new(board.keys.clone());
         // QWERTY W/S share their physical column, so vertical translation cancels.
         assert_eq!(geometry.home[1][0].to_bits(), 1.0f64.to_bits());

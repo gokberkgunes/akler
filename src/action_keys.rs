@@ -109,45 +109,6 @@ pub fn quote(bytes: &[u8]) -> String {
     out
 }
 
-#[cfg(test)]
-fn literal(text: &str) -> Result<Vec<u8>> {
-    let text = text.trim();
-    if text.len() < 2 || !text.starts_with('"') || !text.ends_with('"') {
-        return err(format!("expected a quoted string, got {text:?}"));
-    }
-    let mut out = Vec::new();
-    let mut bytes = text.as_bytes()[1..text.len() - 1].iter().copied();
-    while let Some(b) = bytes.next() {
-        if b != b'\\' {
-            if b == b'"' || b < 32 {
-                return err("invalid quoted string");
-            }
-            out.push(b);
-            continue;
-        }
-        match bytes.next().ok_or("unfinished escape")? {
-            b'"' => out.push(b'"'),
-            b'\\' => out.push(b'\\'),
-            b'/' => out.push(b'/'),
-            b'n' => out.push(b'\n'),
-            b'r' => out.push(b'\r'),
-            b't' => out.push(b'\t'),
-            b'u' => {
-                let mut n = 0u32;
-                for _ in 0..4 {
-                    let d = bytes.next().ok_or("unfinished Unicode escape")?;
-                    n = n * 16 + (d as char).to_digit(16).ok_or("invalid Unicode escape")?;
-                }
-                let ch = char::from_u32(n).ok_or("invalid Unicode scalar")?;
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-            }
-            _ => return err("unsupported string escape"),
-        }
-    }
-    Ok(out)
-}
-
 // Single glyph identifiers describe physical bindings, so y and Y may emit
 // the same normalized text through different rules. Longer action names keep
 // their legacy case-insensitive spelling.
@@ -161,70 +122,6 @@ pub(crate) fn action_name(text: &str) -> String {
         name.to_string()
     } else {
         name.to_ascii_lowercase()
-    }
-}
-
-#[cfg(test)]
-fn assignment(text: &str) -> Result<(&str, &str)> {
-    let (mut quoted, mut escaped) = (false, false);
-    for (i, ch) in text.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if quoted && ch == '\\' {
-            escaped = true;
-            continue;
-        }
-        if ch == '"' {
-            quoted = !quoted;
-        }
-        if ch == '=' && !quoted {
-            return Ok((text[..i].trim(), text[i + 1..].trim()));
-        }
-    }
-    err("expected '=' outside a quoted string")
-}
-
-#[cfg(test)]
-fn emission(text: &str) -> Result<Emission> {
-    let s = text.trim();
-    if s == "none" {
-        return Ok(Emission::None);
-    }
-    if let Some(name) = s.strip_prefix('@') {
-        return Ok(Emission::Call(action_name(name)));
-    }
-    if matches!(
-        s,
-        "repeat" | "repeat-output" | "repeat-previous-output" | "repeat-action" | "again"
-    ) {
-        return Ok(Emission::Call(s.into()));
-    }
-    Ok(Emission::Text(ascii(literal(s)?, "action output")?))
-}
-
-#[cfg(test)]
-fn action(text: &str) -> Result<Action> {
-    let s = text.trim();
-    let basis = match s {
-        "magic" => Some(Basis::Text),
-        "press-magic" => Some(Basis::Press),
-        "skip-magic" => Some(Basis::SkipPress),
-        _ => None,
-    };
-    if let Some(basis) = basis {
-        return Ok(Action::Rules {
-            basis,
-            rules: BTreeMap::new(),
-            fallback: Emission::None,
-        });
-    }
-    match s {
-        "repeat" | "repeat-output" => Ok(Action::RepeatOutput),
-        "repeat-previous-output" => Ok(Action::RepeatPreviousOutput),
-        "again" | "repeat-action" => Ok(Action::RepeatAction),
-        _ => err(format!("unknown action kind {s:?}")),
     }
 }
 
@@ -250,24 +147,6 @@ pub(crate) fn finger_geometry(finger: usize) -> (i8, i8) {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn absolute_columns(lines: &[&str]) -> Result<bool> {
-    let mut found = None;
-    for line in lines {
-        if let Some(value) = line.trim().strip_prefix("col-layout:") {
-            if found.is_some() {
-                return err("col-layout is defined twice");
-            }
-            found = Some(match value.trim() {
-                "absolute" => true,
-                "standard" => false,
-                _ => return err("col-layout: expected absolute or standard"),
-            });
-        }
-    }
-    Ok(found.unwrap_or(false))
-}
-
 #[derive(Default)]
 pub(crate) struct GeometrySettings {
     rows: Option<[i16; 3]>,
@@ -276,55 +155,6 @@ pub(crate) struct GeometrySettings {
 }
 
 impl GeometrySettings {
-    #[cfg(test)]
-    pub(crate) fn parse_line(&mut self, line: &str) -> Result<bool> {
-        if let Some(rest) = line.strip_prefix("row-offsets:") {
-            let values: Vec<_> = rest
-                .split_whitespace()
-                .map(geometry_offset)
-                .collect::<Result<_>>()?;
-            let values: [i16; 3] = values
-                .try_into()
-                .map_err(|_| "row-offsets needs three values".to_string())?;
-            if self.rows.replace(values).is_some() {
-                return err("row-offsets is defined twice");
-            }
-        } else if let Some(rest) = line.strip_prefix("column-offsets:") {
-            let values = rest
-                .split_whitespace()
-                .map(geometry_offset)
-                .collect::<Result<Vec<_>>>()?;
-            if self.columns.replace(values).is_some() {
-                return err("column-offsets is defined twice");
-            }
-        } else if let Some(rest) = line.strip_prefix("fingermap:") {
-            let mut rows = Vec::new();
-            for row in rest.split('/') {
-                let mut fingers = Vec::new();
-                for name in row.split_whitespace() {
-                    let finger = match name.to_ascii_uppercase().as_str() {
-                        "LP" => 0,
-                        "LR" => 1,
-                        "LM" => 2,
-                        "LI" => 3,
-                        "RI" => 4,
-                        "RM" => 5,
-                        "RR" => 6,
-                        "RP" => 7,
-                        _ => return err("fingermap uses LP LR LM LI RI RM RR RP; separate its three rows with /"),
-                    };
-                    fingers.push(finger);
-                }
-                rows.push(fingers);
-            }
-            if self.fingers.replace(rows).is_some() {
-                return err("fingermap is defined twice");
-            }
-        } else {
-            return Ok(false);
-        }
-        Ok(true)
-    }
 
     pub(crate) fn set_row_offsets(&mut self, rows: [i16; 3]) {
         self.rows = Some(rows);
@@ -378,59 +208,6 @@ impl GeometrySettings {
     pub(crate) fn has_fingermap(&self) -> bool {
         self.fingers.is_some()
     }
-}
-
-#[cfg(test)]
-pub(crate) fn geometry_text(
-    keys: impl Iterator<Item = (i8, i8, i16, i16, usize)>,
-) -> String {
-    let keys: Vec<_> = keys.collect();
-    let mut out = String::new();
-    if keys.iter().any(|key| key.1 == 11) {
-        out.push_str("col-layout: absolute\n");
-    }
-
-    if keys.iter().any(|key| key.2 != 0) {
-        out.push_str("row-offsets:");
-        for row in 0..3 {
-            let offset = keys.iter().find(|key| key.0 == row).map_or(0, |key| key.2);
-            out.push_str(&format!(" {:.3}", offset as f64 / 1000.0));
-        }
-        out.push('\n');
-    }
-    if keys.iter().any(|key| key.3 != 0) {
-        out.push_str("column-offsets:");
-        let minimum = keys.iter().map(|key| key.1).min().unwrap_or(0);
-        let maximum = keys.iter().map(|key| key.1).max().unwrap_or(0);
-        for column in minimum..=maximum {
-            let offset = keys
-                .iter()
-                .find(|key| key.1 == column)
-                .map_or(0, |key| key.3);
-            out.push_str(&format!(" {:.3}", offset as f64 / 1000.0));
-        }
-        out.push('\n');
-    }
-
-    if (0..3).any(|row| keys.iter().filter(|key| key.0 == row).count() == 13)
-        || keys
-            .iter()
-            .any(|key| key.4 != finger(key.1).0)
-    {
-        const NAMES: [&str; 8] = ["LP", "LR", "LM", "LI", "RI", "RM", "RR", "RP"];
-        out.push_str("fingermap:");
-        for row in 0..3 {
-            if row != 0 {
-                out.push_str(" /");
-            }
-            for key in keys.iter().filter(|key| key.0 == row) {
-                out.push(' ');
-                out.push_str(NAMES[key.4]);
-            }
-        }
-        out.push('\n');
-    }
-    out
 }
 
 fn binding(token: &str) -> Result<(Binding, String)> {
@@ -513,57 +290,6 @@ pub(crate) fn make_slot(token: &str, row: i8, col: i8) -> Result<Slot> {
     })
 }
 
-#[cfg(test)]
-fn main_rows(lines: &[&str], absolute: bool) -> Result<(Vec<Slot>, bool, bool)> {
-    let mut out = Vec::new();
-    let mut left_outer = false;
-    let mut right_outer = false;
-    for (r, line) in lines.iter().take(3).enumerate() {
-        let mut tokens: Vec<String> = line.split_whitespace().map(str::to_string).collect();
-        if tokens.len() < 10 && !line.contains('|') {
-            const AT: [usize; 10] = [0, 2, 4, 6, 8, 11, 13, 15, 17, 19];
-            let bytes = line.as_bytes();
-            if bytes.len() <= 20
-                && bytes
-                    .iter()
-                    .enumerate()
-                    .all(|(i, b)| AT.contains(&i) || *b == b' ')
-            {
-                tokens = AT
-                    .iter()
-                    .map(|&i| match bytes.get(i).copied().unwrap_or(b' ') {
-                        b' ' => "blank".into(),
-                        b => (b as char).to_string(),
-                    })
-                    .collect();
-            }
-        }
-        let sep = tokens.iter().position(|t| t == "|");
-        let (left, right) = if let Some(s) = sep {
-            if tokens.iter().filter(|t| t.as_str() == "|").count() != 1 {
-                return err("one hand separator is allowed per row");
-            }
-            (tokens[..s].to_vec(), tokens[s + 1..].to_vec())
-        } else {
-            let n = match tokens.len() {
-                10 => 5,
-                12 => 6,
-                _ => {
-                    return err(format!(
-                        "row {}: use 10 or 12 slots, or separate an 11-slot row as 6|5 or 5|6",
-                        r + 1
-                    ))
-                }
-            };
-            (tokens[..n].to_vec(), tokens[n..].to_vec())
-        };
-        let (left, right) = hand_row(&mut out, r as i8, &left, &right, absolute)?;
-        left_outer |= left;
-        right_outer |= right;
-    }
-    Ok((out, left_outer, right_outer))
-}
-
 /// Add one main row's slots from its left- and right-hand key tokens.
 /// Returns whether each hand has an outer column.
 pub(crate) fn hand_row(
@@ -593,365 +319,6 @@ pub(crate) fn hand_row(
     Ok((left.len() >= 6, right.len() >= 6))
 }
 
-#[cfg(test)]
-fn compact_mapping(line: &str, slots: &[Slot]) -> Result<Option<(u8, Vec<u8>, Vec<u8>)>> {
-    // `i@ i'` describes the complete before/after text. The action itself
-    // emits only the suffix (`'`); the already typed `i` is not emitted twice.
-    let fields: Vec<_> = line.split_whitespace().collect();
-    if fields.len() != 2 {
-        return Ok(None);
-    }
-    let left = fields[0].as_bytes();
-    let right = fields[1].as_bytes();
-    if left.len() < 2 || !left.iter().chain(right).all(|b| b.is_ascii_graphic()) {
-        return Ok(None);
-    }
-    let marker = *left.last().unwrap();
-    if marker.is_ascii_alphanumeric() {
-        return Ok(None);
-    }
-    if !slots
-        .iter()
-        .any(|s| s.binding == Binding::Text(vec![marker.to_ascii_lowercase()]))
-    {
-        return Ok(None);
-    }
-    let context: Vec<_> = left[..left.len() - 1]
-        .iter()
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    let output: Vec<_> = right.iter().map(|b| b.to_ascii_lowercase()).collect();
-    if !output.starts_with(&context) {
-        return err(format!(
-            "compact mapping {} must keep its context at the start of {}",
-            fields[0], fields[1]
-        ));
-    }
-    let emitted = output[context.len()..].to_vec();
-    if emitted.is_empty() {
-        return err(format!("compact mapping {} emits no new text", fields[0]));
-    }
-    Ok(Some((marker.to_ascii_lowercase(), context, emitted)))
-}
-
-/// Compact tables are syntax sugar for the existing text-context actions.
-/// No evaluator or optimizer-specific rule representation is introduced.
-pub(crate) struct CompactTable {
-    rules: BTreeMap<Vec<u8>, Emission>,
-    fallback: Emission,
-}
-
-fn compact_key(token: &str, adaptive: bool) -> Result<String> {
-    if token.chars().count() == 1
-        && !token.is_ascii()
-        && !token.chars().any(char::is_control)
-        && !adaptive
-    {
-        return Ok(token.into());
-    }
-
-    let bytes = token.as_bytes();
-    if bytes.len() != 1 || !bytes[0].is_ascii_graphic() || matches!(bytes[0], b'~' | b'|') {
-        return err("compact key must be one printable ASCII key (except ~ or |)");
-    }
-    if adaptive && bytes[0] == b'@' {
-        return err("@ is reserved for magic; adaptive/swap keys must have literal fallbacks");
-    }
-    if adaptive && matches!(bytes[0], b'=' | b'"') {
-        return err(
-            "= and double quote require an explicitly named action rather than a compact swap",
-        );
-    }
-    if !adaptive && bytes[0].is_ascii_alphanumeric() {
-        return err("use adaptive for an ordinary letter/digit key");
-    }
-    Ok(token.to_string())
-}
-
-#[cfg(test)]
-fn compact_pair(token: &str) -> Result<(u8, u8)> {
-    let bytes = token.as_bytes();
-    if bytes.len() != 2 || !bytes.iter().all(u8::is_ascii_graphic) {
-        return err(format!(
-            "{token:?}: expected exactly two printable ASCII characters, e.g. hr or u'"
-        ));
-    }
-    Ok((bytes[0].to_ascii_lowercase(), bytes[1].to_ascii_lowercase()))
-}
-
-#[cfg(test)]
-fn insert_compact_rule(
-    tables: &mut BTreeMap<String, CompactTable>,
-    key: &str,
-    context: Vec<u8>,
-    output: u8,
-    fallback: Emission,
-) -> Result<()> {
-    let table = tables.entry(key.into()).or_insert_with(|| CompactTable {
-        rules: BTreeMap::new(),
-        fallback: fallback.clone(),
-    });
-    if table.fallback != fallback {
-        return err(format!(
-            "cannot mix magic and adaptive definitions for {key}"
-        ));
-    }
-    if table
-        .rules
-        .insert(context, Emission::Text(vec![output]))
-        .is_some()
-    {
-        return err(format!("duplicate compact context for {key}"));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn compact_table_line(line: &str, tables: &mut BTreeMap<String, CompactTable>) -> Result<bool> {
-    let fields: Vec<_> = line.split_whitespace().collect();
-    let Some(&kind) = fields.first() else {
-        return Ok(false);
-    };
-    let marker = crate::layout_io::dedicated_magic_label(kind);
-    if !marker && !matches!(kind, "magic" | "adaptive" | "swap") {
-        return Ok(false);
-    }
-    // A lone symbol can still be an ordinary legacy thumb declaration.
-    if marker && fields.len() == 1 {
-        return Ok(false);
-    }
-
-    if kind == "swap" {
-        if fields.len() < 3 {
-            return err("swap requires a text context and at least one key pair: swap h nr");
-        }
-        // Preserve the original one-context/multiple-pair syntax. Otherwise
-        // accept alternating context/pair tokens, as in `swap h nr y ,u`.
-        let legacy = fields[2..].iter().all(|token| token.len() == 2);
-        if !legacy && (fields.len() - 1) % 2 != 0 {
-            return err("swap needs context/pair groups, e.g. swap h nr y ,u; each pair has exactly two characters");
-        }
-        let groups: Vec<_> = if legacy {
-            fields[2..].iter().map(|pair| (fields[1], *pair)).collect()
-        } else {
-            fields[1..]
-                .chunks_exact(2)
-                .map(|group| (group[0], group[1]))
-                .collect()
-        };
-        for (context, token) in groups {
-            let context = ascii(context.to_ascii_lowercase().into_bytes(), "swap context")?;
-            let (a, b) = compact_pair(token)?;
-            if a == b {
-                return err("a swap needs two different keys");
-            }
-            for (key, output) in [(a, b), (b, a)] {
-                let name = compact_key(&(key as char).to_string(), true)?;
-                insert_compact_rule(
-                    tables,
-                    &name,
-                    context.clone(),
-                    output,
-                    Emission::Text(vec![key]),
-                )?;
-            }
-        }
-        return Ok(true);
-    }
-    let adaptive = kind == "adaptive";
-    let (key, pairs) = if marker {
-        (kind.to_string(), &fields[1..])
-    } else {
-        let token = fields
-            .get(1)
-            .ok_or("magic/adaptive requires a physical key")?;
-        (compact_key(token, adaptive)?, &fields[2..])
-    };
-    if pairs.is_empty() {
-        return err("compact table requires at least one context/output pair");
-    }
-    let fallback = if adaptive {
-        Emission::Text(key.to_ascii_lowercase().into_bytes())
-    } else {
-        Emission::Call("repeat-output".into())
-    };
-    for pair in pairs {
-        let (context, output) = compact_pair(pair)?;
-        insert_compact_rule(tables, &key, vec![context], output, fallback.clone())?;
-    }
-    Ok(true)
-}
-
-fn install_compact_tables(
-    slots: &mut [Slot],
-    actions: &mut BTreeMap<String, Action>,
-    tables: BTreeMap<String, CompactTable>,
-) -> Result<()> {
-    for (key, table) in tables {
-        // A declared @ repeat action may be refined by a compact table;
-        // other explicit definitions must not be lost.
-        if actions.contains_key(&key)
-            && !(key == "@" && matches!(actions.get(&key), Some(Action::RepeatOutput)))
-        {
-            return err(format!(
-                "{key}: cannot mix compact and existing action definitions"
-            ));
-        }
-        let mut found = false;
-        for slot in slots.iter_mut() {
-            let matches = match &slot.binding {
-                Binding::Text(bytes) => bytes.as_slice() == key.as_bytes(),
-                Binding::Named(name) => name == &key,
-                Binding::Empty => false,
-            };
-            if matches && slot.label != "char:@" {
-                slot.binding = Binding::Named(key.clone());
-                slot.label = key.clone();
-                found = true;
-            }
-        }
-        if !found {
-            return err(format!(
-                "compact table refers to missing physical key {key}"
-            ));
-        }
-        actions.insert(
-            key,
-            Action::Rules {
-                basis: Basis::Text,
-                rules: table.rules,
-                fallback: table.fallback,
-            },
-        );
-    }
-    Ok(())
-}
-
-/// Only use short serialization when it exactly represents the action.
-#[cfg(test)]
-fn short_table_text(name: &str, action: &Action) -> Option<String> {
-    let Action::Rules {
-        basis: Basis::Text,
-        rules,
-        fallback,
-    } = action
-    else {
-        return None;
-    };
-    if rules.is_empty() {
-        return None;
-    }
-    let adaptive = compact_key(name, true).is_ok()
-        && *fallback == Emission::Text(name.to_ascii_lowercase().into_bytes());
-    let expected_fallback = Emission::Call("repeat-output".into());
-    let magic = compact_key(name, false).is_ok() && *fallback == expected_fallback;
-    if !adaptive && !magic {
-        return None;
-    }
-    // Longer adaptive contexts are serialized with the existing explicit map
-    // grammar, which preserves the context and action name exactly.
-    let mut pairs = Vec::new();
-    for (context, emission) in rules {
-        let Emission::Text(output) = emission else {
-            return None;
-        };
-        if context.len() != 1
-            || output.len() != 1
-            || !context[0].is_ascii_graphic()
-            || !output[0].is_ascii_graphic()
-            || context[0].is_ascii_uppercase()
-            || output[0].is_ascii_uppercase()
-        {
-            return None;
-        }
-        pairs.push(format!("{}{}", context[0] as char, output[0] as char));
-    }
-    Some(format!(
-        "{} {}\n",
-        if magic {
-            format!("magic {name}")
-        } else {
-            format!("adaptive {name}")
-        },
-        pairs.join(" ")
-    ))
-}
-
-#[cfg(test)]
-fn set_thumb(thumbs: &mut [Vec<String>; 2], hand: usize, token: &str) -> Result<()> {
-    if hand > 1 {
-        return err("thumb hand must be left or right");
-    }
-    if !thumbs[hand].is_empty() {
-        return err(format!(
-            "{} thumb is defined twice",
-            if hand == 0 { "left" } else { "right" }
-        ));
-    }
-    let token = if token.len() > 1 && token != "@," {
-        token.strip_suffix(',').unwrap_or(token)
-    } else {
-        token
-    };
-    thumbs[hand].push(token.to_string());
-    Ok(())
-}
-
-#[cfg(test)]
-fn action_slot_token(name: &str) -> String {
-    if name == "@" || name.chars().count() == 1 && !name.is_ascii() {
-        name.into()
-    } else {
-        format!("@{name}")
-    }
-}
-
-#[cfg(test)]
-fn compact_action_text(name: &str, action: &Action) -> Option<String> {
-    if name.len() != 1
-        || !name.as_bytes()[0].is_ascii_graphic()
-        || name.as_bytes()[0].is_ascii_alphanumeric()
-    {
-        return None;
-    }
-    let Action::Rules {
-        basis: Basis::Text,
-        rules,
-        fallback,
-    } = action
-    else {
-        return None;
-    };
-    let expected = if name == "@" {
-        Emission::Call("repeat-output".into())
-    } else {
-        Emission::None
-    };
-    if fallback != &expected {
-        return None;
-    }
-    let marker = name.as_bytes()[0];
-    let mut out = String::new();
-    for (context, emission) in rules {
-        let Emission::Text(suffix) = emission else {
-            return None;
-        };
-        if context.is_empty() || !context.iter().chain(suffix).all(|b| b.is_ascii_graphic()) {
-            return None;
-        }
-        let mut left = context.clone();
-        left.push(marker);
-        let mut right = context.clone();
-        right.extend_from_slice(suffix);
-        out.push_str(&format!(
-            "{} {}\n",
-            String::from_utf8_lossy(&left),
-            String::from_utf8_lossy(&right)
-        ));
-    }
-    Some(out)
-}
-
 /// What a layout file states, before `Layout::assemble` places the thumbs,
 /// applies fingers and offsets, and installs the actions.
 pub(crate) struct Parts {
@@ -962,14 +329,9 @@ pub(crate) struct Parts {
     /// Key tokens per hand; `none` for a hand with no thumb keys.
     pub(crate) thumbs: [Vec<String>; 2],
     pub(crate) thumb_columns: Option<Vec<i8>>,
-    pub(crate) key_labels: Option<Vec<String>>,
     pub(crate) actions: BTreeMap<String, Action>,
-    /// Actions the file defines, as opposed to the built-in ones.
-    pub(crate) definitions: Vec<String>,
     /// Rules (`Some` context) and fallbacks (`None`) for defined actions.
     pub(crate) mappings: Vec<(String, Option<Vec<u8>>, Emission)>,
-    pub(crate) compact: Vec<(u8, Vec<u8>, Vec<u8>)>,
-    pub(crate) short_tables: BTreeMap<String, CompactTable>,
     pub(crate) action_mode: bool,
     pub(crate) alt_fingers: Option<Vec<crate::alt_fingers::Rule>>,
     pub(crate) combos: Option<Vec<crate::Json>>,
@@ -999,242 +361,13 @@ impl Layout {
     }
 
     pub fn parse(text: &str, path: &Path) -> Result<Self> {
-        let mut layout = if crate::layout_io::is_json_layout(text) {
-            crate::layout_io::parse_json_layout(text, path)?
-        } else {
-            Self::parse_fixture(text, path)?
-        };
+        if !crate::layout_io::is_json_layout(text) {
+            return err("not a JSON or JSONC layout");
+        }
+        let mut layout = crate::layout_io::parse_json_layout(text, path)?;
         let unplaced = crate::alt_fingers::unplaced(&layout);
         layout.source_warnings.extend(unplaced);
         Ok(layout)
-    }
-
-    #[cfg(not(test))]
-    fn parse_fixture(_text: &str, _path: &Path) -> Result<Self> {
-        err("not a JSON or JSONC layout")
-    }
-
-    /// Tests write layouts in a compact text notation (rows of keys, then
-    /// `thumbs:`, `action`, `map` and geometry lines).
-    #[cfg(test)]
-    fn parse_fixture(text: &str, path: &Path) -> Result<Self> {
-        Self::parse_dat(text, path)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn parse_dat(text: &str, path: &Path) -> Result<Self> {
-        let mut layout = Self::parse_dat_preserving_fallbacks(text, path)?;
-        layout.normalize_magic_fallbacks();
-        Ok(layout)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn parse_dat_preserving_fallbacks(text: &str, path: &Path) -> Result<Self> {
-        let text = text.trim_start_matches('\u{feff}');
-        let mut lines: Vec<&str> = text.lines().map(|s| s.trim_end_matches('\r')).collect();
-        while lines.first() == Some(&"") {
-            lines.remove(0);
-        }
-        while lines.last() == Some(&"") {
-            lines.pop();
-        }
-        if lines.len() < 3 {
-            return err("layout needs three main rows");
-        }
-        let absolute = absolute_columns(&lines[3..])?;
-        let (mut slots, mut left_outer, mut right_outer) = main_rows(&lines, absolute)?;
-        let mut geometry = GeometrySettings::default();
-        let mut actions = builtin_actions();
-        let mut definitions = Vec::new();
-        let mut mappings = Vec::new();
-        let mut compact = Vec::new();
-        let mut thumbs: [Vec<String>; 2] = [Vec::new(), Vec::new()];
-        let mut action_mode = false;
-        let mut short_tables = BTreeMap::new();
-        let mut key_labels = None;
-        let mut thumb_columns = None;
-        let mut alt_fingers = None;
-        let mut combos = None;
-        for (i, line) in lines.iter().enumerate().skip(3) {
-            let s = line.trim();
-            if s.is_empty() || s.starts_with('#') {
-                continue;
-            }
-            let fail = |e: String| format!("{}:{}: {e}", path.display(), i + 1);
-            if let Some(value) = s.strip_prefix("thumb-columns:") {
-                if thumb_columns.is_some() {
-                    return err(fail("thumb-columns is defined twice".into()));
-                }
-                let columns = value
-                    .split_whitespace()
-                    .map(|value| {
-                        value.parse::<i8>().map_err(|_| {
-                            fail("thumb-columns needs integer columns in -128..127".into())
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                thumb_columns = Some(columns);
-                continue;
-            }
-            if let Some(value) = s.strip_prefix("alts:") {
-                if alt_fingers.is_some() {
-                    return err(fail("alts is defined twice".into()));
-                }
-                let json = crate::parse_json(value.trim()).map_err(|e| fail(e.to_string()))?;
-                alt_fingers = Some(crate::alt_fingers::parse_json(&json).map_err(fail)?);
-                continue;
-            }
-            if let Some(value) = s.strip_prefix("combos:") {
-                if combos.is_some() {
-                    return err(fail("combos is defined twice".into()));
-                }
-                let crate::Json::Array(values) =
-                    crate::parse_json(value.trim()).map_err(|e| fail(e.to_string()))?
-                else {
-                    return err(fail("combos needs a JSON array".into()));
-                };
-                combos = Some(values);
-                continue;
-            }
-            if let Some(labels) = s.strip_prefix("key-labels:") {
-                if key_labels.is_some() {
-                    return err(fail("key-labels is defined twice".into()));
-                }
-                let crate::Json::Array(values) =
-                    crate::parse_json(labels.trim()).map_err(|e| fail(e.to_string()))?
-                else {
-                    return err(fail("key-labels needs a JSON array of strings".into()));
-                };
-                let mut labels = Vec::new();
-                for value in values {
-                    let crate::Json::String(label) = value else {
-                        return err(fail("key-labels entries must be strings".into()));
-                    };
-                    if label.is_empty() || label.chars().any(char::is_control) {
-                        return err(fail(
-                            "key-labels entries must be nonempty printable strings".into(),
-                        ));
-                    }
-                    labels.push(label);
-                }
-                key_labels = Some(labels);
-                continue;
-            }
-            if s.starts_with("col-layout:") || geometry.parse_line(s).map_err(&fail)? {
-                continue;
-            }
-            if compact_table_line(s, &mut short_tables).map_err(&fail)? {
-                action_mode = true;
-            } else if let Some(rest) = s.strip_prefix("action ") {
-                action_mode = true;
-                let (name, value) = assignment(rest).map_err(&fail)?;
-                let name = action_name(name);
-                if definitions.contains(&name) {
-                    return err(fail(format!("duplicate action {name}")));
-                }
-                definitions.push(name.clone());
-                actions.insert(name, action(value).map_err(&fail)?);
-            } else if let Some(rest) = s.strip_prefix("map ") {
-                action_mode = true;
-                let split = rest
-                    .find(char::is_whitespace)
-                    .ok_or_else(|| fail("map needs a name and context".into()))?;
-                let name = action_name(&rest[..split]);
-                let (context, value) = assignment(&rest[split..]).map_err(&fail)?;
-                mappings.push((
-                    name,
-                    Some(literal(context).map_err(&fail)?),
-                    emission(value).map_err(&fail)?,
-                ));
-            } else if let Some(rest) = s.strip_prefix("fallback ") {
-                action_mode = true;
-                let (name, value) = assignment(rest).map_err(&fail)?;
-                mappings.push((action_name(name), None, emission(value).map_err(&fail)?));
-            } else if s.starts_with("outer-left:") || s.starts_with("outer-right:") {
-                action_mode = true;
-                let left = s.starts_with("outer-left:");
-                let (_, content) = s.split_once(':').unwrap();
-                let ts: Vec<_> = content.split_whitespace().collect();
-                if ts.len() != 3 {
-                    return err(fail("outer column needs top/home/bottom tokens".into()));
-                }
-                if if left { left_outer } else { right_outer } {
-                    return err(fail("outer column defined twice".into()));
-                }
-                for (r, t) in ts.iter().enumerate() {
-                    slots.push(make_slot(t, r as i8, if left { -1 } else { 10 }).map_err(&fail)?);
-                }
-                if left {
-                    left_outer = true
-                } else {
-                    right_outer = true
-                }
-            } else if let Some(rule) = compact_mapping(s, &slots).map_err(&fail)? {
-                action_mode = true;
-                compact.push(rule);
-            } else {
-                let named = s
-                    .get(..7)
-                    .is_some_and(|v| v.eq_ignore_ascii_case("thumbs:"));
-                let content = if named { &s[7..] } else { s };
-                let ts: Vec<_> = content.split_whitespace().collect();
-                if named && ts.contains(&"|") {
-                    if ts.iter().filter(|&&t| t == "|").count() != 1 {
-                        return err(fail("thumbs needs one hand divider".into()));
-                    }
-                    let split = ts.iter().position(|&t| t == "|").unwrap();
-                    if thumbs.iter().any(|hand| !hand.is_empty()) {
-                        return err(fail("thumbs is defined twice".into()));
-                    }
-                    for (hand, group) in [&ts[..split], &ts[split + 1..]].iter().enumerate() {
-                        if group.len() == 1 && group[0] == "none" {
-                            thumbs[hand].push("none".into());
-                            continue;
-                        }
-                        if group.contains(&"none") {
-                            return err(fail("none cannot be combined with a thumb key".into()));
-                        }
-                        thumbs[hand] = group.iter().map(|token| (*token).to_string()).collect();
-                    }
-                    continue;
-                }
-                if ts.is_empty() || ts.len() > 2 {
-                    return err(fail(
-                        "thumb line needs one key, or explicit left and right keys".into(),
-                    ));
-                }
-                if named || ts.len() == 2 {
-                    for (hand, t) in ts.iter().enumerate() {
-                        set_thumb(&mut thumbs, hand, t).map_err(&fail)?;
-                    }
-                } else {
-                    // In the legacy text grid columns 0..=10 are left-thumb
-                    // positions; columns 11 and later are right-thumb positions.
-                    let indent = line.as_bytes().iter().take_while(|&&b| b == b' ').count();
-                    set_thumb(&mut thumbs, usize::from(indent > 10), ts[0]).map_err(&fail)?;
-                }
-            }
-        }
-        Self::assemble(
-            Parts {
-                slots,
-                left_outer,
-                right_outer,
-                geometry,
-                thumbs,
-                thumb_columns,
-                key_labels,
-                actions,
-                definitions,
-                mappings,
-                compact,
-                short_tables,
-                action_mode,
-                alt_fingers,
-                combos,
-            },
-            path,
-        )
     }
 
     /// The layout `parts` describe: thumbs placed, fingers and offsets
@@ -1247,69 +380,12 @@ impl Layout {
             geometry,
             mut thumbs,
             thumb_columns,
-            key_labels,
             mut actions,
-            definitions,
             mappings,
-            compact,
-            short_tables,
             mut action_mode,
             alt_fingers,
             combos,
         } = parts;
-        let mut compact_rules: BTreeMap<u8, BTreeMap<Vec<u8>, Emission>> = BTreeMap::new();
-        for (marker, context, output) in compact {
-            if compact_rules
-                .entry(marker)
-                .or_default()
-                .insert(context, Emission::Text(output))
-                .is_some()
-            {
-                return err(format!("duplicate compact mapping for {}", marker as char));
-            }
-        }
-        // A bare @ is text unless an action or a compact mapping explicitly
-        // declares it. The symbol alone never opts a layout into magic mode.
-        if definitions.iter().any(|name| name == "@")
-            && slots
-                .iter()
-                .any(|s| s.binding == Binding::Text(vec![b'@']) && s.label != "char:@")
-        {
-            compact_rules.entry(b'@').or_default();
-        }
-        for (marker, rules) in compact_rules {
-            let name = (marker as char).to_string();
-            let action = if marker == b'@' && rules.is_empty() {
-                Action::RepeatOutput
-            } else {
-                Action::Rules {
-                    basis: Basis::Text,
-                    rules,
-                    fallback: if marker == b'@' {
-                        Emission::Call("repeat-output".into())
-                    } else {
-                        Emission::None
-                    },
-                }
-            };
-            if definitions.contains(&name) {
-                if let Action::Rules { rules, .. } = &action {
-                    if !rules.is_empty() {
-                        return err(format!(
-                            "{name}: cannot mix compact and explicit action definitions"
-                        ));
-                    }
-                }
-            } else {
-                actions.insert(name.clone(), action);
-            }
-            for slot in &mut slots {
-                if slot.binding == Binding::Text(vec![marker]) && slot.label != "char:@" {
-                    slot.binding = Binding::Named(name.clone());
-                    slot.label = name.clone();
-                }
-            }
-        }
         let has_space = slots.iter().any(|s| s.binding == Binding::Text(vec![b' ']))
             || thumbs
                 .iter()
@@ -1389,14 +465,6 @@ impl Layout {
             columns[row] += 1;
         }
 
-        for key in short_tables.keys() {
-            if definitions.contains(key) {
-                return err(format!(
-                    "{key}: cannot mix compact and explicit action definitions"
-                ));
-            }
-        }
-        install_compact_tables(&mut slots, &mut actions, short_tables)?;
         for (name, context, out) in mappings {
             let a = actions
                 .get_mut(&name)
@@ -1423,20 +491,6 @@ impl Layout {
             if slot.binding == Binding::Text(vec![b'@']) && slot.label == "char:@" {
                 slot.label = "@".into();
             }
-            if let Binding::Named(name) = &slot.binding {
-                if compact_key(name, true).is_ok() {
-                    if let Some(Action::Rules {
-                        basis: Basis::Text,
-                        fallback: Emission::Text(bytes),
-                        ..
-                    }) = actions.get(name)
-                    {
-                        if bytes.as_slice() == name.to_ascii_lowercase().as_bytes() {
-                            slot.label = name.clone();
-                        }
-                    }
-                }
-            }
         }
         if let Some(columns) = thumb_columns {
             let thumbs: Vec<_> = slots.iter_mut().filter(|slot| !slot.main).collect();
@@ -1445,16 +499,6 @@ impl Layout {
             }
             for (slot, col) in thumbs.into_iter().zip(columns) {
                 slot.col = col;
-            }
-        }
-        if let Some(labels) = key_labels {
-            if labels.len() != slots.len() {
-                return err(
-                    "key-labels must contain one label for every physical slot, including thumbs",
-                );
-            }
-            for (slot, label) in slots.iter_mut().zip(labels) {
-                slot.label = label;
             }
         }
         if slots.len() > 60 {
@@ -1511,46 +555,6 @@ impl Layout {
         })
     }
 
-    /// Keep the legacy repeat default when a text-magic key has no literal
-    /// default. Explicit literal defaults survive, even when their character
-    /// differs from the key label.
-    #[cfg(test)]
-    pub(crate) fn normalize_magic_fallbacks(&mut self) {
-        let mut repeat = "repeat-output".to_string();
-        if !matches!(self.actions.get(&repeat), Some(Action::RepeatOutput)) {
-            for index in 0.. {
-                let name = format!("akler-repeat-output-{index}");
-                if !self.actions.contains_key(&name)
-                    || matches!(self.actions.get(&name), Some(Action::RepeatOutput))
-                {
-                    self.actions.insert(name.clone(), Action::RepeatOutput);
-                    repeat = name;
-                    break;
-                }
-            }
-        }
-        for slot in &self.slots {
-            let Binding::Named(name) = &slot.binding else {
-                continue;
-            };
-            if let Some(Action::Rules {
-                basis: Basis::Text,
-                fallback,
-                ..
-            }) = self.actions.get_mut(name)
-            {
-                let dedicated = crate::layout_io::dedicated_magic_label(&slot.label)
-                    || crate::layout_io::dedicated_magic_label(name);
-                let adaptive = !dedicated
-                    && matches!(fallback, Emission::Text(bytes)
-                    if bytes.len() == 1 && (bytes.as_slice() == slot.label.to_ascii_lowercase().as_bytes() || bytes.as_slice() == name.to_ascii_lowercase().as_bytes()));
-                if !adaptive && !matches!(fallback, Emission::Text(_)) {
-                    *fallback = Emission::Call(repeat.clone());
-                }
-            }
-        }
-    }
-
     pub fn extended(&self) -> bool {
         self.action_mode || !self.alt_fingers.is_empty() || !self.combos.is_empty()
     }
@@ -1601,241 +605,6 @@ impl Layout {
         if pinned {
             crate::alt_fingers::pin(self);
         }
-    }
-
-    #[cfg(test)]
-    pub fn text(&self) -> String {
-        let token = |s: &Slot| match &s.binding {
-            Binding::Empty => "~".into(),
-            Binding::Named(n) => {
-                // Bare uppercase letters retain legacy lowercase typing. Use
-                // explicit action syntax to preserve a chiral physical key.
-                if !n.bytes().any(|b| b.is_ascii_uppercase())
-                    && self.actions.get(n).is_some_and(|a| {
-                        short_table_text(n, a).is_some() || compact_action_text(n, a).is_some()
-                    })
-                {
-                    n.clone()
-                } else {
-                    action_slot_token(n)
-                }
-            }
-            Binding::Text(v) => {
-                if v == b" " {
-                    "space".into()
-                } else if v == b"~"
-                    || v == b"|"
-                    || v == b"@"
-                    || v.len() == 1 && v[0].is_ascii_uppercase()
-                {
-                    format!("char:{}", v[0] as char)
-                } else {
-                    String::from_utf8_lossy(v).into_owned()
-                }
-            }
-        };
-        let mut out = String::new();
-        let absolute = self.slots.iter().any(|slot| slot.main && slot.col == 11);
-        for row in 0..3 {
-            let mut first = true;
-            let mut line = String::new();
-            let width = self
-                .slots
-                .iter()
-                .filter(|slot| slot.main && slot.row == row)
-                .count();
-            let separator = if absolute && width >= 12 { 6 } else { 5 };
-            for s in self.slots.iter().filter(|s| s.main && s.row == row) {
-                if !first {
-                    if s.col == separator {
-                        line.push_str(" | ");
-                    } else {
-                        line.push(' ');
-                    }
-                }
-                first = false;
-                line.push_str(&token(s));
-            }
-            out.push_str(&line);
-            out.push('\n');
-        }
-        out.push_str(&geometry_text(
-            self.slots
-                .iter()
-                .filter(|s| s.main)
-                .map(|s| (s.row, s.col, s.row_offset, s.column_offset, s.finger)),
-        ));
-        let thumbs: Vec<_> = self.slots.iter().filter(|s| !s.main).collect();
-        let is_space = |s: &Slot| s.binding == Binding::Text(vec![b' ']);
-        if thumbs.iter().filter(|s| s.hand == 0).count() > 1
-            || thumbs.iter().filter(|s| s.hand == 1).count() > 1
-        {
-            let group = |hand| {
-                let keys: Vec<_> = thumbs
-                    .iter()
-                    .filter(|s| s.hand == hand)
-                    .map(|s| token(s))
-                    .collect();
-                if keys.is_empty() {
-                    "none".into()
-                } else {
-                    keys.join(" ")
-                }
-            };
-            out.push_str(&format!("thumbs: {} | {}\n", group(0), group(1)));
-        } else {
-            let bare = match thumbs.as_slice() {
-                [s] if s.hand == 1 || !is_space(s) => Some(*s),
-                [a, b] if is_space(a) ^ is_space(b) => Some(if is_space(a) { *b } else { *a }),
-                _ => None,
-            };
-            if thumbs.is_empty() || thumbs.len() == 1 && !is_space(thumbs[0]) {
-                out.push_str("thumbs:");
-                for hand in 0..2 {
-                    out.push(' ');
-                    if let Some(slot) = thumbs.iter().find(|slot| slot.hand == hand) {
-                        out.push_str(&token(slot));
-                    } else {
-                        out.push_str("none");
-                    }
-                }
-                out.push('\n');
-            } else if let Some(s) = bare {
-                if s.hand == 1 {
-                    out.push_str("            ");
-                }
-                out.push_str(&token(s));
-                out.push('\n');
-            } else if !thumbs.is_empty() {
-                out.push_str("thumbs:");
-                for s in thumbs {
-                    out.push(' ');
-                    out.push_str(&token(s));
-                }
-                out.push('\n');
-            }
-        }
-        if self.slots.iter().any(|slot| {
-            matches!(&slot.binding, Binding::Named(name) if slot.label != *name && slot.label != action_slot_token(name))
-        }) {
-            let labels: Vec<_> = self.slots.iter().map(|slot| crate::json_quote(&slot.label)).collect();
-            out.push_str(&format!("key-labels: [{}]\n", labels.join(", ")));
-        }
-        let thumb_columns: Vec<_> = self
-            .slots
-            .iter()
-            .filter(|slot| !slot.main)
-            .map(|slot| slot.col)
-            .collect();
-        if !default_thumb_columns(&self.slots) {
-            out.push_str(&format!(
-                "thumb-columns: {}\n",
-                thumb_columns
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ));
-        }
-        let mut needed = std::collections::BTreeSet::new();
-        fn gather(
-            name: &str,
-            defs: &BTreeMap<String, Action>,
-            needed: &mut std::collections::BTreeSet<String>,
-        ) {
-            if !needed.insert(name.into()) {
-                return;
-            }
-            if let Some(Action::Rules {
-                rules, fallback, ..
-            }) = defs.get(name)
-            {
-                for e in rules.values().chain(std::iter::once(fallback)) {
-                    if let Emission::Call(n) = e {
-                        gather(n, defs, needed);
-                    }
-                }
-            }
-        }
-        for slot in &self.slots {
-            if let Binding::Named(n) = &slot.binding {
-                gather(n, &self.actions, &mut needed);
-            }
-        }
-        for (name, a) in self
-            .actions
-            .iter()
-            .filter(|(name, _)| needed.contains(*name))
-        {
-            let builtin = match name.as_str() {
-                "repeat" | "repeat-output" => matches!(a, Action::RepeatOutput),
-                "repeat-previous-output" => matches!(a, Action::RepeatPreviousOutput),
-                "repeat-action" | "again" => matches!(a, Action::RepeatAction),
-                _ => false,
-            };
-            if builtin
-                && !self
-                    .slots
-                    .iter()
-                    .any(|s| matches!(&s.binding, Binding::Named(n) if n == name))
-            {
-                continue;
-            }
-            if self
-                .slots
-                .iter()
-                .any(|s| matches!(&s.binding, Binding::Named(n) if n == name))
-            {
-                if let Some(text) = short_table_text(name, a) {
-                    out.push('\n');
-                    out.push_str(&text);
-                    continue;
-                }
-            }
-            if let Some(text) = compact_action_text(name, a) {
-                if !text.is_empty() {
-                    out.push('\n');
-                    out.push_str(&text);
-                }
-                continue;
-            }
-            let kind: String = match a {
-                Action::RepeatOutput => "repeat-output".into(),
-                Action::RepeatPreviousOutput => "repeat-previous-output".into(),
-                Action::RepeatAction => "repeat-action".into(),
-                Action::Rules { basis, .. } => match basis {
-                    Basis::Text => "magic",
-                    Basis::Press => "press-magic",
-                    Basis::SkipPress => "skip-magic",
-                }
-                .into(),
-            };
-            out.push_str(&format!("\naction {name} = {kind}\n"));
-            if let Action::Rules {
-                rules, fallback, ..
-            } = a
-            {
-                for (c, e) in rules {
-                    out.push_str(&format!("map {name} {} = {}\n", quote(c), emission_text(e)));
-                }
-                if *fallback != Emission::None {
-                    out.push_str(&format!("fallback {name} = {}\n", emission_text(fallback)));
-                }
-            }
-        }
-        if !self.alt_fingers.is_empty() {
-            out.push_str(&format!(
-                "\nalts: {}\n",
-                crate::alt_fingers::json_text(&self.alt_fingers)
-            ));
-        }
-        if !self.combos.is_empty() {
-            out.push_str(&format!(
-                "\ncombos: {}\n",
-                crate::alt_fingers::compact_json(&crate::Json::Array(self.combos.clone()))
-            ));
-        }
-        out
     }
 
     /// Whether each slot is a spare the optimizer adds (`with_spare_keys`):
@@ -1986,26 +755,6 @@ impl Layout {
     pub fn save_new(&self) -> Result<PathBuf> {
         let dir = self.path.parent().unwrap_or(Path::new("layouts"));
         crate::layout_export::save_numbered_jsonc(self, dir, &format!("{}-actions", self.name))
-    }
-}
-
-/// Whether the thumbs use the columns a layout without `thumb-columns` gets:
-/// 0, 1, 2… in order, the first right thumb at 1 when there is no left one.
-#[cfg(test)]
-fn default_thumb_columns(slots: &[Slot]) -> bool {
-    slots
-        .iter()
-        .filter(|slot| !slot.main)
-        .enumerate()
-        .all(|(index, slot)| slot.col == if index == 0 && slot.hand == 1 { 1 } else { index as i8 })
-}
-
-#[cfg(test)]
-fn emission_text(e: &Emission) -> String {
-    match e {
-        Emission::None => "none".into(),
-        Emission::Text(v) => quote(v),
-        Emission::Call(n) => format!("@{n}"),
     }
 }
 
@@ -2705,31 +1454,135 @@ pub fn text_ngrams(bytes: &[u8]) -> [std::collections::HashMap<Vec<u8>, u64>; 5]
 
 #[cfg(test)]
 pub(crate) mod test_layouts {
-    pub(crate) const SHORTHAND: &str = concat!(
-        "~ q w e r t | y u i o p\n",
-        "~ a s d f g | h j k l ;\n",
-        "~ z x c v b | n m , @ /\n",
-        "thumbs: space\n",
-        "i@ i'\nr@ rk\na@ aa\n",
-    );
+    /// QWERTY's three rows, for `jsonc`.
+    pub(crate) const QWERTY: [&str; 3] = [
+        "q w e r t y u i o p",
+        "a s d f g h j k l ;",
+        "z x c v b n m , . /",
+    ];
 
-    pub(crate) const COMPACT: &str = concat!(
-        "f d l w v | q p o u ,\n",
-        "s t h y g | z n a e i\n",
-        "x k m c j | * b ' ; .\n",
-        "thumbs: r space\n",
-        "* 'r ay hr ik jo ke rl u' ye\n",
-        "swap h nr\n",
-    );
+    /// QWERTY with Space on the left thumb.
+    pub(crate) const QWERTY_JSONC: &str = r#"{"layout": {"fingers": ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"], "thumbs": ["space", ""]}}"#;
+
+    /// A JSONC layout: three rows of keys (`skip` for an empty slot), the
+    /// left and right thumbs, and further top-level fields as written in
+    /// the file (`"magic": ...`, `"fingermap": ...`).
+    pub(crate) fn jsonc(rows: [&str; 3], thumbs: [&str; 2], fields: &str) -> String {
+        let fields = if fields.is_empty() {
+            String::new()
+        } else {
+            format!(",\n{fields}")
+        };
+        format!(
+            "{{\"layout\": {{\"fingers\": [{:?}, {:?}, {:?}], \"thumbs\": [{:?}, {:?}]}}{fields}}}",
+            rows[0], rows[1], rows[2], thumbs[0], thumbs[1]
+        )
+    }
+
+    /// QWERTY with Space on the left thumb and these further fields.
+    pub(crate) fn qwerty(fields: &str) -> String {
+        jsonc(QWERTY, ["space", ""], fields)
+    }
+
+    /// A `magic` field with these (inputs, output) rules.
+    pub(crate) fn magic(rules: &[(&str, &str)]) -> String {
+        let rules: Vec<_> = rules
+            .iter()
+            .map(|(inputs, output)| format!("{{\"inputs\": {inputs:?}, \"output\": {output:?}}}"))
+            .collect();
+        format!("\"magic\": {{\"rules\": [{}]}}", rules.join(", "))
+    }
+
+    /// QWERTY with a magic key `@` in place of n, typing r after h, and
+    /// further magic rules.
+    pub(crate) fn magic_on_n(rules: &[(&str, &str)]) -> String {
+        let mut all = vec![("h@", "hr")];
+        all.extend_from_slice(rules);
+        jsonc(
+            ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b @ m , . /"],
+            ["space", ""],
+            &magic(&all),
+        )
+    }
+
+    /// Fingers for 11-key rows with an outer column on the left.
+    pub(crate) const LEFT_OUTER_FINGERS: &str = r#""fingermap": ["0 0 1 2 3 3 6 6 7 8 9", "0 0 1 2 3 3 6 6 7 8 9", "0 0 1 2 3 3 6 6 7 8 9"]"#;
+
+    /// QWERTY with an empty outer column on the left and a magic key `@`
+    /// in place of `.`.
+    pub(crate) fn shorthand() -> String {
+        jsonc(
+            [
+                "skip q w e r t y u i o p",
+                "skip a s d f g h j k l ;",
+                "skip z x c v b n m , @ /",
+            ],
+            ["space", ""],
+            &format!(
+                "{LEFT_OUTER_FINGERS},\n{}",
+                magic(&[("i@", "i'"), ("r@", "rk"), ("a@", "aa")])
+            ),
+        )
+    }
+
+    /// `shorthand` with an outer column on the right holding a skip key
+    /// `$` that types u two presses after q.
+    pub(crate) fn shorthand_with_skip() -> String {
+        jsonc(
+            [
+                "skip q w e r t y u i o p skip",
+                "skip a s d f g h j k l ; $",
+                "skip z x c v b n m , @ / skip",
+            ],
+            ["space", ""],
+            &format!(
+                "\"fingermap\": [\"0 0 1 2 3 3 6 6 7 8 9 9\", \"0 0 1 2 3 3 6 6 7 8 9 9\", \"0 0 1 2 3 3 6 6 7 8 9 9\"],\n{},\n\"skip\": {{\"key\": \"$\", \"rules\": [{{\"inputs\": \"q_$\", \"output\": \"q_u\"}}]}}",
+                magic(&[("i@", "i'"), ("r@", "rk"), ("a@", "aa")])
+            ),
+        )
+    }
+
+    /// A layout with a magic key `*` and a swap of n and r after h.
+    pub(crate) fn compact() -> String {
+        jsonc(
+            [
+                "f d l w v q p o u ,",
+                "s t h y g z n a e i",
+                "x k m c j * b ' ; .",
+            ],
+            ["r", "space"],
+            &magic(&[
+                ("'*", "'r"),
+                ("a*", "ay"),
+                ("h*", "hr"),
+                ("i*", "ik"),
+                ("j*", "jo"),
+                ("k*", "ke"),
+                ("r*", "rl"),
+                ("u*", "u'"),
+                ("y*", "ye"),
+                ("hn", "hr"),
+                ("hr", "hn"),
+            ]),
+        )
+    }
+
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    const BASE: &str =
-        "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n";
-    fn make(extra: &str) -> Layout {
-        Layout::parse(&format!("{BASE}{extra}"), Path::new("sample.dat")).unwrap()
+    /// QWERTY with `key` on the home row of an outer column on the left,
+    /// and further JSONC fields.
+    fn make(key: &str, fields: &str) -> Layout {
+        let rows = [
+            "skip q w e r t y u i o p".to_string(),
+            format!("{key} a s d f g h j k l ;"),
+            "skip z x c v b n m , . /".to_string(),
+        ];
+        let fields = format!("{},\n{fields}", test_layouts::LEFT_OUTER_FINGERS);
+        let source = test_layouts::jsonc([&rows[0], &rows[1], &rows[2]], ["space", ""], &fields);
+        Layout::parse(&source, Path::new("sample.jsonc")).unwrap()
     }
 
     fn key(l: &Layout, s: &str) -> usize {
@@ -2749,22 +1602,20 @@ mod tests {
 
     #[test]
     fn magic_uses_longest_text_suffix() {
-        let l = make("outer-left: ~ @m ~\naction m = magic\nmap m \"q\" = \"u\"\nmap m \"qu\" = \"e\"\nmap m \"u\" = \"a\"\n");
-        assert_eq!(typed(&l, &["q", "m", "m"]), b"que");
+        let l = make("@", &test_layouts::magic(&[("q@", "qu"), ("qu@", "que"), ("u@", "ua")]));
+        assert_eq!(typed(&l, &["q", "@", "@"]), b"que");
     }
     #[test]
     fn skip_magic_uses_second_last_physical_key() {
-        let l = make("outer-left: ~ @sk ~\naction sk = skip-magic\nmap sk \"q\" = \"u\"\nmap sk \"x\" = \"a\"\n");
-        assert_eq!(typed(&l, &["q", "x", "sk"]), b"qxu");
-    }
-    #[test]
-    fn magic_can_call_skip_magic() {
-        let l = make("outer-left: @m @sk ~\naction m = magic\nmap m \"q\" = @sk\naction sk = skip-magic\nmap sk \"r\" = \"v\"\n");
-        assert_eq!(typed(&l, &["r", "q", "m"]), b"rqv");
+        let l = make(
+            "$",
+            r#""skip": {"key": "$", "rules": [{"inputs": "q_$", "output": "q_u"}, {"inputs": "x_$", "output": "x_a"}]}"#,
+        );
+        assert_eq!(typed(&l, &["q", "x", "$"]), b"qxu");
     }
     #[test]
     fn decoder_honors_state_limit_and_cancellation() {
-        let l = make("");
+        let l = make("skip", "");
         for (case, state_limit, cancelled) in
             [("state limit", 1, false), ("cancellation", 1000, true)]
         {
@@ -2783,9 +1634,8 @@ mod tests {
     }
     #[test]
     fn validated_permutations_match_fresh_mapper_for_all_swaps() {
-        let source = format!("{}\nouter-right: @sk @again ~\naction sk = skip-magic\nmap sk \"q\" = \"u\"\naction again = repeat-action\n",
-            crate::action_keys::test_layouts::SHORTHAND);
-        let mut layout = Layout::parse(&source, Path::new("cached.dat")).unwrap();
+        let source = test_layouts::shorthand_with_skip();
+        let mut layout = Layout::parse(&source, Path::new("cached.jsonc")).unwrap();
         for order in 3..=5 {
             // The production cache validates once at the start of each search.
             WindowMapper::new(&layout, order).unwrap();
@@ -2825,10 +1675,11 @@ mod tests {
     }
     #[test]
     fn swaps_move_owned_bindings_without_changing_geometry_or_definitions() {
-        let mut layout = make("outer-left: ~ @rep ~\naction rep = repeat-output\n");
+        // A magic key without rules repeats the last output.
+        let mut layout = make("@", r#""magic": {"key": "@"}"#);
         let original = layout.clone();
         let a = key(&layout, "a");
-        let b = key(&layout, "rep");
+        let b = key(&layout, "@");
         let label_ptr = layout.slots[a].label.as_ptr();
         let text_ptr = match &layout.slots[a].binding {
             Binding::Text(v) => v.as_ptr(),

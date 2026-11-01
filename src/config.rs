@@ -1028,7 +1028,7 @@ mod config_tests {
         let parsed = parse_app_config(
             "[weights]\nsfb = 7\n[search]\nseconds = 15\ncorpus.reddit = 2\n\
              [ranker]\ncolumns = SCORE SFB\nhide_magic = true\nhide_non_thumb = true\n\
-             hidden_layouts = [\"layouts/a b.dat\", \"layouts/c.dat\"]\n[ngrams]\n\
+             hidden_layouts = [\"layouts/a b.jsonc\", \"layouts/c.jsonc\"]\n[ngrams]\n\
              trigrams = 2000\ntetragrams = 4000\npentagrams = all\nalt_contexts = 0\n[typing]\nalt_fingers = false\ncombos = false\n",
         )
         .unwrap();
@@ -1050,8 +1050,8 @@ mod config_tests {
         assert_eq!(
             parsed.rank_hidden_layouts,
             [
-                PathBuf::from("layouts/a b.dat"),
-                PathBuf::from("layouts/c.dat")
+                PathBuf::from("layouts/a b.jsonc"),
+                PathBuf::from("layouts/c.jsonc")
             ]
             .into_iter()
             .collect()
@@ -1098,7 +1098,7 @@ mod config_tests {
             "[ranker]\ncolumns = ",
             "[ranker]\nhide_magic = maybe",
             "[ranker]\nhide_non_thumb = 1",
-            "[ranker]\nhidden_layouts = layouts/a.dat",
+            "[ranker]\nhidden_layouts = layouts/a.jsonc",
             "[ranker]\nhidden_layouts = [\"unterminated]",
             "[ranker]\nhidden_layouts = [\"a\" \"b\"]",
             "[ranker]\nhidden_layouts = [\"bad\\q\"]",

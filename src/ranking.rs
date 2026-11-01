@@ -3206,9 +3206,16 @@ mod ranker_tests {
     use super::*;
 
     const NORMAL_LAYOUT: &str =
-        "q w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space\n";
+        crate::action_keys::test_layouts::QWERTY_JSONC;
 
-    const ACTION_LAYOUT: &str = "@ w e r t  y u i o p\na s d f g  h j k l ;\nz x c v b  n m , . /\nthumbs: space space\n@ aa\n";
+    /// QWERTY with a magic key in place of q that types a after a.
+    fn action_layout() -> String {
+        crate::action_keys::test_layouts::jsonc(
+            ["@ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", "space"],
+            &crate::action_keys::test_layouts::magic(&[("a@", "aa")]),
+        )
+    }
 
     const CORPUS: &str = r#"{"monograms":{"a":3,"b":2},"bigrams":{"aa":1,"ab":1,"bb":1,"ba":1},"trigrams":{"aab":1,"abb":1,"bba":1}}"#;
 
@@ -3218,15 +3225,19 @@ mod ranker_tests {
         // The bigram population has three entries; the skipgram population
         // has one, so 4 * (100/3) + 100 differs from weighting raw counts.
         const PAIRS: &str = r#"{"monograms":{"q":2,"a":2,"x":1},"bigrams":{"qa":1,"qx":1,"xa":1},"trigrams":{"qxa":1}}"#;
-        let action_layout = format!("{}@ aa\n", NORMAL_LAYOUT.replace("o p", "o @"));
+        let action_layout = crate::action_keys::test_layouts::jsonc(
+            ["q w e r t y u i o @", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            &crate::action_keys::test_layouts::magic(&[("a@", "aa")]),
+        );
         let layouts = [
             (
-                PathBuf::from("plain.dat"),
-                parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.dat")).unwrap(),
+                PathBuf::from("plain.jsonc"),
+                parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.jsonc")).unwrap(),
             ),
             (
-                PathBuf::from("action.dat"),
-                parse_rank_layout(&action_layout, Path::new("action.dat")).unwrap(),
+                PathBuf::from("action.jsonc"),
+                parse_rank_layout(&action_layout, Path::new("action.jsonc")).unwrap(),
             ),
         ];
         let stop = AtomicBool::new(false);
@@ -3277,7 +3288,7 @@ mod ranker_tests {
         let alternate = NORMAL_LAYOUT.replace("q w", "w q");
         rows.push(
             evaluate_rank_layout(
-                parse_rank_layout(&alternate, Path::new("alternate.dat")).unwrap(),
+                parse_rank_layout(&alternate, Path::new("alternate.jsonc")).unwrap(),
                 &prepared,
                 &Weights::default(),
                 &stop,
@@ -3302,8 +3313,8 @@ mod ranker_tests {
 
         // A missing skipgram population must not silently become zero.
         let short = r#"{"monograms":{"q":1,"a":1},"bigrams":{"qa":1},"trigrams":{}}"#;
-        let layout = parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.dat")).unwrap();
-        let layouts = [(PathBuf::from("plain.dat"), layout)];
+        let layout = parse_rank_layout(NORMAL_LAYOUT, Path::new("plain.jsonc")).unwrap();
+        let layouts = [(PathBuf::from("plain.jsonc"), layout)];
         let prepared = RankCorpora::prepare(
             &layouts,
             short,
@@ -3327,20 +3338,26 @@ mod ranker_tests {
     fn full_jump_rank_columns_show_individual_values_for_plain_and_action_layouts() {
         // Like Baris's my, m is on the top middle-finger key and y is on the
         // bottom ring-finger key: an adjacent concordant full jump.
-        const LAYOUT: &str =
-            "q w e r t  . u m o p\na s d f g  h j k l ;\nz x c v b  n i , y /\nthumbs: space\n";
-        const ACTION: &str = "@ w e r t  . u m o p\na s d f g  h j k l ;\nz x c v b  n i , y /\nthumbs: space\n@ aa\n";
+        let layout = |first: &str, fields: &str| {
+            crate::action_keys::test_layouts::jsonc(
+                [&format!("{first} w e r t . u m o p"), "a s d f g h j k l ;", "z x c v b n i , y /"],
+                ["space", ""],
+                fields,
+            )
+        };
+        let plain_text = layout("q", "");
+        let action_text = layout("@", &crate::action_keys::test_layouts::magic(&[("a@", "aa")]));
         const JUMP_CORPUS: &str = r#"{"monograms":{"m":2,"h":1,"y":2},"bigrams":{"mh":1,"hy":1,"my":1},"trigrams":{"mhy":1}}"#;
         let path = Path::new("jumps.json");
         let stop = AtomicBool::new(false);
         let layouts = [
             (
-                PathBuf::from("plain.dat"),
-                parse_rank_layout(LAYOUT, Path::new("plain.dat")).unwrap(),
+                PathBuf::from("plain.jsonc"),
+                parse_rank_layout(&plain_text, Path::new("plain.jsonc")).unwrap(),
             ),
             (
-                PathBuf::from("action.dat"),
-                parse_rank_layout(ACTION, Path::new("action.dat")).unwrap(),
+                PathBuf::from("action.jsonc"),
+                parse_rank_layout(&action_text, Path::new("action.jsonc")).unwrap(),
             ),
         ];
         let prepared =
@@ -3442,13 +3459,13 @@ mod ranker_tests {
         };
 
         let plain = evaluate_rank_layout(
-            parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+            parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
         )
         .unwrap();
-        let model = Model::new(board_from_text(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap());
+        let model = Model::new(board_from_text(NORMAL_LAYOUT, Path::new("normal.jsonc")).unwrap());
         let ordinary_corpus = model.corpus(&source).unwrap();
         let ordinary_raw = full_raw(&model.original, &ordinary_corpus, &model.geometry);
         let ordinary_metrics = metrics(&ordinary_raw, &ordinary_corpus);
@@ -3476,7 +3493,7 @@ mod ranker_tests {
         let original_corpus = plain_corpus(&plain);
         let reordered = NORMAL_LAYOUT.replace("a s", "b s").replace("v b", "v a");
         let reused = evaluate_rank_layout(
-            parse_rank_layout(&reordered, Path::new("reordered.dat")).unwrap(),
+            parse_rank_layout(&reordered, Path::new("reordered.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
@@ -3491,7 +3508,7 @@ mod ranker_tests {
         assert_eq!(prepared.plain_cache.borrow().len(), 1);
         let different = NORMAL_LAYOUT.replace("q w", "! w");
         let separate = evaluate_rank_layout(
-            parse_rank_layout(&different, Path::new("different.dat")).unwrap(),
+            parse_rank_layout(&different, Path::new("different.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
@@ -3502,7 +3519,7 @@ mod ranker_tests {
         assert_eq!(prepared.plain_cache.borrow().len(), 2);
         for (text, row) in [(&reordered, &reused), (&different, &separate)] {
             let model = Model::with_rolls(
-                board_from_text(text, Path::new("reference.dat")).unwrap(),
+                board_from_text(text, Path::new("reference.jsonc")).unwrap(),
                 weights.rolls(),
             );
             let corpus = model.corpus(&source).unwrap();
@@ -3544,8 +3561,8 @@ mod ranker_tests {
         ] {
             let fresh = RankCorpora::prepare(
                 &[(
-                    PathBuf::from("normal.dat"),
-                    parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+                    PathBuf::from("normal.jsonc"),
+                    parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.jsonc")).unwrap(),
                 )],
                 &text,
                 path,
@@ -3554,7 +3571,7 @@ mod ranker_tests {
             );
             assert!(fresh.plain_cache.borrow().is_empty());
             let row = evaluate_rank_layout(
-                parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.dat")).unwrap(),
+                parse_rank_layout(NORMAL_LAYOUT, Path::new("normal.jsonc")).unwrap(),
                 &fresh,
                 &weights,
                 &stop,
@@ -3577,13 +3594,13 @@ mod ranker_tests {
         }
 
         let action = evaluate_rank_layout(
-            parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+            parse_rank_layout(&action_layout(), Path::new("magic.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
         )
         .unwrap();
-        let layout = action_keys::Layout::parse(ACTION_LAYOUT, Path::new("magic.dat")).unwrap();
+        let layout = action_keys::Layout::parse(&action_layout(), Path::new("magic.jsonc")).unwrap();
         let expected =
             action_ui::evaluate_progress(&layout, &corpus, &weights, &stop, &progress).unwrap();
         assert_eq!(
@@ -3640,11 +3657,13 @@ mod ranker_tests {
         assert!(!rows[0].has_magic());
         assert!(rows[1].has_magic());
         assert!(rows.iter().all(|row| !row.has_thumb_letter()));
-        let thumb_text = NORMAL_LAYOUT
-            .replace("a s", "~ s")
-            .replace("thumbs: space", "thumbs: a | space");
+        let thumb_text = crate::action_keys::test_layouts::jsonc(
+            ["q w e r t y u i o p", "skip s d f g h j k l ;", "z x c v b n m , . /"],
+            ["a", "space"],
+            "",
+        );
         let thumb = evaluate_rank_layout(
-            parse_rank_layout(&thumb_text, Path::new("thumb.dat")).unwrap(),
+            parse_rank_layout(&thumb_text, Path::new("thumb.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
@@ -3654,7 +3673,7 @@ mod ranker_tests {
         let literal_at = evaluate_rank_layout(
             parse_rank_layout(
                 &NORMAL_LAYOUT.replace("q w", "char:@ w"),
-                Path::new("literal-at.dat"),
+                Path::new("literal-at.jsonc"),
             )
             .unwrap(),
             &prepared,
@@ -3666,7 +3685,7 @@ mod ranker_tests {
         let mut rows = rows;
         rows.extend([thumb, literal_at]);
         let hidden = BTreeSet::from([
-            PathBuf::from("missing-layout.dat"),
+            PathBuf::from("missing-layout.jsonc"),
             rows[3].path().to_owned(),
         ]);
         let filters = RankFilters {
@@ -3690,7 +3709,7 @@ mod ranker_tests {
             2
         );
         assert_eq!(hidden.len(), 2);
-        assert!(hidden.contains(Path::new("missing-layout.dat")));
+        assert!(hidden.contains(Path::new("missing-layout.jsonc")));
         assert_eq!(
             parse_rank_hidden_layouts(&rank_hidden_layouts_text(&hidden).unwrap()).unwrap(),
             hidden
@@ -3703,15 +3722,15 @@ mod ranker_tests {
         let weights = Weights::default();
         let prepared = RankCorpora::prepare(
             &[(
-                PathBuf::from("magic.dat"),
-                parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+                PathBuf::from("magic.jsonc"),
+                parse_rank_layout(&action_layout(), Path::new("magic.jsonc")).unwrap(),
             )],
             CORPUS,
             Path::new("inline.json"),
             NgramLimits::default(),
             &stop,
         );
-        let layout = action_keys::Layout::parse(ACTION_LAYOUT, Path::new("magic.dat")).unwrap();
+        let layout = action_keys::Layout::parse(&action_layout(), Path::new("magic.jsonc")).unwrap();
         let keys = action_ui::physical_keys(&layout);
         let rolls = weights.rolls();
         let action = prepared.geometry(&keys, rolls, false);
@@ -3784,7 +3803,7 @@ mod ranker_tests {
         };
 
         let missing = evaluate_rank_layout(
-            parse_rank_layout(ACTION_LAYOUT, Path::new("magic.dat")).unwrap(),
+            parse_rank_layout(&action_layout(), Path::new("magic.jsonc")).unwrap(),
             &prepared,
             &weights,
             &stop,
@@ -3795,8 +3814,9 @@ mod ranker_tests {
             .to_string()
             .contains("missing cached contexts"));
 
-        let invalid = format!("{ACTION_LAYOUT}swap y ,/u\n");
-        assert!(parse_rank_layout(&invalid, Path::new("invalid.dat")).is_err());
+        // A rule may append only one character.
+        let invalid = action_layout().replace("\"aa\"", "\"aab\"");
+        assert!(parse_rank_layout(&invalid, Path::new("invalid.jsonc")).is_err());
     }
 
 }

@@ -274,7 +274,7 @@ mod tests {
                 "fingermap": ["0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9", "0 1 2 3 3 6 6 7 8 9"],
                 "magic": {"magicKeys": [], "rules": [{"inputs": "qa", "output": "qq"}]}
             }"#,
-            Path::new("source.dat"),
+            Path::new("source.jsonc"),
         )
         .unwrap();
         let corpus = crate::action_ngrams::NgramCorpus::from_text(

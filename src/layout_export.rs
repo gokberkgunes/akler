@@ -859,12 +859,10 @@ pub(crate) fn jsonc_text(layout: &Layout) -> Result<String> {
 mod tests {
     use super::*;
 
-    const GRID: &str = "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
+    const GRID: &str = crate::action_keys::test_layouts::QWERTY_JSONC;
 
     fn round_trip(source: &str) -> (Layout, Layout) {
-        let original = Layout::parse(source, Path::new("original.dat")).unwrap();
-        // Pair saves intentionally retain the reachable definitions emitted by DAT.
-        let original = Layout::parse(&original.text(), Path::new("canonical.dat")).unwrap();
+        let original = Layout::parse(source, Path::new("original.jsonc")).unwrap();
         let jsonc = jsonc_text(&original).unwrap();
         let restored = Layout::parse(&jsonc, Path::new("seconds")).unwrap();
         assert_eq!(restored.slots, original.slots, "{jsonc}");
@@ -880,8 +878,13 @@ mod tests {
         assert_eq!(restored.slots.iter().filter(|slot| !slot.main).count(), 1);
         assert!(!original.extended());
         assert!(!restored.extended());
-        for thumbs in ["none | none", "none | r", "r | none"] {
-            let (_, restored) = round_trip(&format!("{GRID}thumbs: {thumbs}\n"));
+        for thumbs in [["none", "none"], ["none", "r"], ["r", "none"]] {
+            let source = crate::action_keys::test_layouts::jsonc(
+                crate::action_keys::test_layouts::QWERTY,
+                thumbs,
+                "",
+            );
+            let (_, restored) = round_trip(&source);
             assert!(!restored.slots.iter().any(|slot| {
                 matches!(&slot.binding, Binding::Text(text) if text.as_slice() == b" ")
             }));
@@ -967,8 +970,10 @@ mod tests {
 
     #[test]
     fn column_stagger_export_declares_its_mode_and_keeps_physical_offsets() {
-        let source = format!("{GRID}column-offsets: 0 -0.3 -0.4 -0.3 -0.2 -0.2 -0.3 -0.4 -0.3 0\n");
-        let original = Layout::parse(&source, Path::new("columns.dat")).unwrap();
+        let source = crate::action_keys::test_layouts::qwerty(
+            r#""board": {"isColumnStaggered": true, "rowOrColumnStagger": [0, -0.3, -0.4, -0.3, -0.2, -0.2, -0.3, -0.4, -0.3, 0]}"#,
+        );
+        let original = Layout::parse(&source, Path::new("columns.jsonc")).unwrap();
         let jsonc = jsonc_text(&original).unwrap();
         assert!(jsonc.contains("\"isRowStaggered\": false"), "{jsonc}");
         assert!(jsonc.contains("\"isColumnStaggered\": true"), "{jsonc}");
@@ -1079,12 +1084,12 @@ mod tests {
 
     #[test]
     fn skip_magic_round_trips_in_the_unified_magic_block() {
-        let source = format!(
-            "{}action skip = skip-magic\nfallback skip = repeat-previous-output\n",
-            GRID.replace("q w", "@skip w")
+        let source = crate::action_keys::test_layouts::jsonc(
+            ["$ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            r#""skip": {"key": "$"}"#,
         );
-        let mut original = Layout::parse(&source, Path::new("source")).unwrap();
-        original.slots[0].label = "$".into();
+        let original = Layout::parse(&source, Path::new("source")).unwrap();
         let jsonc = jsonc_text(&original).unwrap();
         assert!(jsonc.contains("\"keys\": \"$\""), "{jsonc}");
         assert!(jsonc.contains("\"wildcards\": \"*\""), "{jsonc}");
@@ -1138,7 +1143,7 @@ mod tests {
 
     #[test]
     fn literal_magic_defaults_round_trip_and_multichar_defaults_fail() {
-        let mut layout = Layout::parse(GRID, Path::new("inline.dat")).unwrap();
+        let mut layout = Layout::parse(GRID, Path::new("inline.jsonc")).unwrap();
         layout.slots[0].binding = Binding::Named("◇".into());
         layout.slots[0].label = "◇".into();
         layout.actions.insert(
@@ -1233,3 +1238,4 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 }
+

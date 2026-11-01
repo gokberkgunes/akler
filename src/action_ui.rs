@@ -3937,8 +3937,12 @@ mod ngram_integration_tests {
     #[test]
     fn mirror_preserves_geometry_and_rules_and_is_reversible() {
         let mut layout = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: e | space\n* ou\nswap e dr\n",
-            Path::new("mirror.dat"),
+            &ak::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
+                ["e", "space"],
+                &ak::test_layouts::magic(&[("o*", "ou"), ("ed", "er"), ("er", "ed")]),
+            ),
+            Path::new("mirror.jsonc"),
         ).unwrap().with_spare_keys();
         layout.alt_fingers = vec![crate::alt_fingers::Rule {
             ngram: vec![Some(b'f'), Some(b'g')],
@@ -3984,8 +3988,12 @@ mod ngram_integration_tests {
     #[test]
     fn magic_refresh_retains_unseen_slots_and_working_outputs() {
         let mut layout = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ae ce ne re ue\n",
-            Path::new("unfillable.dat"),
+            &ak::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
+                ["space", ""],
+                &ak::test_layouts::magic(&[("a*", "ae"), ("c*", "ce"), ("n*", "ne"), ("r*", "re"), ("u*", "ue")]),
+            ),
+            Path::new("unfillable.jsonc"),
         ).unwrap();
         let root = crate::magic_optimizer::existing_root(&layout).unwrap();
         let mut weights = Weights::default();
@@ -4016,8 +4024,12 @@ mod ngram_integration_tests {
     #[test]
     fn magic_refresh_preserves_slots_through_a_complete_optimizer_run() {
         let original = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ae ce ne re ue\n",
-            Path::new("five-slots.dat"),
+            &ak::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
+                ["space", ""],
+                &ak::test_layouts::magic(&[("a*", "ae"), ("c*", "ce"), ("n*", "ne"), ("r*", "re"), ("u*", "ue")]),
+            ),
+            Path::new("five-slots.jsonc"),
         ).unwrap();
         let root = crate::magic_optimizer::existing_root(&original).unwrap();
         let mut cleared = original.clone();
@@ -4105,8 +4117,12 @@ mod ngram_integration_tests {
     #[test]
     fn cleared_magic_and_swaps_can_be_fitted_again() {
         let mut layout = ak::Layout::parse(
-            "q w e r t y u i o p\na s d f g h j k l *\nz x c v b n m , . /\nthumbs: space\n* ou\nswap e dr\n",
-            Path::new("refit.dat"),
+            &ak::test_layouts::jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l *", "z x c v b n m , . /"],
+                ["space", ""],
+                &ak::test_layouts::magic(&[("o*", "ou"), ("ed", "er"), ("er", "ed")]),
+            ),
+            Path::new("refit.jsonc"),
         ).unwrap();
         let root = crate::magic_optimizer::existing_root(&layout).unwrap();
         let mut weights = Weights::default();
@@ -4261,19 +4277,24 @@ mod ngram_integration_tests {
             evaluate(&changed, &c, &Weights::new([0.0; N_WEIGHTS]), &stop).unwrap();
         assert_eq!(geometry_value.model.geometry.keys[m].finger, 0);
         assert_eq!(geometry_value.raw.0[SFB], 0.0);
-        let plain_text = HISTORY_LAYOUT.replace("@ b", "! b");
-        let plain = ak::Layout::parse(
-            plain_text.split("\nw@ wh").next().unwrap(),
-            Path::new("plain.dat"),
-        )
+        let plain_text = ak::test_layouts::jsonc(
+            ["f d l w v q p o u ,", "s t h y g z n a e i", "x k m c j ! b ' ; ."],
+            ["r", "space"],
+            "",
+        );
+        let plain = ak::Layout::parse(&plain_text, Path::new("plain.jsonc"))
         .unwrap();
         let value = evaluate(&plain, &c, &w, &stop).unwrap();
         assert_eq!(value.counts.action_presses, 0.0);
 
         // Before-only named pairs must survive a three-key binding cycle.
         let original = ak::Layout::parse(
-            "y l d w z | q f u o /\nn r t s v | k b e a i\nx j m c g | p h , . ;\n",
-            Path::new("jump-comparison.dat"),
+            &ak::test_layouts::jsonc(
+                ["y l d w z q f u o /", "n r t s v k b e a i", "x j m c g p h , . ;"],
+                ["space", ""],
+                "",
+            ),
+            Path::new("jump-comparison.jsonc"),
         )
         .unwrap();
         let corpus = history_corpus(b"ho op po bo ob ok ko kb kb bh hk hk hk");
@@ -4305,9 +4326,13 @@ mod ngram_integration_tests {
             assert!((sums.1 - after.metrics.v[metric]).abs() < 1e-8);
         }
     }
-    const HISTORY_LAYOUT: &str = "f d l w v | q p o u ,\ns t h y g | z n a e i\nx k m c j | @ b ' ; .\nthumbs: r space\n\nw@ wh\nn@ n'\na@ aa\n";
     fn history_layout() -> ak::Layout {
-        ak::Layout::parse(HISTORY_LAYOUT, Path::new("history.dat")).unwrap()
+        let source = ak::test_layouts::jsonc(
+            ["f d l w v q p o u ,", "s t h y g z n a e i", "x k m c j @ b ' ; ."],
+            ["r", "space"],
+            &ak::test_layouts::magic(&[("w@", "wh"), ("n@", "n'"), ("a@", "aa")]),
+        );
+        ak::Layout::parse(&source, Path::new("history.jsonc")).unwrap()
     }
 
     fn history_key(l: &ak::Layout, label: &str) -> usize {
@@ -4402,8 +4427,12 @@ mod ngram_integration_tests {
 
     #[test]
     fn configurable_rolls_preserve_mapping_and_match_all_evaluation_paths() {
-        let source = "q @ e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n@ a!\n";
-        let mut layout = ak::Layout::parse(source, Path::new("inline.dat")).unwrap();
+        let source = ak::test_layouts::jsonc(
+            ["q @ e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            &ak::test_layouts::magic(&[("a@", "a!")]),
+        );
+        let mut layout = ak::Layout::parse(&source, Path::new("inline.jsonc")).unwrap();
         let root = history_key(&layout, "@");
         layout
             .actions
@@ -4485,8 +4514,12 @@ mod ngram_integration_tests {
 
     #[test]
     fn directional_rolls_use_action_slots_and_match_incremental_swaps() {
-        let source = "q @ e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n@ a!\n";
-        let mut layout = ak::Layout::parse(source, Path::new("inline.dat")).unwrap();
+        let source = ak::test_layouts::jsonc(
+            ["q @ e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            &ak::test_layouts::magic(&[("a@", "a!")]),
+        );
+        let mut layout = ak::Layout::parse(&source, Path::new("inline.jsonc")).unwrap();
         let root = history_key(&layout, "@");
         layout
             .actions
@@ -4644,16 +4677,15 @@ mod ngram_integration_tests {
     }
     #[test]
     fn incremental_proposals_match_full_evaluation_and_rejected_swaps_do_not_leak() {
-        let base = crate::action_keys::test_layouts::SHORTHAND;
-        let skip =
-            format!("{base}\nouter-right: ~ @sk ~\naction sk = skip-magic\nmap sk \"q\" = \"u\"\n");
+        let base = crate::action_keys::test_layouts::shorthand();
+        let skip = crate::action_keys::test_layouts::shorthand_with_skip();
         let bases = crate::action_fast::tests::fixtures();
-        for source in std::iter::once(base)
+        for source in std::iter::once(base.as_str())
             .chain(std::iter::once(skip.as_str()))
             .chain(bases.iter().map(String::as_str))
         {
             for order in 3..=5 {
-                let mut layout = ak::Layout::parse(source, Path::new("delta.dat")).unwrap();
+                let mut layout = ak::Layout::parse(source, Path::new("delta.jsonc")).unwrap();
                 let corpus = delta_corpus(order);
                 let w = Weights::default();
                 let stop = AtomicBool::new(false);
@@ -4759,12 +4791,17 @@ mod ngram_integration_tests {
     }
     #[test]
     fn suffix_index_and_terminal_chains_match_full_candidate_scores() {
-        let source = format!(
-            "{}outer-left: @m @again ~\naction m = magic\nmap m \"i\" = \"'\"\nmap m \"qi\" = \"!\"\nmap m \"aqi\" = none\nmap m \"raqi\" = \"'\"\nmap m \"q\" = @alias\naction alias = magic\nfallback alias = repeat-output\naction again = repeat-action\n",
-            crate::action_fast::tests::fixtures()[0]
+        // Nested suffix rules: the longest matching context wins.
+        let source = ak::test_layouts::jsonc(
+            ["@ q w e r t y u i o p", "skip a s d f g h j k l ;", "skip z x c v b n m , . /"],
+            ["space", ""],
+            &format!(
+                "{},\n{}",
+                ak::test_layouts::LEFT_OUTER_FINGERS,
+                ak::test_layouts::magic(&[("i@", "i'"), ("qi@", "qi!"), ("aqi@", "aqiq"), ("raqi@", "raqi'")])
+            ),
         );
-        // An explicit rule retains alias-chain coverage under forced repeat fallback.
-        let mut layout = ak::Layout::parse(&source, Path::new("suffix-score.dat")).unwrap();
+        let mut layout = ak::Layout::parse(&source, Path::new("suffix-score.jsonc")).unwrap();
         let tables = ak::text_ngrams(b"raqi' aqi' qi! i' qqqqu raqiaqi !!q");
         let names = ["letters", "bigrams", "trigrams", "fourgrams", "fivegrams"];
         let fields = (0..5)
@@ -4865,7 +4902,7 @@ mod detailed_evaluation_tests {
         for source in crate::action_fast::tests::fixtures() {
             for order in 3..=5 {
                 let corpus = inline_corpus(order);
-                let mut layout = ak::Layout::parse(&source, Path::new("inline.dat")).unwrap();
+                let mut layout = ak::Layout::parse(&source, Path::new("inline.jsonc")).unwrap();
                 for swap in [None, Some((0, layout.slots.len() - 1))] {
                     if let Some((a, b)) = swap {
                         layout.swap(a, b);

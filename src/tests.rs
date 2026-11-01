@@ -2,11 +2,10 @@ use super::*;
 
 use std::io::Cursor;
 
-const PACKET: &str =
-    "v d l w x  z p o u ,\ns t h c g  q n a e i\nf k m y j  ; b ' / .\nthumbs: r space\n";
+const PACKET: &str = r#"{"layout": {"fingers": ["v d l w x z p o u ,", "s t h c g q n a e i", "f k m y j ; b ' / ."], "thumbs": ["r", "space"]}}"#;
 
 fn model() -> Model {
-    Model::new(board_from_text(PACKET, Path::new("packet.dat")).unwrap())
+    Model::new(board_from_text(PACKET, Path::new("packet.jsonc")).unwrap())
 }
 
 fn key(r: usize, c: usize) -> Key {
@@ -57,8 +56,8 @@ fn small_source() -> Source {
 #[test]
 fn ordinary_skips_keep_endpoints_across_an_unavailable_middle() {
     let layout =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-    let model = Model::new(board_from_text(layout, Path::new("inline.dat")).unwrap());
+        crate::action_keys::test_layouts::QWERTY_JSONC;
+    let model = Model::new(board_from_text(layout, Path::new("inline.jsonc")).unwrap());
     let source = Source::from_text(
         r#"{"letters":{"a":4,"q":3,"w":2,"r":1,"!":1},
         "bigrams":{"a!":1,"!q":1,"aw":2,"wq":1,"wr":1,"qa":1},
@@ -92,8 +91,8 @@ fn ordinary_skips_keep_endpoints_across_an_unavailable_middle() {
 #[test]
 fn same_key_bigrams_and_skipgrams_are_separate_metrics() {
     let layout =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-    let model = Model::new(board_from_text(layout, Path::new("inline.dat")).unwrap());
+        crate::action_keys::test_layouts::QWERTY_JSONC;
+    let model = Model::new(board_from_text(layout, Path::new("inline.jsonc")).unwrap());
     let source = Source::from_text(
         r#"{"letters":{"a":4,"p":2},"bigrams":{"aa":2,"ap":1},"skipgrams":{"aa":3,"ap":1}}"#,
         Path::new("inline.json"),
@@ -203,7 +202,14 @@ fn own_alt_rules_name_the_keys_their_letters_are_on() {
         action_ngrams::NgramCorpus::from_text(&counts_text(&counts), Path::new("inline.json"))
             .unwrap();
     let mut layout =
-        crate::action_keys::Layout::parse(&format!("{PACKET}swap w cx\n"), Path::new("swap.dat"))
+        crate::action_keys::Layout::parse(
+            &crate::action_keys::test_layouts::jsonc(
+                ["v d l w x z p o u ,", "s t h c g q n a e i", "f k m y j ; b ' / ."],
+                ["r", "space"],
+                &crate::action_keys::test_layouts::magic(&[("wc", "wx"), ("wx", "wc")]),
+            ),
+            Path::new("swap.jsonc"),
+        )
             .unwrap();
     layout.alt_fingers = crate::alt_fingers::parse_json(
         &parse_json(
@@ -353,7 +359,7 @@ fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
         close(score.contributions[metric], expected);
     }
 
-    let layout = action_keys::Layout::parse(PACKET, Path::new("inline.dat")).unwrap();
+    let layout = action_keys::Layout::parse(PACKET, Path::new("inline.jsonc")).unwrap();
     let keys = action_ui::physical_keys(&layout);
     let adjacent = (0..keys.len())
         .flat_map(|a| (0..keys.len()).map(move |b| (a, b)))
@@ -456,8 +462,8 @@ fn clean_sraf_direction_and_legacy_rewards_are_independent() {
     assert_eq!(weights_from_text(&serialized).unwrap().0, split.0);
 
     let board = board_from_text(
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-        Path::new("sraf.dat"),
+        crate::action_keys::test_layouts::QWERTY_JSONC,
+        Path::new("sraf.jsonc"),
     )
     .unwrap();
     let model = Model::new(board);
@@ -485,10 +491,14 @@ fn clean_sraf_direction_and_legacy_rewards_are_independent() {
 
 #[test]
 fn action_sraf_uses_current_root_slot_and_directional_objective() {
-    let rows = "@m w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\n";
+    // A magic key without rules, typing q.
     let mut layout = action_keys::Layout::parse(
-        &format!("{rows}action m = magic\nfallback m = \"q\"\n"),
-        Path::new("action-sraf.dat"),
+        &crate::action_keys::test_layouts::jsonc(
+            ["@ w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+            ["space", ""],
+            r#""magic": {"key": "@", "fallback": "q"}"#,
+        ),
+        Path::new("action-sraf.jsonc"),
     )
     .unwrap();
     let corpus = action_ngrams::NgramCorpus::from_text(
@@ -958,8 +968,8 @@ fn relative_guardrails_in_all_design_modes() {
 
 #[test]
 fn corner_weight_counts_only_physical_inner_corners_and_updates_swaps() {
-    let text = "q w e r t y u i o p\na s d f g h j k l ;\nz x c v b n m , . /\nthumbs: space\n";
-    let board = board_from_text(text, Path::new("corner.dat")).unwrap();
+    let text = crate::action_keys::test_layouts::QWERTY_JSONC;
+    let board = board_from_text(text, Path::new("corner.jsonc")).unwrap();
     let model = Model::new(with_spare_keys(board));
     let selected: Vec<_> = model
         .geometry
@@ -1181,8 +1191,8 @@ impl Drop for TestDir {
 #[test]
 fn moving_a_wildcard_key_updates_incremental_alt_finger_metrics() {
     let text =
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-    let mut layout = action_keys::Layout::parse(text, Path::new("plain.dat")).unwrap();
+        crate::action_keys::test_layouts::QWERTY_JSONC;
+    let mut layout = action_keys::Layout::parse(text, Path::new("plain.jsonc")).unwrap();
     let counts = count_reader(
         Cursor::new(b"fsg fsg fsg"),
         &CorpusConfig::default(),
@@ -1242,8 +1252,8 @@ fn moving_a_wildcard_key_updates_incremental_alt_finger_metrics() {
 #[test]
 fn alternate_fingers_preserve_unigrams_at_boundaries_and_gaps() {
     let layout = action_keys::Layout::parse(
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-        Path::new("plain.dat"),
+        crate::action_keys::test_layouts::QWERTY_JSONC,
+        Path::new("plain.jsonc"),
     )
     .unwrap();
     // No input below contains q or w, so the rule activates the contextual
@@ -1393,8 +1403,8 @@ fn alternate_fingers_preserve_unigrams_at_boundaries_and_gaps() {
 #[test]
 fn capped_alternate_finger_contexts_keep_the_keys_rules_read() {
     let layout = action_keys::Layout::parse(
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-        Path::new("capped-alternates.dat"),
+        crate::action_keys::test_layouts::QWERTY_JSONC,
+        Path::new("capped-alternates.jsonc"),
     )
     .unwrap();
     let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
@@ -1485,8 +1495,8 @@ fn capped_alternate_finger_contexts_keep_the_keys_rules_read() {
 #[test]
 fn alternate_bigram_corrections_match_five_key_reference() {
     let layout = action_keys::Layout::parse(
-        "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n",
-        Path::new("alternate-reference.dat"),
+        crate::action_keys::test_layouts::QWERTY_JSONC,
+        Path::new("alternate-reference.jsonc"),
     )
     .unwrap();
     let defaults: Vec<_> = layout.slots.iter().map(|slot| slot.finger).collect();

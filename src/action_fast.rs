@@ -1888,41 +1888,59 @@ impl<'a> Mapper<'a> {
 pub(crate) mod tests {
     use super::*;
     use std::path::Path;
+    /// Layouts covering literals, magic keys with repeat and literal
+    /// fallbacks, a skip key that calls a magic key, adaptive keys, swaps
+    /// and row stagger.
     pub(crate) fn fixtures() -> Vec<String> {
-        let base =
-            "q w e r t | y u i o p\na s d f g | h j k l ;\nz x c v b | n m , . /\nthumbs: space\n";
-        let mut fixtures = vec![
-            base.to_string(),
-            crate::action_keys::test_layouts::SHORTHAND.to_string(),
+        use crate::action_keys::test_layouts::{compact, jsonc, magic, qwerty, shorthand, LEFT_OUTER_FINGERS};
+        let twelve = r#""fingermap": ["0 0 1 2 3 3 6 6 7 8 9 9", "0 0 1 2 3 3 6 6 7 8 9 9", "0 0 1 2 3 3 6 6 7 8 9 9"]"#;
+        let outer = [
+            "skip q w e r t y u i o p skip",
+            "@ a s d f g h j k l ; $",
+            "skip z x c v b n m , . / skip",
         ];
-        for basis in [
-            "magic",
-            "press-magic",
-            "skip-magic",
-        ] {
-            let aliases = if matches!(basis, "press-magic" | "skip-magic") {
-                "map m \"@rep\" = \"u\"\nmap m \"rep\" = none\nmap m \"␠\" = \"a\"\n"
-            } else {
-                ""
-            };
-            fixtures.push(format!("{base}outer-left: @m @rep @again\nouter-right: @sk ~ ~\naction m = {basis}\nmap m \"i\" = \"'\"\nmap m \"q\" = \"u\"\nmap m \"qu\" = \"e\"\n{aliases}fallback m = @sk\naction sk = skip-magic\nmap sk \"q\" = \"a\"\naction rep = repeat-output\naction again = repeat-action\n"));
-        }
-        fixtures.push(crate::action_keys::test_layouts::COMPACT.to_string());
-        fixtures.push(format!("{base}outer-left: ~ ◇ ~\n◇ hr u'\n"));
-        fixtures.push(format!(
-            "{base}outer-left: ~ ◇ ~\n◇ hr u'\nfallback ◇ = repeat-output\n"
-        ));
-        fixtures.push(format!("{base}adaptive n hr ay\nswap th qe\n"));
-        fixtures.push(format!("{base}swap h nr y ,u\nrow-offsets: -0.25 0 0.5\n"));
-        fixtures
+        let diamond = [
+            "skip q w e r t y u i o p",
+            "◇ a s d f g h j k l ;",
+            "skip z x c v b n m , . /",
+        ];
+        let swaps = [("hn", "hr"), ("hr", "hn"), ("y,", "yu"), ("yu", "y,")];
+        vec![
+            qwerty(""),
+            shorthand(),
+            // A magic key and a skip key that calls it.
+            jsonc(outer, ["space", ""], &format!(r#"{twelve},
+"magic": {{"keys": "@$", "wildcards": "*", "rules": [
+  {{"inputs": "*@", "output": "**"}}, {{"inputs": "i@", "output": "i'"}},
+  {{"inputs": "q@", "output": "qu"}}, {{"inputs": "qu@", "output": "que"}},
+  {{"inputs": "*_$", "output": "*_*"}}, {{"inputs": "q_$", "output": "q_a"}},
+  {{"inputs": "@_$", "call": "@"}}]}}"#)),
+            // A magic key that repeats the last action where no rule matches.
+            jsonc(outer, ["space", ""], &format!(r#"{twelve},
+"magic": {{"key": "@", "fallback": "repeat-action", "rules": [{{"inputs": "i@", "output": "i'"}}, {{"inputs": "q@", "output": "qu"}}]}},
+"skip": {{"key": "$", "rules": [{{"inputs": "q_$", "output": "q_a"}}]}}"#)),
+            compact(),
+            jsonc(diamond, ["space", ""], &format!("{LEFT_OUTER_FINGERS},\n{}", magic(&[("h◇", "hr"), ("u◇", "u'")]))),
+            qwerty(&magic(&[("an", "ay"), ("hn", "hr"), ("the", "thq"), ("thq", "the")])),
+            jsonc(
+                ["q w e r t y u i o p", "a s d f g h j k l ;", "z x c v b n m , . /"],
+                ["space", ""],
+                &format!(r#""board": {{"isRowStaggered": true, "rowOrColumnStagger": [-0.25, 0, 0.5]}},
+{}"#, magic(&swaps)),
+            ),
+            jsonc(diamond, ["space", ""], &format!("{LEFT_OUTER_FINGERS},\n{}", magic(&[[("h◇", "hr"), ("u◇", "u'")].as_slice(), &swaps].concat()))),
+        ]
     }
     #[test]
     fn previous_output_fallback_and_following_magic_use_fast_memory() {
-        let source = format!(
-            "{}outer-left: ~ @m ~\nouter-right: ~ @sk ~\naction sk = skip-magic\nfallback sk = repeat-previous-output\naction m = magic\n",
-            fixtures()[0]
+        // A repeat key and a key repeating the output two presses back.
+        let source = crate::action_keys::test_layouts::jsonc(
+            ["skip q w e r t y u i o p skip", "@ a s d f g h j k l ; $", "skip z x c v b n m , . / skip"],
+            ["space", ""],
+            r#""fingermap": ["0 0 1 2 3 3 6 6 7 8 9 9", "0 0 1 2 3 3 6 6 7 8 9 9", "0 0 1 2 3 3 6 6 7 8 9 9"],
+"magic": {"keys": "@$", "wildcards": "*", "rules": [{"inputs": "*@", "output": "**"}, {"inputs": "*_$", "output": "*_*"}]}"#,
         );
-        let layout = Layout::parse(&source, Path::new("previous-output.dat")).unwrap();
+        let layout = Layout::parse(&source, Path::new("previous-output.jsonc")).unwrap();
         let program = Program::new(&layout, 5).unwrap();
         let state = KeyState::new(&program);
         let named = |name: &str| {
@@ -1932,8 +1950,8 @@ pub(crate) mod tests {
                 .position(|slot| matches!(&slot.binding, Binding::Named(value) if value == name))
                 .unwrap()
         };
-        let sk = named("sk");
-        let magic = named("m");
+        let sk = named("skip");
+        let magic = named("magic");
         let keys = Mapper::new(&program, &state)
             .map(b"qxqq", &|_, _, next| {
                 if next == sk || next == magic {
@@ -1974,7 +1992,7 @@ pub(crate) mod tests {
         // Deliberately not sorted: prefix reuse must work in either traversal order.
         for source in fixtures() {
             for order in 3..=5 {
-                let mut layout = Layout::parse(&source, Path::new("numeric.dat")).unwrap();
+                let mut layout = Layout::parse(&source, Path::new("numeric.jsonc")).unwrap();
                 let program = Program::new(&layout, order).unwrap();
                 let mut state = KeyState::new(&program);
                 for trial in 0..90 {
@@ -2019,10 +2037,14 @@ pub(crate) mod tests {
     fn adaptive_keys_read_the_key_pressed_before() {
         // After s the r key types c; after the r key, h is on l's key, even
         // where that r key typed c (as on keyboards and akl.gg).
-        let base = &fixtures()[0];
         let layout = Layout::parse(
-            &format!("{base}swap s cr\nswap r hl\n"),
-            Path::new("key.dat"),
+            &crate::action_keys::test_layouts::qwerty(&crate::action_keys::test_layouts::magic(&[
+                ("sc", "sr"),
+                ("sr", "sc"),
+                ("rh", "rl"),
+                ("rl", "rh"),
+            ])),
+            Path::new("key.jsonc"),
         )
         .unwrap();
         let slot = |label: &str| layout.slots.iter().position(|s| s.label == label).unwrap();
@@ -2071,13 +2093,10 @@ pub(crate) mod tests {
         let (mut eligible, mut checked, mut repeats, mut mixed) = (0, 0, 0, 0);
         // A repeating magic key with adaptive keys reads both the previous
         // character and the previous key.
-        let both = format!(
-            "{}outer-left: ~ ◇ ~\n◇ hr u'\nfallback ◇ = repeat-output\nswap h nr y ,u\n",
-            fixtures()[0]
-        );
-        for source in fixtures().into_iter().chain([both.clone()]) {
-            let repeating = source.contains("fallback ◇ = repeat-output");
-            let mut layout = Layout::parse(&source, Path::new("static.dat")).unwrap();
+        let both = fixtures().last().unwrap().clone();
+        for source in fixtures() {
+            let repeating = source.contains('◇');
+            let mut layout = Layout::parse(&source, Path::new("static.jsonc")).unwrap();
             let program = Program::new(&layout, 5).unwrap();
             let Some(statics) = StaticBindings::new(&program) else {
                 continue;
@@ -2120,10 +2139,10 @@ pub(crate) mod tests {
                 }
             }
         }
-        // The plain base, the four swap fixtures, the magic key repeating the
+        // The plain base, the swap fixtures, the magic key repeating the
         // previous character and that key with adaptive keys qualify.
         assert!(
-            eligible >= 7 && checked > 10_000 && repeats > 2_000 && mixed > 1_000,
+            eligible >= 5 && checked > 5_000 && repeats > 2_000 && mixed > 1_000,
             "{eligible} {checked} {repeats} {mixed}"
         );
     }
@@ -2250,7 +2269,7 @@ pub(crate) mod tests {
         let mut rng = 71u64;
         for source in fixtures() {
             for order in 3..=5 {
-                let layout = Layout::parse(&source, Path::new("root-repeat.dat")).unwrap();
+                let layout = Layout::parse(&source, Path::new("root-repeat.jsonc")).unwrap();
                 let program = Program::new(&layout, order).unwrap();
                 let mut state = KeyState::new(&program);
                 for _ in 0..24 {
