@@ -18,10 +18,16 @@ const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
 const N_METRICS: usize = 44;
 
-const N_WEIGHTS: usize = N_METRICS + 9;
+const N_WEIGHTS: usize = N_METRICS + 13;
 
 const USAGE_WEIGHT: usize = N_METRICS + 4;
 const CORNER_WEIGHT: usize = USAGE_WEIGHT + 4;
+// Like akl.gg's finger-usage schedules: a penalty per percentage point of
+// presses above the cap, for each pinky and each ring finger.
+const PINKY_OVER_WEIGHT: usize = CORNER_WEIGHT + 1;
+const PINKY_CAP: usize = CORNER_WEIGHT + 2;
+const RING_OVER_WEIGHT: usize = CORNER_WEIGHT + 3;
+const RING_CAP: usize = CORNER_WEIGHT + 4;
 
 const SFB: usize = 0;
 
@@ -191,6 +197,10 @@ const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "usage_middle",
     "usage_index",
     "corner",
+    "pinky_over",
+    "pinky_cap",
+    "ring_over",
+    "ring_cap",
 ];
 
 fn weight_display_name(i: usize) -> &'static str {
@@ -2065,6 +2075,19 @@ impl Weights {
         mana2_metrics::score_slopes(stats, &self.2).map(|slope| -slope)
     }
 
+    /// The pinky and ring penalties: percentage points above each cap, summed
+    /// over the pair, times the pair's weight. `usage` is a finger's share of
+    /// presses, by `FINGER_NAMES` index.
+    fn usage_over(&self, usage: impl Fn(usize) -> f64) -> [f64; 2] {
+        let over = |a: usize, b: usize, cap: usize| {
+            (usage(a) - self.0[cap]).max(0.0) + (usage(b) - self.0[cap]).max(0.0)
+        };
+        [
+            over(0, 7, PINKY_CAP) * self.0[PINKY_OVER_WEIGHT],
+            over(1, 6, RING_CAP) * self.0[RING_OVER_WEIGHT],
+        ]
+    }
+
     fn with_rolls(mut self, rolls: RollSettings) -> Self {
         self.1 = rolls;
         self
@@ -2077,7 +2100,7 @@ impl Default for Weights {
             12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25, 0.75, 2.5, 1.25, 0.0,
             0.0, 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15, 0.02, 0.0, 0.0, 0.10, 0.0, 0.0, 0.0, 0.0,
             0.25, 0.25, 0.25, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2, 0.60, 0.20, 0.05, 0.0,
-            0.06, 0.02, 0.005, 0.0, 0.0,
+            0.06, 0.02, 0.005, 0.0, 0.0, 0.0, 2.5, 0.0, 4.5,
         ])
     }
 }
@@ -2101,6 +2124,14 @@ impl Default for Breakdown {
     }
 }
 
+// Kept out of line: inlined, it slows the plain search's scoring by a sixth.
+#[inline(never)]
+fn usage_over_contributions(b: &mut Breakdown, m: &Metrics, w: &Weights) {
+    let [pinky, ring] = w.usage_over(|finger| m.usage[finger]);
+    b.contributions[PINKY_OVER_WEIGHT] = pinky;
+    b.contributions[RING_OVER_WEIGHT] = ring;
+}
+
 fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
     let mut b = Breakdown::default();
     for i in 0..N_METRICS {
@@ -2115,6 +2146,9 @@ fn breakdown(m: &Metrics, w: &Weights) -> Breakdown {
         b.contributions[USAGE_WEIGHT + i] = (m.usage[i] + m.usage[7 - i]) * w.0[USAGE_WEIGHT + i];
     }
     b.contributions[CORNER_WEIGHT] = m.corner * w.0[CORNER_WEIGHT];
+    if w.0[PINKY_OVER_WEIGHT] != 0.0 || w.0[RING_OVER_WEIGHT] != 0.0 {
+        usage_over_contributions(&mut b, m, w);
+    }
     for &v in &b.contributions {
         if v >= 0.0 {
             b.penalty += v;

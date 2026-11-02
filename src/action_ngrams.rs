@@ -4668,11 +4668,14 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
             bonus -= contribution;
         }
     }
-    let contribution = pct(raw.0[CORNER_RAW].max(0.0), totals[0]) * w.0[CORNER_WEIGHT];
-    if contribution >= 0.0 {
-        penalty += contribution;
-    } else {
-        bonus -= contribution;
+    let corner = pct(raw.0[CORNER_RAW].max(0.0), totals[0]) * w.0[CORNER_WEIGHT];
+    let over = w.usage_over(|finger| pct(raw.0[USAGE + finger].max(0.0), totals[0]));
+    for contribution in std::iter::once(corner).chain(over) {
+        if contribution >= 0.0 {
+            penalty += contribution;
+        } else {
+            bonus -= contribution;
+        }
     }
     CandidateScore {
         #[cfg(test)]
@@ -4693,6 +4696,11 @@ const PROJECTED: usize = SCORE_GROUPS + 3 + 4 + 4;
 
 /// The capped metrics, in `Proposal::screened`'s order.
 const PROJECTED_CAPS: [usize; 4] = [SFB, SFS, TRAVEL, SFTRAVEL];
+
+/// The fingers `Weights::usage_over` reads: LP, LR, RR, RP. Dense rows carry
+/// their usage counters only while a cap is on: always carried, they slowed
+/// every search by a sixth.
+const PROJECTED_USAGE: [usize; 4] = [0, 1, 6, 7];
 
 // Reused across candidates. Only these numeric totals and tail patches are
 // needed to accept a swap. No report, histogram or textual representation.
@@ -4746,15 +4754,18 @@ pub(crate) struct Proposal {
     /// The same for `chord_free` contexts no rule reads, whose relabelled
     /// grams take their moved keys' own fingers (`ChordGrams::moved_default`).
     chord_free_relabels: Vec<u32>,
-    /// Projected tails (`TailProjection`) by tail key, for the geometry they
-    /// were computed with.
-    projections: HashMap<u64, TailProjection, FastHash>,
+    /// Projected tails (`TailProjection`) and their `PROJECTED_USAGE`
+    /// counters by tail key, for the geometry they were computed with.
+    projections: HashMap<u64, (TailProjection, [f64; 4]), FastHash>,
     projection_geometry: Arc<Geometry>,
     /// Projections of tails on their keys' own fingers, by tail index
-    /// (`Incremental::project`): 1 + their index in `dense_projections`, or
+    /// (`Incremental::project`): 1 + their row in `dense_projections`, or
     /// 0 before first use.
     dense_index: Vec<u32>,
-    dense_projections: Vec<TailProjection>,
+    /// Rows of `dense_stride` numbers: a `TailProjection`, then the
+    /// `PROJECTED_USAGE` counters while a pinky or ring cap is on.
+    dense_projections: Vec<f64>,
+    dense_stride: usize,
     /// The net tails a screened trial drained, before projecting them.
     drained: Vec<(u64, f64)>,
     /// A projected trial's screened score and capped metrics (SFB, SFS,
@@ -4792,6 +4803,7 @@ impl Proposal {
             projection_geometry: Arc::new(Geometry::new(Vec::new())),
             dense_index: Vec::new(),
             dense_projections: Vec::new(),
+            dense_stride: PROJECTED,
             drained: Vec::new(),
             screened: None,
             group_changes: Vec::new(),
@@ -5010,6 +5022,8 @@ pub(crate) struct Incremental {
     /// sum each net tail's projection (`TailProjection`) instead of its raw
     /// counters.
     score_terms: Option<Arc<[(usize, usize, f64)]>>,
+    /// The weights of the pinky and ring caps, when either is on.
+    usage_weights: Option<Weights>,
     active_mana2: Option<mana2_metrics::ActiveStats>,
     projection_mass: f64,
     projection_min_frequency: f64,
@@ -5440,6 +5454,7 @@ impl Incremental {
             finite_effort: false,
             aggregate: false,
             score_terms: None,
+            usage_weights: None,
             active_mana2: None,
             projection_mass: 0.0,
             projection_min_frequency: 0.0,
@@ -7214,9 +7229,17 @@ impl Incremental {
     }
 
     /// Score screened trials from `terms` (`score_terms` of the search's
-    /// weights): `Proposal::screened` then holds the score and capped metrics.
-    pub(crate) fn enable_score_projection(&mut self, terms: Vec<(usize, usize, f64)>) {
+    /// weights) and the pinky and ring caps of `weights`: `Proposal::screened`
+    /// then holds the score and capped metrics.
+    pub(crate) fn enable_score_projection(
+        &mut self,
+        terms: Vec<(usize, usize, f64)>,
+        weights: &Weights,
+    ) {
         self.score_terms = Some(terms.into());
+        self.usage_weights = (weights.0[PINKY_OVER_WEIGHT] != 0.0
+            || weights.0[RING_OVER_WEIGHT] != 0.0)
+            .then(|| weights.clone());
     }
 
     /// Screen trials by each distinct tail's net frequency instead of every
@@ -7456,33 +7479,55 @@ impl Incremental {
         let terms = self.score_terms.as_deref().unwrap();
         // A tail's index: GAP after every slot, in base `side`.
         let side = self.positions.len() + 1;
-        if !Arc::ptr_eq(&proposal.projection_geometry, &self.geometry) {
+        let usage = self.usage_weights.is_some();
+        let stride = PROJECTED + if usage { PROJECTED_USAGE.len() } else { 0 };
+        if !Arc::ptr_eq(&proposal.projection_geometry, &self.geometry)
+            || proposal.dense_stride != stride
+        {
             proposal.projections.clear();
             proposal.dense_index.clear();
             proposal.dense_index.resize(side * side * side, 0);
             proposal.dense_projections.clear();
+            proposal.dense_stride = stride;
             proposal.projection_geometry = Arc::clone(&self.geometry);
         }
         let mut sum = [0.0; PROJECTED];
+        let mut usage_added = [0.0; 4];
         for &(key, weight) in drained {
             let (tail, fingers, _) = unpack_key(key);
-            let projection = if fingers.is_none() && side <= 256 {
+            let row: &[f64] = if fingers.is_none() && side <= 256 {
                 let index = tail
                     .iter()
                     .fold(0, |index, &slot| index * side + usize::from(slot).min(side - 1));
                 if proposal.dense_index[index] == 0 {
-                    proposal.dense_projections.push(self.tail_projection(tail, None, terms));
-                    proposal.dense_index[index] = proposal.dense_projections.len() as u32;
+                    let (projection, counters) = self.tail_projection(tail, None, terms);
+                    proposal.dense_projections.extend_from_slice(&projection.0);
+                    if usage {
+                        proposal.dense_projections.extend_from_slice(&counters);
+                    }
+                    proposal.dense_index[index] = (proposal.dense_projections.len() / stride) as u32;
                 }
-                &proposal.dense_projections[proposal.dense_index[index] as usize - 1]
+                let start = (proposal.dense_index[index] as usize - 1) * stride;
+                &proposal.dense_projections[start..start + stride]
             } else {
-                proposal
+                let (projection, counters) = proposal
                     .projections
                     .entry(key)
-                    .or_insert_with(|| self.tail_projection(tail, fingers, terms))
+                    .or_insert_with(|| self.tail_projection(tail, fingers, terms));
+                if usage {
+                    for (total, value) in usage_added.iter_mut().zip(*counters) {
+                        *total += weight * value;
+                    }
+                }
+                &projection.0
             };
-            for (total, value) in sum.iter_mut().zip(projection.0) {
+            for (total, value) in sum.iter_mut().zip(&row[..PROJECTED]) {
                 *total += weight * value;
+            }
+            if usage && row.len() > PROJECTED {
+                for (total, value) in usage_added.iter_mut().zip(&row[PROJECTED..]) {
+                    *total += weight * value;
+                }
             }
         }
         let raw = &proposal.raw;
@@ -7505,11 +7550,19 @@ impl Incremental {
             (raw.0[ROLL_DEN] + sum[7]).max(0.0),
             (raw.0[RHYTHM_DEN] + sum[8]).max(0.0),
         ];
-        let score = numerators
+        let mut score: f64 = numerators
             .iter()
             .zip(&denominators)
             .map(|(&numerator, &denominator)| pct(numerator, denominator))
             .sum();
+        if let Some(weights) = &self.usage_weights {
+            let usage = |finger: usize| {
+                let k = PROJECTED_USAGE.iter().position(|&f| f == finger);
+                let added = k.map_or(0.0, |k| usage_added[k]);
+                pct((raw.0[USAGE + finger] + added).max(0.0), totals[0])
+            };
+            score += weights.usage_over(usage).iter().sum::<f64>();
+        }
         let capped = std::array::from_fn(|k| {
             let metric = PROJECTED_CAPS[k];
             pct(
@@ -7522,13 +7575,13 @@ impl Incremental {
 
     /// One unit of `tail`'s contribution, as `TailContributions::apply` adds
     /// it (`apply_contextual` with contextual `fingers`), reduced to what the
-    /// score and caps read.
+    /// score and caps read, and its `PROJECTED_USAGE` counters.
     fn tail_projection(
         &self,
         tail: Tail,
         fingers: Option<Tail>,
         terms: &[(usize, usize, f64)],
-    ) -> TailProjection {
+    ) -> (TailProjection, [f64; 4]) {
         let mut raw = Raw::default();
         let mut totals = [0.0; 4];
         if fingers.is_some() {
@@ -7555,7 +7608,8 @@ impl Incremental {
         for (k, &metric) in PROJECTED_CAPS.iter().enumerate() {
             projection[13 + k] = raw.0[metric];
         }
-        TailProjection(projection)
+        let usage = PROJECTED_USAGE.map(|finger| raw.0[USAGE + finger]);
+        (TailProjection(projection), usage)
     }
 
     fn materialize(&self, proposal: &mut Proposal) {

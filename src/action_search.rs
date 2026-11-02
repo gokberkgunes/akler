@@ -1443,7 +1443,7 @@ fn run_profiled_at<const PROFILE: bool, const DETAIL: bool>(
         if settings.uses_mana2_stats() {
             cache.enable_mana2();
         } else if screening {
-            cache.enable_score_projection(score_terms(weights));
+            cache.enable_score_projection(score_terms(weights), weights);
         }
         let needs_full = crate::combos::Program::for_contexts(
             seed,
@@ -2124,6 +2124,78 @@ mod tests {
         }
     }
 
+    #[test]
+    fn screened_pinky_and_ring_caps_match_full_scores() {
+        let seed = ak::Layout::parse(
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            Path::new("usage-caps.jsonc"),
+        )
+        .unwrap();
+        let corpus = corpus("usage-caps.json", b"aaa sass plop lol pal ask lap all quip zap");
+        let mut weights = Weights::new([0.0; N_WEIGHTS]);
+        weights.0[SFB] = 1.0;
+        weights.0[PINKY_OVER_WEIGHT] = 3.0;
+        weights.0[PINKY_CAP] = 2.5;
+        weights.0[RING_OVER_WEIGHT] = 1.5;
+        weights.0[RING_CAP] = 4.5;
+        let score = |layout: &ak::Layout| {
+            crate::action_summary::evaluate_with_mode(
+                layout,
+                &corpus,
+                &weights,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                "normal",
+            )
+            .unwrap()
+            .score
+        };
+        let key = |label: &str| seed.slots.iter().position(|slot| slot.label == label).unwrap();
+        let control = Control::new();
+        let effort = LocalEffort::new(&seed, &weights);
+        let geometry =
+            std::sync::Arc::new(Geometry::with_rolls(physical_keys(&seed), weights.rolls()));
+        let mut cache = ng::Incremental::new_with_shared_geometry(
+            &corpus,
+            &seed,
+            geometry,
+            &control.cancel,
+            weights.alts(),
+            weights.combo_policy(),
+            |a, b, key| effort.get(a, b, key),
+        )
+        .unwrap();
+        cache.enable_finite_effort();
+        cache.enable_aggregation();
+        cache.enable_score_projection(score_terms(&weights), &weights);
+        let settings = settings();
+        let mut problem = Problem {
+            seed: &seed,
+            weights: &weights,
+            settings: &settings,
+            shares: vec![1.0],
+            baseline: vec![full_metrics(&seed, &corpus, &weights)],
+            effort,
+            caches: vec![cache],
+            proposals: vec![ng::Proposal::new()],
+            full: vec![None],
+            full_pending: None,
+            settled: None,
+            screening: true,
+            soft_caps: false,
+        };
+        assert!(score(&seed) > 0.0, "the corpus must exceed the caps");
+        for (a, b) in [("a", "f"), ("p", "u"), ("l", "j"), ("s", "d"), ("q", "w")] {
+            let movement = Move::pair(key(a), key(b));
+            let (screened, _) = problem
+                .trial::<false, false>(movement, &control, &mut Profile::default())
+                .unwrap();
+            let mut changed = seed.clone();
+            changed.swap(key(a), key(b));
+            assert!((screened - score(&changed)).abs() < 1e-8, "{a}{b}: {screened} vs {}", score(&changed));
+        }
+    }
+
     fn alternate_fixture(rule: &str, text: &[u8]) -> (ak::Layout, ng::NgramCorpus, Weights) {
         let seed = ak::Layout::parse(
             crate::action_keys::test_layouts::QWERTY_JSONC,
@@ -2204,7 +2276,7 @@ mod tests {
             let mut full = make_cache(true);
             cache.enable_finite_effort();
             cache.enable_aggregation();
-            cache.enable_score_projection(score_terms(&weights));
+            cache.enable_score_projection(score_terms(&weights), &weights);
             full.enable_finite_effort();
             full.enable_aggregation();
             let mut problem = Problem {

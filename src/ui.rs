@@ -1770,6 +1770,14 @@ fn optimizer_metric_weight(m: usize) -> Option<usize> {
 fn weight_label(i: usize) -> &'static str {
     if i == CORNER_WEIGHT {
         "CORNER"
+    } else if i == PINKY_OVER_WEIGHT {
+        "PINKY OVER"
+    } else if i == PINKY_CAP {
+        "PINKY CAP %"
+    } else if i == RING_OVER_WEIGHT {
+        "RING OVER"
+    } else if i == RING_CAP {
+        "RING CAP %"
     } else if i < N_METRICS {
         METRIC_NAMES[i]
     } else {
@@ -2279,6 +2287,10 @@ pub(crate) fn metric_score_rows(before: &Metrics, after: &Metrics, w: &Weights) 
             m.v[i]
         } else if i == CORNER_WEIGHT {
             m.corner
+        } else if i > CORNER_WEIGHT {
+            // Points above the cap, both fingers of the pair together.
+            let (pair, cap) = if i < RING_OVER_WEIGHT { ([0, 7], PINKY_CAP) } else { ([1, 6], RING_CAP) };
+            pair.iter().map(|&f| (m.usage[f] - w.0[cap]).max(0.0)).sum()
         } else if i < USAGE_WEIGHT {
             m.off[i - N_METRICS] + m.off[7 - (i - N_METRICS)]
         } else {
@@ -3709,6 +3721,10 @@ fn edit_single_weight(term: &mut Terminal, w: &mut Weights, i: usize) -> AppResu
     }
     let hint = if i == CORNER_WEIGHT {
         "Penalty per percentage point of presses on inner top/bottom corners (QWERTY T, Y, B, N). 0 disables it."
+    } else if i == PINKY_OVER_WEIGHT || i == RING_OVER_WEIGHT {
+        "Penalty per percentage point of presses above the cap, for each finger of the pair. 0 disables it."
+    } else if i == PINKY_CAP || i == RING_CAP {
+        "Share of all presses, in percent, each finger of the pair may take before its over-cap penalty starts."
     } else if i < N_METRICS {
         METRIC_HELP[i]
     } else if i < N_METRICS + 4 {
