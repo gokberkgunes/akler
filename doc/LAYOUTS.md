@@ -46,7 +46,8 @@ Unsupported features (layers, tap-hold, split angle) are errors.
 - In `magic`, `*` is the wildcard: `*@ → **` makes `@` repeat the previous
   output, and later rules like `h@ → hr` override it. `_` is one press in
   between, so `*_$ → *_*` repeats the output from two presses back. `call`
-  runs another magic key. `char:@` is a literal reserved symbol.
+  runs another magic key, which cannot itself call one. `char:@` is a
+  literal reserved symbol.
 - Top-level `alts` and `combos` arrays: see [ALTFINGERS.md](ALTFINGERS.md)
   and [COMBOS.md](COMBOS.md).
 

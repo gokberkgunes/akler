@@ -52,7 +52,7 @@ enum Emit {
     None,
     Byte(u8),
     Call(usize),
-    Terminal { hops: u8, op: Terminal },
+    Terminal(Terminal),
 }
 
 #[derive(Clone, Copy)]
@@ -135,27 +135,18 @@ pub(crate) struct Program {
     fingers: Vec<usize>,
 }
 
-// Prove an unconditional chain reaches a non-recursive terminal. Branching
-// rules and RepeatAction remain dynamic. Cycles/long chains retain Call.
-fn terminal_call<'a>(
-    mut name: &'a str,
-    defs: &'a BTreeMap<String, Action>,
-) -> Option<(u8, Terminal)> {
-    let mut seen = Vec::new();
+// Resolve an unconditional chain to its terminal. Layouts reject call cycles,
+// so the chain ends. Branching rules and RepeatAction remain dynamic calls.
+fn terminal_call<'a>(mut name: &'a str, defs: &'a BTreeMap<String, Action>) -> Option<Terminal> {
     loop {
-        if seen.len() >= 32 || seen.contains(&name) {
-            return None;
-        }
-        seen.push(name);
-        let hops = seen.len() as u8;
         match &defs[name] {
-            Action::RepeatOutput => return Some((hops, Terminal::RepeatOutput)),
-            Action::RepeatPreviousOutput => return Some((hops, Terminal::RepeatPreviousOutput)),
+            Action::RepeatOutput => return Some(Terminal::RepeatOutput),
+            Action::RepeatPreviousOutput => return Some(Terminal::RepeatPreviousOutput),
             Action::Rules {
                 rules, fallback, ..
             } if rules.is_empty() => match fallback {
-                Emission::None => return Some((hops, Terminal::None)),
-                Emission::Text(v) => return Some((hops, Terminal::Byte(v[0]))),
+                Emission::None => return Some(Terminal::None),
+                Emission::Text(v) => return Some(Terminal::Byte(v[0])),
                 Emission::Call(next) => name = next,
             },
             _ => return None,
@@ -167,10 +158,7 @@ fn emission(e: &Emission, ids: &BTreeMap<String, usize>, defs: &BTreeMap<String,
     match e {
         Emission::None => Emit::None,
         Emission::Text(v) => Emit::Byte(v[0]),
-        Emission::Call(n) => match terminal_call(n, defs) {
-            Some((hops, op)) => Emit::Terminal { hops, op },
-            None => Emit::Call(ids[n]),
-        },
+        Emission::Call(n) => terminal_call(n, defs).map_or(Emit::Call(ids[n]), Emit::Terminal),
     }
 }
 
@@ -330,7 +318,7 @@ impl Program {
         let mut outputs = vec![None; program.actions.len()];
         for id in 0..program.actions.len() {
             let mut bytes = [0; 4];
-            program.collect_action_bytes(id, &mut [0; 32], 0, &mut outputs, &mut bytes);
+            program.collect_action_bytes(id, &mut outputs, &mut bytes);
         }
         program.action_outputs = outputs
             .into_iter()
@@ -342,83 +330,49 @@ impl Program {
     fn collect_emit_bytes(
         &self,
         emit: Emit,
-        stack: &mut [usize; 32],
-        depth: usize,
         outputs: &mut [Option<Option<[u64; 4]>>],
         bytes: &mut [u64; 4],
     ) -> bool {
         match emit {
-            Emit::None
-            | Emit::Terminal {
-                op: Terminal::None, ..
-            } => true,
-            Emit::Byte(byte)
-            | Emit::Terminal {
-                op: Terminal::Byte(byte),
-                ..
-            } => {
+            Emit::None | Emit::Terminal(Terminal::None) => true,
+            Emit::Byte(byte) | Emit::Terminal(Terminal::Byte(byte)) => {
                 bytes[usize::from(byte) / 64] |= 1 << (usize::from(byte) % 64);
                 true
             }
-            Emit::Call(id) => self.collect_action_bytes(id, stack, depth, outputs, bytes),
-            Emit::Terminal {
-                op: Terminal::RepeatOutput | Terminal::RepeatPreviousOutput,
-                ..
-            } => false,
+            Emit::Call(id) => self.collect_action_bytes(id, outputs, bytes),
+            Emit::Terminal(Terminal::RepeatOutput | Terminal::RepeatPreviousOutput) => false,
         }
     }
 
     /// Collect every byte a named action can emit without depending on typing
-    /// history. Returning false means the action can repeat a previous output,
-    /// repeat a physical binding, recurse, or otherwise cannot be bounded
-    /// safely; callers must then examine every cached context.
+    /// history. Returning false means the action can repeat a previous output
+    /// or repeat a physical binding; callers must then examine every cached
+    /// context. Layouts reject call cycles, so the recursion ends.
     fn collect_action_bytes(
         &self,
         id: usize,
-        stack: &mut [usize; 32],
-        depth: usize,
         outputs: &mut [Option<Option<[u64; 4]>>],
         bytes: &mut [u64; 4],
     ) -> bool {
-        if let Some(output) = outputs[id] {
-            if let Some(output) = output {
-                for (target, source) in bytes.iter_mut().zip(output) {
-                    *target |= source;
-                }
-                return true;
+        let output = match outputs[id] {
+            Some(output) => output,
+            None => {
+                let mut local = [0; 4];
+                let mut collect = |emit| self.collect_emit_bytes(emit, outputs, &mut local);
+                let known = match &self.actions[id] {
+                    Code::RepeatOutput | Code::RepeatPreviousOutput | Code::RepeatAction => false,
+                    Code::TextOne { table } => table.iter().copied().all(&mut collect),
+                    Code::TextRules(index) => {
+                        index.short.iter().copied().all(&mut collect)
+                            && index.longer.iter().map(|rule| rule.emit).all(&mut collect)
+                    }
+                    Code::PressRules { table, .. } => table.iter().copied().all(&mut collect),
+                };
+                let output = known.then_some(local);
+                outputs[id] = Some(output);
+                output
             }
-            return false;
-        }
-        if depth >= stack.len() || stack[..depth].contains(&id) {
-            outputs[id] = Some(None);
-            return false;
-        }
-        stack[depth] = id;
-        let next = depth + 1;
-        let mut local = [0; 4];
-        let known = match &self.actions[id] {
-            Code::RepeatOutput | Code::RepeatPreviousOutput | Code::RepeatAction => false,
-            Code::TextOne { table } => table
-                .iter()
-                .copied()
-                .all(|emit| self.collect_emit_bytes(emit, stack, next, outputs, &mut local)),
-            Code::TextRules(index) => {
-                index
-                    .short
-                    .iter()
-                    .copied()
-                    .all(|emit| self.collect_emit_bytes(emit, stack, next, outputs, &mut local))
-                    && index.longer.iter().all(|rule| {
-                        self.collect_emit_bytes(rule.emit, stack, next, outputs, &mut local)
-                    })
-            }
-            Code::PressRules { table, .. } => table
-                .iter()
-                .copied()
-                .all(|emit| self.collect_emit_bytes(emit, stack, next, outputs, &mut local)),
         };
-        let output = known.then_some(local);
-        outputs[id] = Some(output);
         if let Some(output) = output {
             for (target, source) in bytes.iter_mut().zip(output) {
                 *target |= source;
@@ -492,7 +446,7 @@ impl Program {
                 remember: true,
             }),
             Emit::Call(id) => self.resolve::<PROFILE>(id, state, m, prefix, stack, depth, ops),
-            Emit::Terminal { hops, op } => {
+            Emit::Terminal(op) => {
                 if PROFILE {
                     ops.terminal_shortcuts += 1;
                     match op {
@@ -502,15 +456,6 @@ impl Program {
                             ops.terminal_repeat += 1
                         }
                     }
-                }
-                // Each elided named action still consumes its original depth.
-                // An acyclic unconditional terminal chain cannot be an active
-                // ancestor: it never delegates back to a dynamic caller.
-                if depth + usize::from(hops) > 32 {
-                    if PROFILE {
-                        ops.terminal_depth_rejected += 1;
-                    }
-                    return None;
                 }
                 match op {
                     Terminal::None => None,
@@ -547,7 +492,9 @@ impl Program {
                 ops.recursive += 1;
             }
         }
-        if depth >= 32 || stack[..depth].contains(&id) {
+        // Calls are one level deep, so only repeat-action can revisit an
+        // action. The depth test never fails; it spares the bounds checks.
+        if depth >= stack.len() || stack[..depth].contains(&id) {
             return None;
         }
         stack[depth] = id;
@@ -578,10 +525,7 @@ impl Program {
                 if PROFILE && depth == 0 {
                     ops.text_one_selection = if matches!(
                         selected,
-                        Emit::Terminal {
-                            op: Terminal::RepeatOutput,
-                            ..
-                        }
+                        Emit::Terminal(Terminal::RepeatOutput)
                     ) {
                         1
                     } else {
@@ -810,19 +754,13 @@ impl StaticBindings {
                 emit,
                 Emit::None
                     | Emit::Byte(_)
-                    | Emit::Terminal {
-                        op: Terminal::None | Terminal::Byte(_),
-                        ..
-                    }
+                    | Emit::Terminal(Terminal::None | Terminal::Byte(_))
             )
         };
         let repeat = |emit: &Emit| {
             matches!(
                 emit,
-                Emit::Terminal {
-                    op: Terminal::RepeatOutput,
-                    ..
-                }
+                Emit::Terminal(Terminal::RepeatOutput)
             )
         };
         let mut adaptive = vec![false; program.actions.len()];
@@ -1049,14 +987,8 @@ fn bounded_terminal_dependencies(program: &Program, state: &KeyState) -> Option<
                 for emit in table.iter() {
                     match emit {
                         Emit::Call(_) => return None,
-                        Emit::Terminal {
-                            op: Terminal::RepeatOutput,
-                            ..
-                        } => remembered = true,
-                        Emit::Terminal {
-                            op: Terminal::RepeatPreviousOutput,
-                            ..
-                        } => previous = true,
+                        Emit::Terminal(Terminal::RepeatOutput) => remembered = true,
+                        Emit::Terminal(Terminal::RepeatPreviousOutput) => previous = true,
                         _ => {}
                     }
                 }
@@ -1631,10 +1563,7 @@ impl<'a> Mapper<'a> {
                                         ),
                                         _ => None,
                                     };
-                                    if let Some(Emit::Terminal {
-                                        hops,
-                                        op: Terminal::RepeatOutput,
-                                    }) = selected
+                                    if let Some(Emit::Terminal(Terminal::RepeatOutput)) = selected
                                     {
                                         if PROFILE {
                                             // Preserve logical operation counts even
@@ -1644,16 +1573,6 @@ impl<'a> Mapper<'a> {
                                             ops.suffix_index_lookups += 1;
                                             ops.terminal_shortcuts += 1;
                                             ops.terminal_repeat += 1;
-                                        }
-                                        // Root resolve consumes one depth slot. The
-                                        // compiler proved this terminal chain acyclic.
-                                        if 1 + usize::from(hops) > 32 {
-                                            if PROFILE {
-                                                ops.terminal_depth_rejected += 1;
-                                                ops.action_no_output += 1;
-                                                ops.text_one_repeat_outcomes[0] += 1;
-                                            }
-                                            continue;
                                         }
                                         let Some(byte) = m.remembered_output else {
                                             if PROFILE {
@@ -1677,7 +1596,7 @@ impl<'a> Mapper<'a> {
                                             remember: false,
                                         })
                                     } else if let Some(
-                                        emit @ (Emit::None | Emit::Byte(_) | Emit::Terminal { .. }),
+                                        emit @ (Emit::None | Emit::Byte(_) | Emit::Terminal(_)),
                                     ) = selected
                                     {
                                         if PROFILE {

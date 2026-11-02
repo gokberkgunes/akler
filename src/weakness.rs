@@ -24,14 +24,11 @@ fn weakness_choose(term: &mut Terminal, data: &RankingData) -> AppResult<Option<
 fn weakness_bound_action(
     layout: &action_keys::Layout,
     name: &str,
-    visiting: &mut BTreeSet<String>,
     flags: &mut (bool, bool, bool),
 ) -> String {
-    if !visiting.insert(name.to_owned()) {
-        return "cycle".into();
-    }
+    // Layouts reject call cycles, so the recursion ends.
     let mut emission = |value: &action_keys::Emission| match value {
-        action_keys::Emission::Call(child) => weakness_bound_action(layout, child, visiting, flags),
+        action_keys::Emission::Call(child) => weakness_bound_action(layout, child, flags),
         other => format!("{other:?}"),
     };
     let fingerprint = match layout.actions.get(name) {
@@ -60,7 +57,6 @@ fn weakness_bound_action(
         }
         other => format!("{other:?}"),
     };
-    visiting.remove(name);
     fingerprint
 }
 
@@ -220,7 +216,7 @@ fn weakness_identity(row: &RankRow, weights: &Weights) -> (WeaknessCohort, Strin
                     action_keys::Binding::Named(name) => {
                         let mut flags = (false, false, false);
                         let fingerprint =
-                            weakness_bound_action(layout, name, &mut BTreeSet::new(), &mut flags);
+                            weakness_bound_action(layout, name, &mut flags);
                         contextual |= flags.0;
                         adaptive |= flags.1;
                         repeat |= flags.2;

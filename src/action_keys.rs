@@ -525,9 +525,10 @@ impl Layout {
                 }
             }
         }
-        // Explicit static cycles are errors. Dynamic repeat-action cycles are caught during resolution.
+        // One level of calls (a skip key calling a magic key) is all a layout
+        // file can write. Repeat-action cycles are caught during resolution.
         for name in actions.keys() {
-            check_calls(name, &actions, &mut Vec::new())?;
+            check_calls(name, &actions)?;
         }
         action_mode |= slots.iter().any(|s| matches!(s.binding, Binding::Named(_)));
         Ok(Self {
@@ -758,25 +759,34 @@ impl Layout {
     }
 }
 
-fn check_calls(name: &str, defs: &BTreeMap<String, Action>, stack: &mut Vec<String>) -> Result<()> {
-    if stack.iter().any(|n| n == name) {
-        return err(format!(
-            "recursive action calls: {} -> {name}",
-            stack.join(" -> ")
-        ));
-    }
-    stack.push(name.into());
-    if let Some(Action::Rules {
+/// The rule actions `name` calls; calls to the built-in repeats are leaves.
+fn rule_calls<'a>(name: &str, defs: &'a BTreeMap<String, Action>) -> Vec<&'a str> {
+    let Some(Action::Rules {
         rules, fallback, ..
     }) = defs.get(name)
-    {
-        for e in rules.values().chain(std::iter::once(fallback)) {
-            if let Emission::Call(n) = e {
-                check_calls(n, defs, stack)?;
+    else {
+        return Vec::new();
+    };
+    rules
+        .values()
+        .chain(std::iter::once(fallback))
+        .filter_map(|e| match e {
+            Emission::Call(n) if matches!(defs.get(n), Some(Action::Rules { .. })) => {
+                Some(n.as_str())
             }
+            _ => None,
+        })
+        .collect()
+}
+
+fn check_calls(name: &str, defs: &BTreeMap<String, Action>) -> Result<()> {
+    for called in rule_calls(name, defs) {
+        if let Some(nested) = rule_calls(called, defs).first() {
+            return err(format!(
+                "@{name} calls @{called}, which calls @{nested}; a called action cannot call other rules"
+            ));
         }
     }
-    stack.pop();
     Ok(())
 }
 
@@ -885,7 +895,7 @@ fn resolve_named(
     prefix: &[u8],
     stack: &mut Vec<String>,
 ) -> Option<Resolved> {
-    if stack.len() >= 32 || stack.iter().any(|n| n == name) {
+    if stack.iter().any(|n| n == name) {
         return None;
     }
     stack.push(name.into());
@@ -1612,6 +1622,23 @@ mod tests {
             r#""skip": {"key": "$", "rules": [{"inputs": "q_$", "output": "q_u"}, {"inputs": "x_$", "output": "x_a"}]}"#,
         );
         assert_eq!(typed(&l, &["q", "x", "$"]), b"qxu");
+    }
+    #[test]
+    fn called_actions_cannot_call_other_rules() {
+        let source = |call: &str| {
+            let magic = format!(
+                r#""magic": {{"keys": "@$%", "wildcards": "*", "rules": [
+  {{"inputs": "*@", "output": "**"}}, {{"inputs": "*_$", "output": "*_*"}},
+  {{"inputs": "*_%", "output": "*_*"}}, {{"inputs": "@_%", "call": "@"}},
+  {{"inputs": "%_$", "call": "{call}"}}]}}"#
+            );
+            let rows = ["q w e r t y u i o p", "a s d f g h j k l @", "z x c v b n m , $ %"];
+            test_layouts::jsonc(rows, ["space", ""], &magic)
+        };
+        let parse = |call| Layout::parse(&source(call), Path::new("calls.jsonc"));
+        assert!(parse("@").is_ok());
+        let error = parse("%").unwrap_err();
+        assert!(error.contains("cannot call other rules"), "{error}");
     }
     #[test]
     fn decoder_honors_state_limit_and_cancellation() {

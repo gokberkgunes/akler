@@ -37,7 +37,6 @@ pub(crate) struct MappingCounts {
     pub terminal_none: u64,
     pub terminal_byte: u64,
     pub terminal_repeat: u64,
-    pub terminal_depth_rejected: u64,
 }
 
 #[derive(Default)]
@@ -269,7 +268,7 @@ impl Profile {
             )?;
         }
         writeln!(out, "TextOne cross-counts classify root table selections; nested calls do not reclassify an attempt. Matches are counted before effort selection.")?;
-        writeln!(out, "Terminal shortcuts by type: none {}; byte {}; repeat-output {}; depth rejected {} (subset of types)", self.ops.terminal_none, self.ops.terminal_byte, self.ops.terminal_repeat, self.ops.terminal_depth_rejected)?;
+        writeln!(out, "Terminal shortcuts by type: none {}; byte {}; repeat-output {}", self.ops.terminal_none, self.ops.terminal_byte, self.ops.terminal_repeat)?;
         writeln!(out, "Outcome counts cover attempted physical action keys, not recursive calls. On mapping error, the unfinished position may have an unclassified leader.")?;
         if detailed {
             writeln!(out, "Nested context timers (NOT additive to phases): mapping {:.3} s; contribution updates {:.3} s", self.mapping.as_secs_f64(), self.contributions.as_secs_f64())?;
