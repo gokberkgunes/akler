@@ -65,7 +65,7 @@ no travel.
 | VTRAVEL / LTRAVEL | Vertical / horizontal part of TRAVEL. | `vtravel` / `ltravel` | 0 / 0 |
 | SFTRAVEL | Distance between consecutive same-finger presses. | `sftravel` | 0.10 |
 | Usage | Share of presses per finger. | `usage_pinky`, `usage_ring`, `usage_middle`, `usage_index` | 0.06, 0.02, 0.005, 0 |
-| Usage caps | Each pinky's and each ring finger's share of presses above its cap, as in akl.gg's finger-usage schedules. | `pinky_over` above `pinky_cap`, `ring_over` above `ring_cap` | 0 above 2.5, 0 above 4.5 |
+| Off-home caps | Each pinky's and each ring finger's share of off-home presses above its cap, in the manner of akl.gg's finger-usage schedules. | `pinky_over` above `pinky_cap`, `ring_over` above `ring_cap` | 0 above 2.5, 0 above 4.5 |
 | Off-home | Presses off the finger's home key. | `off_pinky`, `off_ring`, `off_middle`, `off_index` | 0.60, 0.20, 0.05, 0 |
 
 Fingers: LP LR LM LI (left pinky to index), RI RM RR RP, LT RT (thumbs).

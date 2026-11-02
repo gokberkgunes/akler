@@ -4669,7 +4669,7 @@ fn candidate_score(raw: &Raw, totals: &[f64; 4], w: &Weights) -> CandidateScore 
         }
     }
     let corner = pct(raw.0[CORNER_RAW].max(0.0), totals[0]) * w.0[CORNER_WEIGHT];
-    let over = w.usage_over(|finger| pct(raw.0[USAGE + finger].max(0.0), totals[0]));
+    let over = w.usage_over(|finger| pct(raw.0[OFF + finger].max(0.0), totals[0]));
     for contribution in std::iter::once(corner).chain(over) {
         if contribution >= 0.0 {
             penalty += contribution;
@@ -4698,7 +4698,7 @@ const PROJECTED: usize = SCORE_GROUPS + 3 + 4 + 4;
 const PROJECTED_CAPS: [usize; 4] = [SFB, SFS, TRAVEL, SFTRAVEL];
 
 /// The fingers `Weights::usage_over` reads: LP, LR, RR, RP. Dense rows carry
-/// their usage counters only while a cap is on: always carried, they slowed
+/// their off-home counters only while a cap is on: always carried, they slowed
 /// every search by a sixth.
 const PROJECTED_USAGE: [usize; 4] = [0, 1, 6, 7];
 
@@ -7559,7 +7559,7 @@ impl Incremental {
             let usage = |finger: usize| {
                 let k = PROJECTED_USAGE.iter().position(|&f| f == finger);
                 let added = k.map_or(0.0, |k| usage_added[k]);
-                pct((raw.0[USAGE + finger] + added).max(0.0), totals[0])
+                pct((raw.0[OFF + finger] + added).max(0.0), totals[0])
             };
             score += weights.usage_over(usage).iter().sum::<f64>();
         }
@@ -7608,7 +7608,7 @@ impl Incremental {
         for (k, &metric) in PROJECTED_CAPS.iter().enumerate() {
             projection[13 + k] = raw.0[metric];
         }
-        let usage = PROJECTED_USAGE.map(|finger| raw.0[USAGE + finger]);
+        let usage = PROJECTED_USAGE.map(|finger| raw.0[OFF + finger]);
         (TailProjection(projection), usage)
     }
 
