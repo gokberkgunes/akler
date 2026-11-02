@@ -3773,6 +3773,9 @@ fn print_evaluation(l: &ak::Layout, corpus: &ng::NgramCorpus) -> AppResult<Evalu
     }
     // Presses off each finger's home key, all fingers together.
     println!("OFFHOME      {:.6}", v.metrics.off.iter().sum::<f64>());
+    for (name, off) in FINGER_NAMES.iter().zip(&v.metrics.off) {
+        println!("OFF-{name:<8} {off:.6}");
+    }
     println!("SCORE        {:.6}", v.score);
     // Mana2 / akl.gg statistics for the same mapping, normalized as the ranker
     // normalizes action layouts.
