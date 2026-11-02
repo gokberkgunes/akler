@@ -1,0 +1,39 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// alt fingers
+//   e␣ e_␣ (LT RT) · ␣e ␣_e (RT LT)
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0.25,
+      0.75
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "b d l p w / ; ' u q",
+      "s t h c y f n a i o",
+      "z k j g v x m . , -"
+    ],
+    "thumbs": [
+      "e space",
+      "r"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": []
+  }
+}

@@ -1,0 +1,91 @@
+{
+    "layout": {
+        "fingers": [
+            "w c m p k j y o u ,",
+            "r s t h f ' n a e i",
+            "q g v d b x l . ; z"
+        ],
+        "thumbs": ["space", ""]
+    },
+    "fingermap": [
+        "0 1 2 3 3 6 6 7 8 9",
+        "0 1 2 3 3 6 6 7 8 9",
+        "0 1 2 3 3 6 6 7 8 9"
+    ],
+    "board": {
+        "isRowStaggered": false,
+        "isColumnStaggered": false,
+        "mirrorLeftRowStagger": false,
+        "splitAngle": 0,
+        "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    },
+    "layers": null,
+    "magic": {
+        "rules": [
+            {
+                "inputs": "ae",
+                "output": "ay"
+            },
+            {
+                "inputs": "ay",
+                "output": "ae"
+            },
+            {
+                "inputs": "gr",
+                "output": "gv"
+            },
+            {
+                "inputs": "gv",
+                "output": "gr"
+            },
+            {
+                "inputs": "lh",
+                "output": "ly"
+            },
+            {
+                "inputs": "ly",
+                "output": "lh"
+            },
+            {
+                "inputs": "mb",
+                "output": "mh"
+            },
+            {
+                "inputs": "mh",
+                "output": "mb"
+            },
+            {
+                "inputs": "n'",
+                "output": "nh"
+            },
+            {
+                "inputs": "nh",
+                "output": "n'"
+            },
+            {
+                "inputs": "nr",
+                "output": "ny"
+            },
+            {
+                "inputs": "ny",
+                "output": "nr"
+            },
+            {
+                "inputs": "wc",
+                "output": "wr"
+            },
+            {
+                "inputs": "wr",
+                "output": "wc"
+            },
+            {
+                "inputs": "y.",
+                "output": "yu"
+            },
+            {
+                "inputs": "yu",
+                "output": "y."
+            }
+        ]
+    }
+}

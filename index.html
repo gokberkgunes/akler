@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- The page has its own dark themes; extensions such as Dark Reader
+         would otherwise recolour the terminal's text. -->
+    <meta name="color-scheme" content="dark" />
+    <meta name="darkreader-lock" />
+    <title>akler</title>
+    <!-- Hosts that cannot send COOP/COEP headers (GitHub Pages) get them from
+         this service worker; it does nothing where the headers already arrive. -->
+    <script src="coi-serviceworker.js"></script>
+    <link rel="stylesheet" href="vendor/xterm/xterm.css" />
+    <link rel="stylesheet" href="style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "@wasmer/sdk": "./vendor/wasmer-sdk/dist/index.js",
+          "@xterm/xterm": "./vendor/xterm/xterm.mjs",
+          "@xterm/addon-fit": "./vendor/xterm/addon-fit.mjs",
+          "@xterm/addon-webgl": "./vendor/xterm/addon-webgl.mjs"
+        }
+      }
+    </script>
+    <script type="module" src="main.js"></script>
+  </head>
+  <body>
+    <header>
+      <span class="name">akler</span>
+      <span id="status">Loading…</span>
+      <span class="actions">
+        <select id="font" title="Terminal font" aria-label="Terminal font"></select>
+        <button id="theme" class="icon" type="button"></button>
+        <button id="upload" type="button" title="Add layout files to layouts/">Upload layouts</button>
+        <button id="files" type="button" title="Download saved files">Files</button>
+        <button id="reset" type="button" title="Forget everything saved in this browser">Reset</button>
+      </span>
+      <input id="upload-input" type="file" multiple hidden />
+    </header>
+    <main id="terminal"></main>
+    <dialog id="files-dialog">
+      <h2>Files</h2>
+      <p>Your layouts, settings and results. Changes save in this browser automatically.</p>
+      <ul id="files-list"></ul>
+      <form method="dialog"><button>Close</button></form>
+    </dialog>
+  </body>
+</html>
