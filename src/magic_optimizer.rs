@@ -1937,6 +1937,7 @@ pub(crate) fn inject_default(
 /// Inject a dedicated magic action without discarding the selected binding.
 /// Lock indices follow the original physical positions after column extension.
 /// A locked selected binding also stays locked at its displacement destination.
+/// Any key can be selected: its binding, adaptive rules included, moves aside.
 pub(crate) fn inject(
     layout: &ak::Layout,
     slot: usize,
@@ -1946,12 +1947,6 @@ pub(crate) fn inject(
         .slots
         .get(slot)
         .ok_or("Select a valid physical magic slot.")?;
-    if matches!(selected.binding, ak::Binding::Named(_))
-        && !(crate::layout_io::dedicated_magic_label(&selected.label)
-            && design::eligible_roots(layout).contains(&slot))
-    {
-        return Err("Select an ordinary text, empty, or supported existing magic key.".into());
-    }
     let (mut injected, seed_root) = design::both_outer_magic_seed(layout)?;
     let shift = i8::from(!layout.left_outer);
     let locate = |old: &ak::Slot| {
@@ -1979,10 +1974,12 @@ pub(crate) fn inject(
         mapped_locks[locate(old)?] = locks.get(index).copied().unwrap_or(false);
     }
     let selected_locked = locks.get(slot).copied().unwrap_or(false);
+    // The seed is the existing magic key, or an empty key that only holds it.
+    let existing = layout
+        .slots
+        .iter()
+        .any(|old| locate(old) == Ok(seed_root) && !matches!(old.binding, ak::Binding::Empty));
     if seed_root != root {
-        if mapped_locks[seed_root] {
-            return Err("The existing magic key is locked at another physical slot.".into());
-        }
         // Find the displacement destination before touching either binding.
         let outer = injected
             .slots
@@ -2004,23 +2001,19 @@ pub(crate) fn inject(
             })
             .min_by_key(|(_, s)| (s.col != outer, s.row != 1, s.row != selected.row, s.row))
             .map(|(i, _)| i);
-        let seed_is_outer = injected.slots[seed_root].main
-            && (injected.slots[seed_root].col == 0 || injected.slots[seed_root].col == outer);
-        if !seed_is_outer
-            && !matches!(injected.slots[root].binding, ak::Binding::Empty)
-            && destination.is_none()
-        {
-            return Err("No unlocked outer empty key can hold the displaced binding.".into());
-        }
         injected.swap(seed_root, root);
         if !matches!(injected.slots[seed_root].binding, ak::Binding::Empty) {
-            let displaced = if let Some(destination) = destination {
-                injected.swap(seed_root, destination);
-                destination
-            } else {
-                seed_root
+            // Moving an existing main-row magic key trades places with the
+            // selection. Otherwise the selection goes to a free outer key if
+            // there is one, and else to the key the magic key started on.
+            let displaced = match destination {
+                Some(destination) if !existing || !injected.slots[seed_root].main => {
+                    injected.swap(seed_root, destination);
+                    destination
+                }
+                _ => seed_root,
             };
-            mapped_locks[displaced] |= selected_locked;
+            mapped_locks[displaced] = selected_locked;
         }
     }
     // Newly available outer keys are opt-in search positions. Keep the
@@ -2137,6 +2130,53 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn inject_moves_any_selected_key_past_default_locks() {
+        let test_layouts = crate::action_keys::test_layouts::jsonc;
+        let parse = |text: String| ak::Layout::parse(&text, Path::new("inject.jsonc")).unwrap();
+        let swaps = crate::action_keys::test_layouts::magic(&[("hn", "hr"), ("hr", "hn")]);
+        let fingers = crate::action_keys::test_layouts::LEFT_OUTER_FINGERS;
+        let outer_rows = [
+            "skip q w e r t y u i o p",
+            "skip a s d f g h j k l ;",
+            "skip z x c v b n m , . /",
+        ];
+        let cases = [
+            // An adaptive key, with the new magic key starting on a locked
+            // empty spare.
+            (parse(test_layouts(outer_rows, ["space", ""], &format!("{fingers},\n{swaps}"))), "n"),
+            // An existing magic key on a locked thumb.
+            (
+                parse(test_layouts(
+                    crate::action_keys::test_layouts::QWERTY,
+                    ["space", "@"],
+                    &crate::action_keys::test_layouts::magic(&[("h@", "hr")]),
+                )),
+                "q",
+            ),
+        ];
+        for (layout, label) in cases {
+            let locks: Vec<_> = layout
+                .slots
+                .iter()
+                .zip(layout.spare_slots())
+                .map(|(slot, spare)| !slot.main || spare)
+                .collect();
+            let slot = layout.slots.iter().position(|s| s.label == label).unwrap();
+            let (injected, root, injected_locks) = inject(&layout, slot, &locks)
+                .unwrap_or_else(|error| panic!("selecting {label}: {error}"));
+            assert!(crate::layout_io::dedicated_magic_label(&injected.slots[root].label));
+            assert!(injected_locks[root]);
+            // The selected binding moved to an unlocked main key.
+            let moved = injected
+                .slots
+                .iter()
+                .position(|s| s.binding == layout.slots[slot].binding)
+                .unwrap();
+            assert!(injected.slots[moved].main && !injected_locks[moved], "{label}");
+        }
+    }
 
     #[test]
     fn joint_search_keeps_rules_geometry_scores_and_cancelled_best_together() {

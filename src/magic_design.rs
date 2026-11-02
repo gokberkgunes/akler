@@ -4073,9 +4073,12 @@ fn dedicated_existing(layout: &ak::Layout, root: usize) -> ak::Result<ak::Layout
         }
         return Ok(layout.clone());
     }
-    if layout.slots.iter().any(|s| s.label == "*") || layout.actions.contains_key("*") {
-        return Err("The '*' label is already used by another key.".into());
-    }
+    let label = ["*", "@", "★"]
+        .into_iter()
+        .find(|label| {
+            !layout.slots.iter().any(|s| s.label == *label) && !layout.actions.contains_key(*label)
+        })
+        .ok_or("The '*', '@' and '★' labels are all used by other keys.")?;
     let (rules, fallback) = original(layout, root).ok_or("Unsupported magic fallback.")?;
     let mut result = layout.clone();
     if let ak::Binding::Named(name) = &layout.slots[root].binding {
@@ -4095,15 +4098,15 @@ fn dedicated_existing(layout: &ak::Layout, root: usize) -> ak::Result<ak::Layout
             .or_insert(ak::Action::RepeatOutput);
     }
     result.actions.insert(
-        "*".into(),
+        label.into(),
         ak::Action::Rules {
             basis: ak::Basis::Text,
             rules,
             fallback,
         },
     );
-    result.slots[root].binding = ak::Binding::Named("*".into());
-    result.slots[root].label = "*".into();
+    result.slots[root].binding = ak::Binding::Named(label.into());
+    result.slots[root].label = label.into();
     result.action_mode = true;
     crate::layout_export::jsonc_text(&result)?;
     Ok(result)

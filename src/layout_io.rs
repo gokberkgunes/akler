@@ -407,7 +407,7 @@ fn import_wildcard_magic(
                 let emitted = output.strip_prefix(&expected).ok_or_else(|| {
                     format!("magic rule {input:?}: output must preserve {expected:?}")
                 })?;
-                if emitted.len() != 1 || !emitted.as_bytes()[0].is_ascii_graphic() {
+                if emitted.len() != 1 || !(32..=126).contains(&emitted.as_bytes()[0]) {
                     return Err(format!(
                         "magic rule {input:?} must append one printable ASCII character"
                     ));
@@ -1717,6 +1717,20 @@ mod tests {
         assert_eq!(typed(&["r", "u", "$", "#"]), b"rull");
         assert_eq!(typed(&["i", "s", "#", "u", "$"]), b"issue");
         assert_eq!(typed(&["c", "u", "$"]), b"cuc");
+    }
+
+    #[test]
+    fn wildcard_magic_can_type_space() {
+        let layout = parse(&ak::test_layouts::jsonc(
+            ak::test_layouts::QWERTY,
+            ["space", "@"],
+            r#""magic": {"keys": "@", "wildcards": "*", "rules": [
+  {"inputs": "*@", "output": "**"}, {"inputs": " @", "output": "  "}]}"#,
+        ));
+        let Action::Rules { rules, .. } = &layout.actions["magic"] else {
+            panic!("magic rules expected");
+        };
+        assert_eq!(rules[b" ".as_slice()], Emission::Text(b" ".to_vec()));
     }
 
     #[test]
