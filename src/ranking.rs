@@ -6,7 +6,12 @@ const RANK_FJB: usize = N_METRICS + 2;
 
 const RANK_FJS: usize = N_METRICS + 3;
 
-const BASE_RANK_COUNT: usize = N_METRICS + 4;
+// Each finger's presses off its home key, in `FINGER_NAMES` order.
+const RANK_OFF_START: usize = N_METRICS + 4;
+
+const RANK_OFF_NAMES: [&str; 8] = ["oLP", "oLR", "oLM", "oLI", "oRI", "oRM", "oRR", "oRP"];
+
+const BASE_RANK_COUNT: usize = RANK_OFF_START + RANK_OFF_NAMES.len();
 
 const RANK_MANA_START: usize = BASE_RANK_COUNT;
 
@@ -155,6 +160,14 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT] = [
     CNHJS,
     VTRAVEL,
     LTRAVEL,
+    RANK_OFF_START,
+    RANK_OFF_START + 1,
+    RANK_OFF_START + 2,
+    RANK_OFF_START + 3,
+    RANK_OFF_START + 4,
+    RANK_OFF_START + 5,
+    RANK_OFF_START + 6,
+    RANK_OFF_START + 7,
     RANK_COVERAGE,
 ];
 
@@ -204,9 +217,24 @@ fn rank_name(m: usize) -> &'static str {
         "FJB"
     } else if m == RANK_FJS {
         "FJS"
+    } else if rank_off(m) {
+        RANK_OFF_NAMES[m - RANK_OFF_START]
     } else {
         METRIC_NAMES[m]
     }
+}
+
+fn rank_off(m: usize) -> bool {
+    (RANK_OFF_START..BASE_RANK_COUNT).contains(&m)
+}
+
+/// Off-home columns are narrow and one decimal, without a percent sign.
+fn rank_cell_width(m: usize, cell: usize) -> usize {
+    if rank_off(m) { 6 } else { cell }
+}
+
+fn rank_decimals(m: usize, decimals: usize) -> usize {
+    if rank_off(m) { 1 } else { decimals }
 }
 
 fn displayed_rank_name(m: usize, mana2: bool) -> &'static str {
@@ -404,6 +432,8 @@ fn rank_figure(
         })
     } else if m == RANK_COVERAGE {
         None
+    } else if rank_off(m) {
+        Some(metrics.off[m - RANK_OFF_START])
     } else if denominator_totals(m, raw, totals) > 0.0 {
         Some(metrics.v[m])
     } else {
@@ -2122,8 +2152,9 @@ fn choose_rank_settings(
 struct RankGrid {
     width: usize,
     name: usize,
-    cell: usize,
     metrics: Vec<usize>,
+    /// Each shown column's x and width.
+    xs: Vec<(usize, usize)>,
     total: usize,
     capacity: usize,
 }
@@ -2131,27 +2162,57 @@ struct RankGrid {
 impl RankGrid {
     fn new(width: usize, name: usize, cell: usize, columns: &mut RankColumns) -> Self {
         let name = name.min(width.saturating_sub(cell + 3));
-        let capacity = (width.saturating_sub(name + 2) / (cell + 1)).max(1);
+        let room = width.saturating_sub(name + 2);
         let visible = columns.visible();
-        columns.first = columns.first.min(visible.len().saturating_sub(capacity));
+        // How many columns fit when the last `n` are shown.
+        let fit = |from: usize| {
+            let mut used = 0;
+            visible[from..]
+                .iter()
+                .take_while(|&&m| {
+                    used += rank_cell_width(m, cell) + 1;
+                    used <= room
+                })
+                .count()
+                .max(1)
+        };
+        let mut last_first = visible.len().saturating_sub(1);
+        while last_first > 0 && fit(last_first - 1) >= visible.len() - (last_first - 1) {
+            last_first -= 1;
+        }
+        columns.first = columns.first.min(last_first);
+        let capacity = if visible.is_empty() { 1 } else { fit(columns.first) };
         let metrics: Vec<_> = visible
             .iter()
             .skip(columns.first)
             .take(capacity)
             .copied()
             .collect();
+        let mut x = 2 + name;
+        let xs = metrics
+            .iter()
+            .map(|&m| {
+                let w = rank_cell_width(m, cell);
+                x += w + 1;
+                (x - w - 1, w)
+            })
+            .collect();
         Self {
-            width: name + 2 + metrics.len() * (cell + 1),
+            width: x,
             name,
-            cell,
             metrics,
+            xs,
             total: visible.len(),
             capacity,
         }
     }
 
     fn content_x(&self, col: usize) -> usize {
-        2 + self.name + col * (self.cell + 1)
+        self.xs[col].0
+    }
+
+    fn cell_width(&self, col: usize) -> usize {
+        self.xs[col].1
     }
 
     fn metric_at(&self, x: usize, y: usize, count: usize) -> Option<usize> {
@@ -2160,7 +2221,7 @@ impl RankGrid {
         }
         self.metrics.iter().enumerate().find_map(|(j, &m)| {
             let xx = self.content_x(j);
-            (x >= xx && x < xx + self.cell).then_some(m)
+            (x >= xx && x < xx + self.cell_width(j)).then_some(m)
         })
     }
 
@@ -2343,7 +2404,7 @@ fn draw_rank_table(
         c.center(
             x,
             RANK_Y + 1,
-            g.cell,
+            g.cell_width(j),
             &format!(
                 "{}{}",
                 displayed_rank_name(m, mana2),
@@ -2355,7 +2416,7 @@ fn draw_rank_table(
             Rect {
                 x,
                 y: RANK_Y + 1,
-                w: g.cell,
+                w: g.cell_width(j),
                 h: 1,
             },
             Action::Metric(m),
@@ -2386,7 +2447,7 @@ fn draw_rank_table(
             let value = rank_value(row, m);
             let text = match value {
                 Some(v) => {
-                    let mut s = number(v, dp);
+                    let mut s = number(v, rank_decimals(m, dp));
                     if rank_percent(m) || m < N_METRICS && !physical_metric(m) {
                         s.push('%');
                     }
@@ -2395,7 +2456,7 @@ fn draw_rank_table(
                 None => "n/a".into(),
             };
             let color = value.map(|v| rank_color_for(m, v, ranges[m], aklgg)).unwrap_or(MUTED);
-            c.right(g.content_x(j) + 1, y, g.cell - 2, &text, color);
+            c.right(g.content_x(j) + 1, y, g.cell_width(j) - 2, &text, color);
         }
         // Keep the four-row stripe pattern stable while scrolling.
         let background = if r == selected {
@@ -2472,7 +2533,7 @@ fn ranking_loaded(term: &mut Terminal, data: &mut RankingData) -> AppResult<()> 
         let mut cw = 10usize;
         for row in rows {
             for m in 0..RANK_COUNT {
-                if let Some(v) = rank_value(row, m) {
+                if let Some(v) = rank_value(row, m).filter(|_| !rank_off(m)) {
                     cw = cw.max(number(v, term.decimals()).chars().count() + 3);
                 }
             }
@@ -3431,7 +3492,7 @@ mod ranker_tests {
         let ca_fjb_column = grid.metrics.iter().position(|&id| id == CAFJB).unwrap();
         for row in 0..rows.len() {
             let start = (RANK_DATA + row) * canvas.w + grid.content_x(ca_fjb_column);
-            let value: String = canvas.cells[start..start + grid.cell]
+            let value: String = canvas.cells[start..start + grid.cell_width(ca_fjb_column)]
                 .iter()
                 .map(|cell| cell.ch)
                 .collect();
