@@ -726,14 +726,14 @@ fn position_magic(
     } else {
         crate::action_ui::action_default_locks(layout)
     };
-    if let Some(target) = target {
-        // Moving magic onto a thumb or an empty key can displace Space or
-        // leave an empty main key behind. Preserve the normal setup locks.
-        if !unlocked {
-            for (slot, spare) in layout.spare_slots().into_iter().enumerate() {
-                locks[slot] |= spare || layout.space(slot);
-            }
+    // As the optimizer screen does: empty spare keys stay empty. Moving magic
+    // onto a thumb or an empty key can also displace Space.
+    if !unlocked {
+        for (slot, spare) in layout.spare_slots().into_iter().enumerate() {
+            locks[slot] |= spare || layout.space(slot);
         }
+    }
+    if let Some(target) = target {
         locks[target] = true;
     }
     Ok((locks, root))
