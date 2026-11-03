@@ -188,6 +188,7 @@ logs, and a sorted `results.csv` under `bench/results/`. `--seconds` and
 | `--set key=value` | Override one `[search]` setting for this run. |
 | `--config FILE` | Read FILE instead of `akler.conf`. `bench/akler.conf` is a frozen baseline. |
 | `--unlocked` | Free every key. |
+| `--lock KEYS` | Keep these keys where they are, e.g. `--lock "'csth"`. |
 | `--magic-at SLOT` | Swap the existing magic key into a 1-based physical slot and lock it. Main rows come first, then thumbs. Caps stay relative to the input layout. |
 | `--full-ngrams` / `--rescore-full` | Search without caps / also print each score on all n-grams. |
 | `--swaps N` | No search: print the best N single and double swaps. |

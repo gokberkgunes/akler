@@ -12,7 +12,7 @@ use super::*;
 use crate::action_keys as ak;
 use crate::action_ngrams as ng;
 
-const USAGE: &str = "bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--magic-at SLOT] [--show] [--swaps N] [--chain K [--move A=B]] [--hand left|right] [--keep-wred] [--fit-combos K] [--combos K] [--fit-swaps K] [--adaptive K] [--config FILE] [--save DIR [--tag NAME]]";
+const USAGE: &str = "bench LAYOUT CORPUS [--seeds N] [--set key=value]... [--full-ngrams] [--rescore-full] [--unlocked] [--lock KEYS] [--magic-at SLOT] [--show] [--swaps N] [--chain K [--move A=B]] [--hand left|right] [--keep-wred] [--fit-combos K] [--combos K] [--fit-swaps K] [--adaptive K] [--config FILE] [--save DIR [--tag NAME]]";
 
 struct Options {
     layout: PathBuf,
@@ -22,6 +22,8 @@ struct Options {
     full_ngrams: bool,
     rescore_full: bool,
     unlocked: bool,
+    /// Labels of keys that stay where they are.
+    lock: String,
     /// Move the existing dedicated magic key to this zero-based physical
     /// slot and lock it; caps remain relative to the unmodified input.
     magic_at: Option<usize>,
@@ -65,6 +67,7 @@ fn parse(args: &[String]) -> AppResult<Options> {
         tag: String::new(),
         show: false,
         unlocked: false,
+        lock: String::new(),
         magic_at: None,
         swaps: None,
         chain: None,
@@ -95,6 +98,7 @@ fn parse(args: &[String]) -> AppResult<Options> {
             "--rescore-full" => options.rescore_full = true,
             "--show" => options.show = true,
             "--unlocked" => options.unlocked = true,
+            "--lock" => options.lock = args.next().ok_or("--lock needs the keys to lock")?.clone(),
             "--magic-at" => {
                 let value = args
                     .next()
@@ -745,7 +749,15 @@ fn action_command(
     // As the optimizer screen does: own alternate fingers stay on their keys.
     crate::alt_fingers::pin(&mut layout);
     let original = layout.clone();
-    let (locks, root) = position_magic(&mut layout, options.magic_at, options.unlocked)?;
+    let (mut locks, root) = position_magic(&mut layout, options.magic_at, options.unlocked)?;
+    for key in options.lock.chars() {
+        let slot = layout
+            .slots
+            .iter()
+            .position(|slot| slot.label == key.to_string())
+            .ok_or_else(|| format!("--lock: no key {key:?} in the layout"))?;
+        locks[slot] = true;
+    }
     let corpus = load_action_corpus(options, limits)?;
     let corpora = vec![(corpus, 1.0)];
     let combos = config.combos.active_max(&config.weights);
@@ -1002,6 +1014,16 @@ pub(crate) fn command(args: &[String]) -> AppResult<()> {
     } else {
         default_locks(&model.board)
     };
+    let mut locked = locked;
+    for key in options.lock.bytes() {
+        let slot = model
+            .board
+            .symbols
+            .iter()
+            .position(|&symbol| symbol == key)
+            .ok_or_else(|| format!("--lock: no key {:?} in the layout", key as char))?;
+        locked[slot] = true;
+    }
     // Optional second problem scoring each result on every retained n-gram.
     let full = if options.rescore_full {
         let source = load_source(&options.corpus, full_limits)?;
