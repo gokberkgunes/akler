@@ -1249,7 +1249,8 @@ static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
 // Display families are independent of the optimizer's weight controls.
-// Keep the adjacent discordant aliases (FSB/FSS and HSB/HSS) in their families.
+// The FSB/FSS and HSB/HSS slots, which repeat the adjacent discordant jumps,
+// show the full and half jump totals instead (`JUMP_TOTALS`).
 static TABLE_FULL_JUMPS: [usize; 10] = [
     DAFJB, DAFJS, CAFJB, CAFJS, DNFJB, DNFJS, CNFJB, CNFJS, FSB, FSS,
 ];
@@ -1284,8 +1285,8 @@ static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-// Display only: the existing adjacent discordant aliases retain their values.
-// Concordant and nonadjacent jumps still contribute to the detailed score.
+// Display only: the FJB/FJS and HJB/HJS totals. The detailed score still
+// weighs each jump category separately.
 static SIMPLE_FULL_JUMPS: [usize; 2] = [FSB, FSS];
 static SIMPLE_HALF_JUMPS: [usize; 2] = [HSB, HSS];
 static SIMPLE_TABLE_GROUPS: [(&str, &[usize]); 6] = [
@@ -1296,6 +1297,23 @@ static SIMPLE_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Hand patterns", &EDITOR_HAND_PATTERNS),
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
+
+/// The stats tables' FSB/FSS/HSB/HSS slots and the jump categories they total.
+const JUMP_TOTALS: [(usize, &str, [usize; 4]); 4] = [
+    (FSB, "FJB", [DAFJB, CAFJB, DNFJB, CNFJB]),
+    (FSS, "FJS", [DAFJS, CAFJS, DNFJS, CNFJS]),
+    (HSB, "HJB", [DAHJB, CAHJB, DNHJB, CNHJB]),
+    (HSS, "HJS", [DAHJS, CAHJS, DNHJS, CNHJS]),
+];
+
+fn jump_total(m: usize) -> Option<&'static (usize, &'static str, [usize; 4])> {
+    JUMP_TOTALS.iter().find(|(slot, _, _)| *slot == m)
+}
+
+/// `m`'s value as the stats tables show it.
+fn shown_metric(metrics: &Metrics, m: usize) -> f64 {
+    jump_total(m).map_or(metrics.v[m], |(_, _, parts)| parts.iter().map(|&p| metrics.v[p]).sum())
+}
 
 struct MetricGrid {
     x: usize,
@@ -1467,7 +1485,7 @@ fn grouped_metric_table(
     let values: Vec<String> = (0..N_METRICS)
         .map(|m| {
             if denominator_totals(m, raw, totals) > 0.0 {
-                metric_value_text(m, after.v[m], decimals)
+                metric_value_text(m, shown_metric(after, m), decimals)
             } else {
                 "n/a".into()
             }
@@ -1476,7 +1494,7 @@ fn grouped_metric_table(
     let deltas: Vec<String> = (0..N_METRICS)
         .map(|m| {
             if denominator_totals(m, raw, totals) > 0.0 {
-                delta_text(before.v[m], after.v[m], decimals)
+                delta_text(shown_metric(before, m), shown_metric(after, m), decimals)
             } else {
                 "—".into()
             }
@@ -1487,12 +1505,12 @@ fn grouped_metric_table(
             if values[m] == "n/a" {
                 MUTED
             } else {
-                change_color(m, before.v[m], after.v[m])
+                change_color(m, shown_metric(before, m), shown_metric(after, m))
             }
         })
         .collect();
     let delta_colors: Vec<_> = (0..N_METRICS)
-        .map(|m| delta_color(m, before.v[m], after.v[m]))
+        .map(|m| delta_color(m, shown_metric(before, m), shown_metric(after, m)))
         .collect();
     grouped_value_table(
         c,
@@ -1601,7 +1619,11 @@ fn grouped_value_table_grid(
                 &deltas[m],
                 delta_colors[m],
             );
-            if clickable && (!weights || optimizer_metric_weight(m).is_some()) {
+            // A jump total has no contributor list or single weight of its own.
+            if clickable
+                && jump_total(m).is_none()
+                && (!weights || optimizer_metric_weight(m).is_some())
+            {
                 c.hit(
                     Rect {
                         x: xx,
@@ -1644,7 +1666,7 @@ fn optimizer_metric_cards(
     let stats: Vec<String> = (0..N_METRICS)
         .map(|m| {
             if denominator_totals(m, raw, &corpus.totals) > 0.0 {
-                metric_value_text(m, after.v[m], decimals)
+                metric_value_text(m, shown_metric(after, m), decimals)
             } else {
                 "n/a".into()
             }
@@ -1653,7 +1675,7 @@ fn optimizer_metric_cards(
     let changes: Vec<String> = (0..N_METRICS)
         .map(|m| {
             if denominator_totals(m, raw, &corpus.totals) > 0.0 {
-                delta_text(before.v[m], after.v[m], decimals)
+                delta_text(shown_metric(before, m), shown_metric(after, m), decimals)
             } else {
                 "—".into()
             }
@@ -1674,12 +1696,12 @@ fn optimizer_metric_cards(
             if stats[m] == "n/a" {
                 MUTED
             } else {
-                change_color(m, before.v[m], after.v[m])
+                change_color(m, shown_metric(before, m), shown_metric(after, m))
             }
         })
         .collect();
     let delta_colors: Vec<_> = (0..N_METRICS)
-        .map(|m| delta_color(m, before.v[m], after.v[m]))
+        .map(|m| delta_color(m, shown_metric(before, m), shown_metric(after, m)))
         .collect();
     if !weights {
         return grouped_value_table_grid(
@@ -1758,11 +1780,7 @@ fn optimizer_metric_cards(
 
 fn optimizer_metric_weight(m: usize) -> Option<usize> {
     match m {
-        FSB => Some(DAFJB),
-        FSS => Some(DAFJS),
-        HSB => Some(DAHJB),
-        HSS => Some(DAHJS),
-        _ if aggregate(m) => None,
+        _ if jump_total(m).is_some() || aggregate(m) => None,
         _ => Some(m),
     }
 }
@@ -3353,7 +3371,7 @@ fn objective_view(
             format!("= Score           {:.4} → {:.4}", b.net, a.net),
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
-            "FSB/FSS duplicate daFJB/daFJS; HSB/HSS duplicate daHJB/daHJS. Adjacent and nonadjacent jump weights score disjoint finger distances. Lateral stretch stays independent.".into(),
+            "FJB/FJS and HJB/HJS show totals; each jump category keeps its own weight. Adjacent and nonadjacent jump weights score disjoint finger distances. Lateral stretch stays independent.".into(),
             "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
     info_page(term, "Score audit — selected corpus", &lines)
@@ -4123,7 +4141,7 @@ fn editor_with_analysis(
                     "hjkl / arrows\tMove between keys.".into(),
                     "Space / Enter\tSelect a key, then swap with the next selected key.".into(),
                     "d\tToggle isolated changes: compare stats with the layout before your latest edit.".into(),
-                    "m\tSwitch Simple / Detailed stats. Simple shows FSB/FSS/HSB/HSS; scoring stays unchanged.".into(),
+                    "m\tSwitch Simple / Detailed stats. Simple shows the FJB/FJS/HJB/HJS totals; scoring stays unchanged.".into(),
                     "u\tUndo the last edit.".into(),
                     "U\tRedo the last undone edit.".into(),
                     "r\tReset to the layout you opened.".into(),
@@ -4184,6 +4202,7 @@ fn metric_short_name(m: usize) -> &'static str {
         LTRAVEL => "LAT",
         SFTRAVEL => "SF",
         _ if m >= N_METRICS => weight_label(m),
+        _ if jump_total(m).is_some() => jump_total(m).unwrap().1,
         _ => METRIC_NAMES[m],
     }
 }

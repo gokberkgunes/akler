@@ -30,8 +30,10 @@ middle). Jumps need different fingers on the same hand and exclude thumbs.
 | LSB / LSS | Lateral stretch: horizontal span ≥ finger separation + 1 key. | `lsb` / `lss` | 3 / 0.75 |
 
 Display-only columns (no weight): FSB/FSS = daFJB/daFJS, HSB/HSS =
-daHJB/daHJS, and FJB/FJS = the sum of the four full-jump kinds. Don't add
-them to the weighted metrics.
+daHJB/daHJS, FJB/FJS = the sum of the four full-jump kinds, and HJB/HJS =
+the sum of the four half-jump kinds. The editor and optimizer show FJB/FJS
+and HJB/HJS in place of FSB/FSS and HSB/HSS; the ranker has all of them.
+Don't add them to the weighted metrics.
 
 ## Trigram metrics
 

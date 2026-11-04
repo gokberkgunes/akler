@@ -1863,3 +1863,26 @@ fn score_tab_rows_sum_to_the_objective_in_both_modes() {
     close(rows.iter().map(|r| r.points.1).sum(), moved.score);
     assert!(rows.iter().any(|r| r.points.0 != r.points.1));
 }
+
+#[test]
+fn simple_stats_show_jump_totals_in_the_alias_slots() {
+    let model = model();
+    let corpus = model.corpus(&small_source()).unwrap();
+    let raw = full_raw(&model.original, &corpus, &model.geometry);
+    let mut shown = metrics(&raw, &corpus);
+    for (k, &m) in [DAFJB, CAFJB, DNFJB, CNFJB].iter().enumerate() {
+        shown.v[m] = 1.0 + k as f64;
+    }
+    for (k, &m) in [DAHJB, CAHJB, DNHJB, CNHJB].iter().enumerate() {
+        shown.v[m] = 0.5 * (1.0 + k as f64);
+    }
+    let mut c = Canvas::new(120, 40);
+    editor_metric_cards(&mut c, 0, &shown, &shown, &raw, &corpus, 2, true);
+    let text: String = c.cells.iter().map(|cell| cell.ch).collect();
+    for label in ["FJB", "FJS", "HJB", "HJS", "10.00", "5.00"] {
+        assert!(text.contains(label), "simple stats are missing {label}");
+    }
+    for label in ["FSB", "FSS", "HSB", "HSS"] {
+        assert!(!text.contains(label), "simple stats still show {label}");
+    }
+}

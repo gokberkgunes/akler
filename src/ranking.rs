@@ -6,8 +6,12 @@ const RANK_FJB: usize = N_METRICS + 2;
 
 const RANK_FJS: usize = N_METRICS + 3;
 
+const RANK_HJB: usize = N_METRICS + 4;
+
+const RANK_HJS: usize = N_METRICS + 5;
+
 // Each finger's presses off its home key, in `FINGER_NAMES` order.
-const RANK_OFF_START: usize = N_METRICS + 4;
+const RANK_OFF_START: usize = N_METRICS + 6;
 
 const RANK_OFF_NAMES: [&str; 8] = ["oLP", "oLR", "oLM", "oLI", "oRI", "oRM", "oRR", "oRP"];
 
@@ -149,8 +153,10 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT] = [
     OUT2,
     IN3,
     OUT3,
+    RANK_HJB,
     DAHJB,
     CAHJB,
+    RANK_HJS,
     DAHJS,
     CAHJS,
     ALT,
@@ -217,10 +223,25 @@ fn rank_name(m: usize) -> &'static str {
         "FJB"
     } else if m == RANK_FJS {
         "FJS"
+    } else if m == RANK_HJB {
+        "HJB"
+    } else if m == RANK_HJS {
+        "HJS"
     } else if rank_off(m) {
         RANK_OFF_NAMES[m - RANK_OFF_START]
     } else {
         METRIC_NAMES[m]
+    }
+}
+
+/// The jump categories a full or half jump total column adds up.
+fn rank_jump_total(m: usize) -> Option<[usize; 4]> {
+    match m {
+        RANK_FJB => Some([DAFJB, CAFJB, DNFJB, CNFJB]),
+        RANK_FJS => Some([DAFJS, CAFJS, DNFJS, CNFJS]),
+        RANK_HJB => Some([DAHJB, CAHJB, DNHJB, CNHJB]),
+        RANK_HJS => Some([DAHJS, CAHJS, DNHJS, CNHJS]),
+        _ => None,
     }
 }
 
@@ -278,7 +299,7 @@ fn mana2_higher_better(id: &str) -> bool {
 }
 
 fn rank_percent(m: usize) -> bool {
-    if m == RANK_COVERAGE || m == RANK_FJB || m == RANK_FJS {
+    if m == RANK_COVERAGE || rank_jump_total(m).is_some() {
         return true;
     }
     if !(RANK_MANA_START..RANK_PRESET_START).contains(&m) {
@@ -417,12 +438,7 @@ fn rank_figure(
         Some(mana(raw.1.as_ref()?).values[m - RANK_MANA_START])
     } else if m == RANK_SCORE {
         Some(score)
-    } else if m == RANK_FJB || m == RANK_FJS {
-        let component = if m == RANK_FJB {
-            [DAFJB, CAFJB, DNFJB, CNFJB]
-        } else {
-            [DAFJS, CAFJS, DNFJS, CNFJS]
-        };
+    } else if let Some(component) = rank_jump_total(m) {
         let denominator = denominator_totals(component[0], raw, totals);
         (denominator > 0.0).then(|| {
             pct(
@@ -3681,6 +3697,8 @@ mod ranker_tests {
             for (column, parts) in [
                 (RANK_FJB, [DAFJB, CAFJB, DNFJB, CNFJB]),
                 (RANK_FJS, [DAFJS, CAFJS, DNFJS, CNFJS]),
+                (RANK_HJB, [DAHJB, CAHJB, DNHJB, CNHJB]),
+                (RANK_HJS, [DAHJS, CAHJS, DNHJS, CNHJS]),
             ] {
                 let expected: f64 = parts.iter().map(|&metric| row.metrics().v[metric]).sum();
                 assert!((rank_value(row, column).unwrap() - expected).abs() < 1e-9);
