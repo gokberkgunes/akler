@@ -166,6 +166,8 @@ enum Action {
     Metric(usize),
     Weight(usize),
     ManaWeight(usize),
+    /// An akl.gg pattern stat, by `mana2_metrics::STAT_IDS` index.
+    ManaStat(usize),
     Setting(usize),
     Item(usize),
     Command(char),
@@ -1871,14 +1873,14 @@ pub(crate) fn physical_weight_rows(
     y
 }
 
-fn aklgg_index(id: &str) -> usize {
+pub(crate) fn aklgg_index(id: &str) -> usize {
     mana2_metrics::STAT_IDS
         .iter()
         .position(|candidate| *candidate == id)
         .expect("AKL.GG table stat must exist")
 }
 
-fn aklgg_change_color(id: &str, before: f64, after: f64) -> u8 {
+pub(crate) fn aklgg_change_color(id: &str, before: f64, after: f64) -> u8 {
     let higher_is_better = matches!(
         id,
         "alt"
@@ -1903,7 +1905,7 @@ fn aklgg_change_color(id: &str, before: f64, after: f64) -> u8 {
     }
 }
 
-fn aklgg_number(stats: &mana2_metrics::Stats, id: &str, decimals: usize) -> String {
+pub(crate) fn aklgg_number(stats: &mana2_metrics::Stats, id: &str, decimals: usize) -> String {
     let index = aklgg_index(id);
     let value = number(stats.values[index], decimals);
     if id.starts_with("finger-usage-")
@@ -1935,6 +1937,46 @@ fn aklgg_stat_cell(
     );
 }
 
+/// The akl.gg table's two-key rows: label, bigram stat, skipgram stat.
+pub(crate) const AKLGG_PAIR_ROWS: [(&str, &str, &str); 4] = [
+    ("Same Finger", "sfb", "sfs"),
+    ("Same Key", "skb", "sks"),
+    ("Stretch", "lsb", "lss"),
+    ("Scissor", "vsb", "vss"),
+];
+
+/// Its three-key rows: label, stat with thumbs, stat without.
+pub(crate) const AKLGG_TRIGRAM_ROWS: [(&str, &str, &str); 11] = [
+    ("Alternation", "alt", "altnothumbs"),
+    ("Alt & SFS", "altsfs", "altsfsnothumbs"),
+    ("Redirect total", "redirect", "redirectnothumbs"),
+    ("Red & SFS", "redirectsfs", "redirectsfsnothumbs"),
+    ("Weak redirect", "redirectweak", "redirectweaknothumbs"),
+    ("Weak & SFS", "redirectsfsweak", "redirectsfsweaknothumbs"),
+    ("Roll total", "roll", "rollnothumbs"),
+    ("Inroll2", "inroll2", "inroll2nothumbs"),
+    ("Outroll2", "outroll2", "outroll2nothumbs"),
+    ("Inroll3", "inroll3", "inroll3nothumbs"),
+    ("Outroll3", "outroll3", "outroll3nothumbs"),
+];
+
+/// A pattern stat's title for its contributor list, such as "Scissor
+/// skipgrams", or None for stats the table does not list per sequence.
+pub(crate) fn aklgg_stat_title(id: &str) -> Option<String> {
+    AKLGG_PAIR_ROWS
+        .iter()
+        .find_map(|&(label, bigram, skipgram)| {
+            (id == bigram).then(|| format!("{label} bigrams"))
+                .or_else(|| (id == skipgram).then(|| format!("{label} skipgrams")))
+        })
+        .or_else(|| {
+            AKLGG_TRIGRAM_ROWS.iter().find_map(|&(label, all, no_thumbs)| {
+                (id == all).then(|| label.to_string())
+                    .or_else(|| (id == no_thumbs).then(|| format!("{label}, no thumbs")))
+            })
+        })
+}
+
 /// Compact comparison of the physical statistics exposed by AKL.GG's Mana2
 /// view. Values are current-layout values; their color compares them with the
 /// supplied baseline. Usage is deliberately neutral because moving load from
@@ -1953,15 +1995,17 @@ pub(crate) fn aklgg_stat_table(
     c.text(bigram_x, y, "BIGRAM", MUTED);
     c.text(skipgram_x, y, "SKIPGRAM", MUTED);
     y += 1;
-    for (label, bigram, skipgram) in [
-        ("Same Finger", "sfb", "sfs"),
-        ("Same Key", "skb", "sks"),
-        ("Stretch", "lsb", "lss"),
-        ("Scissor", "vsb", "vss"),
-    ] {
+    // Pattern cells open their contributors (`Action::ManaStat`).
+    let hit = |c: &mut Canvas, x: usize, y: usize, id: &str| {
+        let rect = Rect { x, y, w: value_w, h: 1 };
+        c.hit(rect, Action::ManaStat(aklgg_index(id)));
+    };
+    for (label, bigram, skipgram) in AKLGG_PAIR_ROWS {
         c.text(0, y, label, FG);
         aklgg_stat_cell(c, bigram_x, y, value_w, bigram, before, after, decimals);
         aklgg_stat_cell(c, skipgram_x, y, value_w, skipgram, before, after, decimals);
+        hit(c, bigram_x, y, bigram);
+        hit(c, skipgram_x, y, skipgram);
         y += 1;
     }
 
@@ -1972,26 +2016,12 @@ pub(crate) fn aklgg_stat_table(
     c.text(all_x, y, "ALL", MUTED);
     c.text(no_thumb_x, y, "NO THUMBS", MUTED);
     y += 1;
-    for (label, all, no_thumbs) in [
-        ("Alternation", "alt", "altnothumbs"),
-        ("Alt & SFS", "altsfs", "altsfsnothumbs"),
-        ("Redirect total", "redirect", "redirectnothumbs"),
-        ("Red & SFS", "redirectsfs", "redirectsfsnothumbs"),
-        ("Weak redirect", "redirectweak", "redirectweaknothumbs"),
-        (
-            "Weak & SFS",
-            "redirectsfsweak",
-            "redirectsfsweaknothumbs",
-        ),
-        ("Roll total", "roll", "rollnothumbs"),
-        ("Inroll2", "inroll2", "inroll2nothumbs"),
-        ("Outroll2", "outroll2", "outroll2nothumbs"),
-        ("Inroll3", "inroll3", "inroll3nothumbs"),
-        ("Outroll3", "outroll3", "outroll3nothumbs"),
-    ] {
+    for (label, all, no_thumbs) in AKLGG_TRIGRAM_ROWS {
         c.text(0, y, label, FG);
         aklgg_stat_cell(c, all_x, y, value_w, all, before, after, decimals);
         aklgg_stat_cell(c, no_thumb_x, y, value_w, no_thumbs, before, after, decimals);
+        hit(c, all_x, y, all);
+        hit(c, no_thumb_x, y, no_thumbs);
         y += 1;
     }
 

@@ -117,7 +117,9 @@ thumbs are excluded.
   combined bigram/skipgram column (`SFBS`, `SKBS`, etc.). Each value is `4 × bigram % + skipgram %`
   using AKLER metrics, including in aklgg mode. Values are `n/a` when either
   population is missing.
-- **Editor:** click a metric to see its contributors. `m` switches between
+- **Editor:** click a metric to see its contributors; in aklgg mode, click a
+  pattern value (Scissor, Stretch, Redirect, ...) for its key sequences, also
+  in the optimizer. `m` switches between
   simple and detailed stats, `d` toggles comparing against the last edit or
   the loaded layout, `c` changes the corpus. `s` saves over the layout's
   `.jsonc` (after asking), `S` saves a numbered copy.

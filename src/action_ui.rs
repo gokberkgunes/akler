@@ -1707,6 +1707,175 @@ fn action_contributors(
     }
 }
 
+/// The akl.gg pattern stat `stat`'s contributors: each physical sequence's
+/// share before and after, as `action_contributors` lists ordinary metrics.
+fn action_mana_contributors(
+    term: &mut Terminal,
+    stat: usize,
+    layout: &ak::Layout,
+    baseline: &ak::Layout,
+    before: &Evaluated,
+    after: &Evaluated,
+    weights: &Weights,
+) -> AppResult<()> {
+    let id = mana2_metrics::STAT_IDS[stat];
+    let Some(title) = aklgg_stat_title(id) else {
+        return Ok(());
+    };
+    let skip = matches!(id, "sfs" | "sks" | "lss" | "vss");
+    let pair = AKLGG_PAIR_ROWS.iter().any(|&(_, b, s)| id == b || id == s);
+    let keys = contributor_keys(before, after);
+    let mut shares = BTreeMap::<String, (f64, f64)>::new();
+    for (side, evaluation) in [before, after].into_iter().enumerate() {
+        // Geometry is the same physical board on both sides.
+        for (slots, fingers, value) in
+            ng::mana_contributions(layout, &evaluation.counts, weights, stat)
+        {
+            let names: ContributorKeys =
+                slots.iter().map(|&slot| keys[side][slot].clone()).collect();
+            let mut label = contributor_name(&names, skip);
+            if slots
+                .iter()
+                .zip(&fingers)
+                .any(|(&slot, &finger)| evaluation.model.geometry.keys[slot].finger != finger)
+            {
+                let names: Vec<_> = fingers.iter().map(|&finger| FINGER_NAMES[finger]).collect();
+                label.push_str(&format!(" ({})", names.join(" ")));
+            }
+            let entry = shares.entry(label).or_default();
+            if side == 0 {
+                entry.0 += value;
+            } else {
+                entry.1 += value;
+            }
+        }
+    }
+    let source: Vec<_> = shares.into_iter().map(|(name, (b, a))| (name, b, a)).collect();
+    let totals = (
+        action_mana_stats(baseline, before, weights).values[stat],
+        action_mana_stats(layout, after, weights).values[stat],
+    );
+    let ones = mana2_metrics::Stats { values: [1.0; mana2_metrics::N_STATS] };
+    let unit = if aklgg_number(&ones, id, 0).ends_with('%') { "%" } else { "" };
+    let (mut scroll, mut sort_change, mut all, mut merge) = (0, false, false, false);
+    loop {
+        let mut rows = source.clone();
+        if merge {
+            let mut pairs: BTreeMap<String, (f64, f64)> = BTreeMap::new();
+            for (name, before, after) in rows {
+                let separator = if skip { " _ " } else { " " };
+                let mut keys: Vec<_> = name.split(separator).collect();
+                let reverse: Vec<_> = keys.iter().rev().copied().collect();
+                if reverse < keys {
+                    keys = reverse;
+                }
+                let entry = pairs.entry(keys.join(separator)).or_default();
+                entry.0 += before;
+                entry.1 += after;
+            }
+            rows = pairs.into_iter().map(|(name, (b, a))| (name, b, a)).collect();
+        }
+        rows.sort_by(|a, b| {
+            let order = if sort_change {
+                (b.2 - b.1).abs().total_cmp(&(a.2 - a.1).abs())
+            } else {
+                b.2.total_cmp(&a.2)
+            };
+            order.then_with(|| a.0.cmp(&b.0))
+        });
+        let mut c = Canvas::new(term.width(), 64);
+        header(&mut c, &title, &after.corpus.name, &layout.name, "");
+        let mut y = action_keyboard(&mut c, 2, layout, baseline, None, None) + 1;
+        c.text(0, y, &format!("akl.gg {id}: {title}"), FG);
+        y += 1;
+        c.text(
+            0,
+            y,
+            &format!(
+                "{} → {}{unit}",
+                number(totals.0, DETAIL_DECIMALS),
+                number(totals.1, DETAIL_DECIMALS)
+            ),
+            FG,
+        );
+        c.text(
+            32,
+            y,
+            if sort_change {
+                "○ before  ● after   change"
+            } else {
+                "○ before  ● after   contribution"
+            },
+            MUTED,
+        );
+        y += 2;
+        c.text(0, y, if merge { "Pair" } else { "Keys" }, MUTED);
+        c.right(9, y, 9, "Before", MUTED);
+        c.right(20, y, 9, "After", MUTED);
+        c.right(31, y, 9, "Change", MUTED);
+        let maximum = rows.iter().map(|r| r.1.abs().max(r.2.abs())).fold(1e-12, f64::max);
+        let plot_width = c.w.saturating_sub(44);
+        if plot_width > 0 {
+            c.text(43, y, "0", MUTED);
+            c.right(
+                45,
+                y,
+                plot_width.saturating_sub(2),
+                &format!("{}{unit}", number(maximum, DETAIL_DECIMALS)),
+                MUTED,
+            );
+        }
+        y += 1;
+        let count = if all { rows.len() } else { rows.len().min(16) };
+        for (name, before, after) in rows.iter().take(count) {
+            let color = aklgg_change_color(id, *before, *after);
+            c.text(0, y, &short(name, 8), FG);
+            c.right(9, y, 9, &number(*before, DETAIL_DECIMALS), MUTED);
+            c.right(20, y, 9, &number(*after, DETAIL_DECIMALS), color);
+            c.right(31, y, 9, &delta_text(*before, *after, DETAIL_DECIMALS), color);
+            contribution_bar(&mut c, 43, y, plot_width, before.abs(), after.abs(), maximum, color);
+            y += 1;
+        }
+        if rows.is_empty() {
+            c.text(0, y, "No contributing physical sequences", MUTED);
+            y += 1;
+        }
+        if !all {
+            let before = totals.0 - rows.iter().take(count).map(|r| r.1).sum::<f64>();
+            let after = totals.1 - rows.iter().take(count).map(|r| r.2).sum::<f64>();
+            y += 1;
+            c.text(0, y, "Other", MUTED);
+            c.right(9, y, 9, &number(before, DETAIL_DECIMALS), MUTED);
+            c.right(20, y, 9, &number(after, DETAIL_DECIMALS), MUTED);
+            c.right(31, y, 9, &delta_text(before, after, DETAIL_DECIMALS), MUTED);
+            y += 1;
+        }
+        let sort = if sort_change { "change" } else { "value" };
+        let mut controls = vec![format!("d sort: {sort}")];
+        if pair {
+            controls.push(format!("b pairs: {}", if merge { "merged" } else { "separate" }));
+        }
+        controls.push(format!("a rows: {}", if all { "all" } else { "top" }));
+        controls.push("q back".into());
+        y += 1;
+        c.text(0, y, &controls.join(" · "), MUTED);
+        c.h = y + 2;
+        term.present(&c, scroll)?;
+        let event = term.event()?;
+        if scroll_event(&event, &mut scroll, c.h, term.size.1) {
+            continue;
+        }
+        match event {
+            Event::Escape | Event::Quit | Event::Char('q') | Event::Enter => return Ok(()),
+            Event::Char('d') => sort_change = !sort_change,
+            Event::Char('a') => all = !all,
+            Event::Char('b') if pair => merge = !merge,
+            _ => continue,
+        }
+        scroll = 0;
+    }
+}
+
 fn choose_corpus(term: &mut Terminal) -> AppResult<Option<PathBuf>> {
     select_source_path(term, false)
 }
@@ -2065,6 +2234,10 @@ fn action_editor_core(
                 Some(Action::Metric(m)) => {
                     let comparison = if compare_latest { &previous } else { &baseline };
                     action_contributors(term, m, &l, &original, comparison, &current)?;
+                }
+                Some(Action::ManaStat(stat)) => {
+                    let comparison = if compare_latest { &previous } else { &baseline };
+                    action_mana_contributors(term, stat, &l, &original, comparison, &current, &w)?;
                 }
                 Some(Action::Weight(i)) => {
                     let mut next_w = w.clone();
@@ -2590,6 +2763,18 @@ fn action_optimizer_setup(
                         original,
                         baseline_cache.as_ref().unwrap(),
                         current_cache.as_ref().unwrap(),
+                    )?;
+                    continue;
+                }
+                Action::ManaStat(stat) if !settings_view => {
+                    action_mana_contributors(
+                        term,
+                        stat,
+                        layout,
+                        original,
+                        baseline_cache.as_ref().unwrap(),
+                        current_cache.as_ref().unwrap(),
+                        weights,
                     )?;
                     continue;
                 }
@@ -3604,6 +3789,9 @@ fn action_optimizer_session(
                         }
                         Action::Metric(metric) => action_contributors(
                             term, metric, &layout, &original, baseline, current,
+                        )?,
+                        Action::ManaStat(stat) => action_mana_contributors(
+                            term, stat, &layout, &original, baseline, current, &weights,
                         )?,
                         _ => {}
                     }

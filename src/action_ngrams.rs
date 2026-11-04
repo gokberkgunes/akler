@@ -3874,6 +3874,62 @@ pub(crate) fn raw_from_counts_with_geometry(
     (raw, totals)
 }
 
+/// Each physical sequence's share of Mana2 stat `stat`, as
+/// `raw_from_counts` adds it: the stat from that sequence alone, over the
+/// layout's totals. Sequences that add nothing are left out; the rest sum to
+/// the stat. Returns the slots, their fingers, and the share.
+pub(crate) fn mana_contributions(
+    layout: &ak::Layout,
+    counts: &Counts,
+    weights: &Weights,
+    stat: usize,
+) -> Vec<(Vec<usize>, Vec<usize>, f64)> {
+    let geometry = Geometry::with_rolls(crate::action_ui::physical_keys(layout), weights.rolls());
+    let (_, totals) = raw_from_counts_with_geometry(layout, counts, false, &geometry);
+    let share = |kind: usize, slots: &[usize], fingers: &[usize], frequency: f64| {
+        let mut raw = Raw::with_mana2();
+        add_pattern_with_fingers(&mut raw, kind, slots, fingers, frequency, &geometry);
+        mana_stats(raw.1.as_ref().unwrap(), totals, counts.speed_populations).values[stat]
+    };
+    type Patterns = Vec<(Vec<usize>, Vec<usize>, f64)>;
+    let patterns: [Patterns; 4] = match (&counts.finger_tables, &counts.finger_skip) {
+        (Some(tables), Some(skip)) => [&tables[0], &tables[1], skip, &tables[2]].map(|table| {
+            table
+                .iter()
+                .map(|(pattern, &f)| (pattern.slots.clone(), pattern.fingers.clone(), f))
+                .collect()
+        }),
+        _ => [&counts.tables[0], &counts.tables[1], &counts.skip, &counts.tables[2]].map(|table| {
+            table
+                .entries()
+                .map(|(slots, frequency)| {
+                    let fingers = slots.iter().map(|&slot| geometry.keys[slot].finger).collect();
+                    (slots.to_vec(), fingers, frequency)
+                })
+                .collect()
+        }),
+    };
+    let mut shares = Vec::new();
+    for (kind, table) in patterns.iter().enumerate() {
+        // Skip a kind whose sequences together add nothing to the stat.
+        let mut whole = Raw::with_mana2();
+        for (slots, fingers, frequency) in table {
+            add_pattern_with_fingers(&mut whole, kind, slots, fingers, *frequency, &geometry);
+        }
+        let stats = mana_stats(whole.1.as_ref().unwrap(), totals, counts.speed_populations);
+        if stats.values[stat] == 0.0 {
+            continue;
+        }
+        for (slots, fingers, frequency) in table {
+            let value = share(kind, slots, fingers, *frequency);
+            if value != 0.0 {
+                shares.push((slots.clone(), fingers.clone(), value));
+            }
+        }
+    }
+    shares
+}
+
 pub(crate) fn pattern_raw(geometry: &Geometry, kind: usize, pattern: &FingerPattern) -> Raw {
     let mut raw = Raw::default();
     add_pattern_with_fingers(
@@ -9016,6 +9072,39 @@ mod tests {
 
     fn corpus(text: &[u8], order: usize) -> NgramCorpus {
         NgramCorpus::from_text(&cache(text, order, 1.0), Path::new("cache.json")).unwrap()
+    }
+
+    #[test]
+    fn mana_contributions_sum_to_their_stat() {
+        let layout = ak::Layout::parse(
+            crate::action_keys::test_layouts::QWERTY_JSONC,
+            std::path::Path::new("qwerty.jsonc"),
+        )
+        .unwrap();
+        let text = b"the quick brown fox jumps over the lazy dog, excess crew wax zebra";
+        let corpus = corpus(text, 3);
+        let counts = corpus
+            .evaluate_with_fingers(
+                &layout,
+                &AtomicBool::new(false),
+                &AtomicU64::new(0),
+                crate::alt_fingers::AltPolicy::layout(false),
+                |_, _, _| 0.0,
+            )
+            .unwrap();
+        let weights = Weights::default();
+        let (raw, totals) = raw_from_counts(&layout, &counts, &weights, true);
+        let stats = mana_stats(raw.1.as_ref().unwrap(), totals, counts.speed_populations);
+        for id in ["sfb", "sfs", "lsb", "lss", "vsb", "vss", "redirect", "alt", "roll"] {
+            let stat = mana2_metrics::STAT_IDS.iter().position(|&s| s == id).unwrap();
+            let sum: f64 = mana_contributions(&layout, &counts, &weights, stat)
+                .iter()
+                .map(|(_, _, value)| value)
+                .sum();
+            assert!(stats.values[stat] > 0.0, "{id} is zero in the test corpus");
+            let value = stats.values[stat];
+            assert!((sum - value).abs() < 1e-9, "{id}: {sum} vs {value}");
+        }
     }
 
     fn evaluate(c: &NgramCorpus, l: &ak::Layout) -> Counts {
