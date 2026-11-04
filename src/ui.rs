@@ -2740,6 +2740,52 @@ fn input_box(
     }
 }
 
+/// `S`: ask for a file name, starting from `suggested`, and save `layout`
+/// there. A name without a folder goes beside `suggested`, and one without an
+/// extension gets `.jsonc`; an existing file is replaced only after asking.
+/// The status line to show, or None when cancelled.
+fn save_layout_as(
+    term: &mut Terminal,
+    layout: &crate::action_keys::Layout,
+    suggested: &Path,
+) -> AppResult<Option<String>> {
+    let initial = suggested.display().to_string();
+    let Some(name) = input_box(term, "Save layout as", "", &initial)? else {
+        return Ok(None);
+    };
+    if name.is_empty() {
+        return Ok(None);
+    }
+    let path = save_as_target(&name, suggested);
+    let target = path.display().to_string();
+    if path.exists() && !confirm_box(term, "Replace the file", &target, "Replace")? {
+        return Ok(None);
+    }
+    Ok(Some(match crate::layout_export::save_as(layout, &path) {
+        Ok(path) => format!("saved {}", path.display()),
+        Err(error) => error,
+    }))
+}
+
+/// Where `save_layout_as` saves the typed `name`.
+fn save_as_target(name: &str, suggested: &Path) -> PathBuf {
+    let mut path = PathBuf::from(name);
+    if path.parent().is_none_or(|parent| parent.as_os_str().is_empty()) {
+        path = suggested.parent().unwrap_or(Path::new("layouts")).join(path);
+    }
+    if path.extension().is_none() {
+        path.set_extension("jsonc");
+    }
+    path
+}
+
+/// The editors' `S` suggestion: the next numbered copy beside the layout.
+fn numbered_copy_path(layout: &crate::action_keys::Layout) -> PathBuf {
+    let dir = layout.path.parent().filter(|p| !p.as_os_str().is_empty());
+    let stem = layout.path.file_stem().and_then(|name| name.to_str()).unwrap_or("layout");
+    crate::layout_export::next_numbered_path(dir.unwrap_or(Path::new("layouts")), stem)
+}
+
 fn confirm_box(term: &mut Terminal, title: &str, subject: &str, verb: &str) -> AppResult<bool> {
     let mut accept = false;
     loop {
@@ -4116,8 +4162,11 @@ fn editor_with_analysis(
                 }
             },
             Event::Char('S') => {
-                let p = save_new_layout(&model.board, &model.symbols(&arr))?;
-                status = format!("saved {}", p.display());
+                let layout = board_as_action_layout(&model.board, &model.symbols(&arr))?;
+                let suggested = numbered_copy_path(&layout);
+                if let Some(message) = save_layout_as(term, &layout, &suggested)? {
+                    status = message;
+                }
             },
             Event::Char('c') => {
                 if let Some(path) = select_source_path(term, false)? {
@@ -4176,7 +4225,7 @@ fn editor_with_analysis(
                     "U\tRedo the last undone edit.".into(),
                     "r\tReset to the layout you opened.".into(),
                     "s\tSave this layout after confirmation.".into(),
-                    "S\tSave a new copy.".into(),
+                    "S\tSave as: type a file name (starts with the next numbered copy).".into(),
                     "c\tChoose a corpus; keep your edits.".into(),
                     "z\tInclude or exclude patterns that contain Space, such as e + Space or Space + t.".into(),
                     "a\tShow how weights contribute to the score.".into(),
@@ -4879,12 +4928,8 @@ fn optimizer_setup(
             Event::Char('H')=>*locks = optimizer_locks(&model.board, home_locks(&model.board)),
             Event::Char('S') => {
                 let layout = board_as_action_layout(&model.board, &model.symbols(arr))?;
-                let target = layout.path.display().to_string();
-                if confirm_box(term, "Save over the layout", &target, "Save")? {
-                    status = match crate::layout_export::save_in_place(&layout) {
-                        Ok(p) => format!("saved over {}", p.display()),
-                        Err(e) => e,
-                    };
+                if let Some(message) = save_layout_as(term, &layout, &layout.path.clone())? {
+                    status = message;
                 }
             },
             Event::Char('U')=>locks.fill(false),
@@ -4953,7 +4998,7 @@ fn optimizer_setup(
                     "t\tSwitch Normal / AKL.GG scoring weights.".into(),
                     "AKL.GG\tBigrams, skipgrams, and trigrams use their own retained populations; speed columns are numeric costs.".into(),
                     "s\tSave weights and search settings to configuration.".into(),
-                    "S\tSave the layout over its own file (asks first; keeps a backup).".into(),
+                    "S\tSave as: type a file name (starts with the layout's own file; asks before replacing).".into(),
                     ".\tSwitch between two and four decimal places.".into(),
                     "r\tReload configuration.".into(),
                     "d\tRestore default weights and search settings.".into(),
@@ -5375,7 +5420,7 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                     &arr,
                     &locks,
                     "Optimizer result",
-                    "r setup | Space refine | b compare | [ ] | a stats | s save | S save over | A all | q setup",
+                    "r setup | Space refine | b compare | [ ] | a stats | s save | S save as | A all | q setup",
                     &text
                 );
                 term.present(&frame, scroll)?;
@@ -5439,13 +5484,11 @@ fn optimizer(term: &mut Terminal, board: Board, source: &Source) -> AppResult<()
                         }
                     }
                     Event::Char('S') => {
-                        let layout = board_as_action_layout(&problem.model.board, &problem.model.symbols(&arr))?;
-                        let target = layout.path.display().to_string();
-                        if confirm_box(term, "Save over the layout", &target, "Save")? {
-                            status = match crate::layout_export::save_in_place(&layout) {
-                                Ok(p) => format!("saved over {}", p.display()),
-                                Err(e) => e,
-                            };
+                        let symbols = problem.model.symbols(&arr);
+                        let layout = board_as_action_layout(&problem.model.board, &symbols)?;
+                        let suggested = layout.path.clone();
+                        if let Some(message) = save_layout_as(term, &layout, &suggested)? {
+                            status = message;
                         }
                     }
                     Event::Char('A') => {

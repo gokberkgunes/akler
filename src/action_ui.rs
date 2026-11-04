@@ -2025,6 +2025,7 @@ fn action_editor_core(
                     "U\tRedo the last undone edit.".into(),
                     "r\tReset the layout to its loaded bindings".into(),
                     "s\tSave the current layout as a new copy".into(),
+                    "S\tSave as: type a file name (starts with the next numbered copy).".into(),
                     "c\tChoose a different corpus".into(),
                     "z\tInclude or exclude patterns with Space, such as e + Space or Space + t.".into(),
                     "f\tEnable or disable alternate fingers.".into(),
@@ -2067,6 +2068,11 @@ fn action_editor_core(
                 status = match l.save_new() {
                     Ok(p) => format!("saved {}", p.display()),
                     Err(e) => e,
+                }
+            }
+            Event::Char('S') => {
+                if let Some(message) = save_layout_as(term, &l, &numbered_copy_path(&l))? {
+                    status = message;
                 }
             }
             Event::Char('r') => {
@@ -2887,12 +2893,8 @@ fn action_optimizer_setup(
             }
             Event::Char('H') => *locks = optimizer_locks(layout, action_home_locks(layout)),
             Event::Char('S') => {
-                let target = layout.path.display().to_string();
-                if confirm_box(term, "Save over the layout", &target, "Save")? {
-                    *status = match crate::layout_export::save_in_place(layout) {
-                        Ok(path) => format!("saved over {}", path.display()),
-                        Err(error) => error,
-                    };
+                if let Some(message) = save_layout_as(term, layout, &layout.path.clone())? {
+                    *status = message;
                 }
             }
             Event::Char('U') => locks.fill(false),
@@ -3023,7 +3025,7 @@ fn action_optimizer_setup(
                     "v\tSwitch Simple / Detailed statistics; scoring stays unchanged.".into(),
                     "t\tSwitch normal / aklgg scoring.".into(),
                     "s\tSave weights and search settings.".into(),
-                    "S\tSave the layout over its own file (asks first; keeps a backup).".into(),
+                    "S\tSave as: type a file name (starts with the layout's own file; asks before replacing).".into(),
                     "r\tReload weights and search settings from configuration.".into(),
                     "d\tRestore default weights and search settings.".into(),
                     "o\tReset the layout to its loaded bindings.".into(),
@@ -3832,7 +3834,7 @@ fn action_optimizer_session(
                         "Optimizer result",
                         &[
                             "Space refines this candidate; b compares archived candidates; [ and ] move between them.".into(),
-                            "s saves this candidate as a new file; S saves it over the layout's own file (with a backup); A saves every candidate; r or q returns to setup and keeps the current layout in memory.".into(),
+                            "s saves this candidate as a new file; S saves it under a name you type (starts with the layout's own file); A saves every candidate; r or q returns to setup and keeps the current layout in memory.".into(),
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
                             "m switches the statistics display: Detailed jump breakdown or Simple FJB/FJS/HJB/HJS totals.".into(),
                             "v shows current magic rules when magic optimization is enabled.".into(),
@@ -3892,12 +3894,9 @@ fn action_optimizer_session(
                         };
                     }
                     Event::Char('S') => {
-                        let target = layout.path.display().to_string();
-                        if confirm_box(term, "Save over the layout", &target, "Save")? {
-                            status = match crate::layout_export::save_in_place(&layout) {
-                                Ok(path) => format!("saved over {}", path.display()),
-                                Err(error) => error,
-                            };
+                        let suggested = layout.path.clone();
+                        if let Some(message) = save_layout_as(term, &layout, &suggested)? {
+                            status = message;
                         }
                     }
                     Event::Char('A') => {

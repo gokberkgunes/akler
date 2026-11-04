@@ -1256,21 +1256,6 @@ fn board_as_action_layout(
     })
 }
 
-fn save_new_layout(board: &Board, symbols: &[u8]) -> AppResult<PathBuf> {
-    let dir = board.path.parent().unwrap_or(Path::new(LAYOUT_DIR));
-    let stem = board
-        .path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("layout");
-    let layout = board_as_action_layout(board, symbols)?;
-    Ok(crate::layout_export::save_numbered_jsonc(
-        &layout,
-        dir,
-        &format!("{stem}-optimized"),
-    )?)
-}
-
 fn discover(dir: &str, extension: &str, prefix: &str) -> AppResult<Vec<PathBuf>> {
     let mut paths = Vec::new();
     for entry in fs::read_dir(dir).map_err(|error| format!("{dir}/: {error}"))? {

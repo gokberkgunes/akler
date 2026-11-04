@@ -1886,3 +1886,17 @@ fn simple_stats_show_jump_totals_in_the_alias_slots() {
         assert!(!text.contains(label), "simple stats still show {label}");
     }
 }
+
+#[test]
+fn save_as_names_go_beside_the_layout_as_jsonc() {
+    let suggested = Path::new("layouts/optimized/new3-001.jsonc");
+    assert_eq!(save_as_target("mine", suggested), Path::new("layouts/optimized/mine.jsonc"));
+    assert_eq!(save_as_target("mine.json", suggested), Path::new("layouts/optimized/mine.json"));
+    assert_eq!(save_as_target("layouts/x", suggested), Path::new("layouts/x.jsonc"));
+    let dir = std::env::temp_dir().join(format!("akler-save-as-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    assert_eq!(crate::layout_export::next_numbered_path(&dir, "a"), dir.join("a-001.jsonc"));
+    fs::write(dir.join("a-001.jsonc"), "").unwrap();
+    assert_eq!(crate::layout_export::next_numbered_path(&dir, "a"), dir.join("a-002.jsonc"));
+    fs::remove_dir_all(&dir).unwrap();
+}

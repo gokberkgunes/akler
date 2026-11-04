@@ -59,6 +59,24 @@ pub(crate) fn save_in_place(layout: &Layout) -> Result<PathBuf> {
     Ok(layout.path.clone())
 }
 
+/// The first `{stem}-NNN.jsonc` in `dir` that `save_numbered_jsonc` would take.
+pub(crate) fn next_numbered_path(dir: &Path, stem: &str) -> PathBuf {
+    (1..10000)
+        .map(|n| dir.join(format!("{stem}-{n:03}.jsonc")))
+        .find(|path| {
+            path.symlink_metadata().is_err()
+                && path.with_extension("run.txt").symlink_metadata().is_err()
+        })
+        .unwrap_or_else(|| dir.join(format!("{stem}.jsonc")))
+}
+
+/// Save the layout's JSONC at `path`, replacing any file there.
+pub(crate) fn save_as(layout: &Layout, path: &Path) -> Result<PathBuf> {
+    let mut layout = layout.clone();
+    layout.path = path.to_owned();
+    save_in_place(&layout)
+}
+
 pub(crate) fn save_numbered_jsonc(layout: &Layout, dir: &Path, stem: &str) -> Result<PathBuf> {
     let text = jsonc_text(layout)?;
     fs::create_dir_all(dir).map_err(|e| e.to_string())?;
