@@ -4,8 +4,6 @@ TUI keyboard layout ranker, editor and optimizer with magic-key support.
 Scores layouts from cached n-grams (no ordered corpus traversal). Supports
 mouse drag and drop; middle-click hides ranker rows and columns.
 
-![Akler layout editor](doc/editor.png)
-
 ## Build and run
 
 ```sh

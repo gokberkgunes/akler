@@ -1,6 +1,6 @@
 {
   "board": {
-    "isRowStaggered": true,
+    "isRowStaggered": false,
     "mirrorLeftRowStagger": false,
     "rowOrColumnStagger": [
       0,
