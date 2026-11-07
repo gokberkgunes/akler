@@ -14,10 +14,10 @@ akler magic trace LAYOUT "some text"    # also trace-keys, report
 akler corpus list|info|add|build|top ...
 ```
 
-The home menu has three tabs: **Workbench** (editor, ranker, optimizer),
-**Analysis** (weakness report, magic designer, scissor test) and **Data**
-(corpora). Every other screen has a Back button at the top left. Press `?`
-on any screen for its controls.
+The home menu has four tabs: **Workbench** (editor, ranker, optimizer),
+**Tests** (scissor test), **Analysis** (weakness report, magic designer) and
+**Data** (corpora). Every other screen has a Back button at the top left.
+Press `?` on any screen for its controls.
 
 The scissor test rates same-hand key pairs of different fingers (half
 scissors one row apart, full scissors two rows apart) or single keys, from

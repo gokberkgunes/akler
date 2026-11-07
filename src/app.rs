@@ -490,21 +490,21 @@ fn corpus_tui(term: &mut Terminal) -> AppResult<()> {
 #[derive(Default)]
 struct HomeState {
     tab: usize,
-    selected: [usize; 3],
+    selected: [usize; 4],
 }
 
-const HOME_TABS: [&str; 3] = ["1 Workbench", "2 Analysis", "3 Data"];
+const HOME_TABS: [&str; 4] = ["1 Workbench", "2 Tests", "3 Analysis", "4 Data"];
 
-const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
+const HOME_ITEMS: [&[(usize, &str, &str)]; 3] = [
     &[
         (0, "Editor", "Inspect and edit one layout"),
         (1, "Ranker", "Compare layouts on a corpus"),
         (2, "Optimizer", "Search for a better layout"),
     ],
+    &[(8, "Scissor test", "Rate scissor pairs; share results as a code")],
     &[
         (5, "Weakness report", "Find the layout's largest problems"),
         (6, "Magic designer", "Optimizer Magic tab: design magic keys"),
-        (8, "Scissor test", "Rate scissor pairs; share results as a code"),
     ],
 ];
 
@@ -516,6 +516,7 @@ fn home_items(tab: usize) -> &'static [(usize, &'static str, &'static str)] {
     match tab {
         0 => HOME_ITEMS[0],
         1 => HOME_ITEMS[1],
+        2 => HOME_ITEMS[2],
         _ => &HOME_DATA_ITEMS,
     }
 }
@@ -609,7 +610,7 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
             }
         }
         match event {
-            Event::Char(ch @ ('1'..='3')) => state.tab = (ch as usize) - ('1' as usize),
+            Event::Char(ch @ ('1'..='4')) => state.tab = (ch as usize) - ('1' as usize),
             Event::Left | Event::Char('h') => {
                 state.tab = state.tab.checked_sub(1).unwrap_or(HOME_TABS.len() - 1)
             }
@@ -628,7 +629,7 @@ fn home_menu(term: &mut Terminal, state: &mut HomeState) -> AppResult<Option<usi
                 &canvas,
                 "Home",
                 &[
-                    "1 2 3\tSwitch section".into(),
+                    "1 2 3 4\tSwitch section".into(),
                     "h l / ← →\tSwitch section".into(),
                     "j k / ↑ ↓\tSelect".into(),
                     "Enter\tOpen".into(),
