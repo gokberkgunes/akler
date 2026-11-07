@@ -71,9 +71,28 @@ fn scissor_hands(hands: char) -> &'static [char] {
     }
 }
 
-/// The items of a test, in the fixed order its code uses. `set`: 'h' half
-/// scissors, 'f' full, 'a' both, 'k' single keys.
+/// Every test kind's letter: 'h' half scissors, 'f' full, 'a' both, 'k'
+/// single keys; 'c', 'd' and 'e' are single keys with h, f or a.
+const SCISSOR_SETS: &str = "hfakcde";
+
+/// The scissor part of a combined test kind, or None for one without keys.
+fn scissor_with_keys(set: char) -> Option<char> {
+    match set {
+        'c' => Some('h'),
+        'd' => Some('f'),
+        'e' => Some('a'),
+        _ => None,
+    }
+}
+
+/// The items of a test, in the fixed order its code uses (see
+/// `SCISSOR_SETS`). Combined tests list the single keys first.
 fn scissor_items(hands: char, set: char) -> Vec<ScissorItem> {
+    if let Some(pairs) = scissor_with_keys(set) {
+        let mut items = scissor_items(hands, 'k');
+        items.extend(scissor_items(hands, pairs));
+        return items;
+    }
     let mut items = Vec::new();
     for &hand in scissor_hands(hands) {
         let keys: Vec<char> = scissor_block(hand).concat().chars().collect();
@@ -130,6 +149,9 @@ fn scissor_set_name(hands: char, set: char) -> String {
         'h' => "half scissors",
         'f' => "full scissors",
         'a' => "half + full scissors",
+        'c' => "single keys + half scissors",
+        'd' => "single keys + full scissors",
+        'e' => "single keys + half + full scissors",
         _ => "single keys",
     };
     format!("{what}, {hand}")
@@ -286,7 +308,7 @@ fn scissor_decode(code: &str) -> Result<ScissorSession, String> {
     ) else {
         return Err(format!("'{set}' is not a test kind such as Lh."));
     };
-    if !"LRB".contains(hands) || !"hfak".contains(kind) {
+    if !"LRB".contains(hands) || !SCISSOR_SETS.contains(kind) {
         return Err(format!("'{set}' is not a test kind such as Lh."));
     }
     let items = scissor_items(hands, kind);
@@ -377,7 +399,7 @@ fn scissor_json_session(value: &Json) -> Option<ScissorSession> {
     let letter = |name: &str| text(name).and_then(|t| t.chars().next());
     let hands = letter("hands")?;
     let set = letter("set")?;
-    if !"LRB".contains(hands) || !"hfak".contains(set) {
+    if !"LRB".contains(hands) || !SCISSOR_SETS.contains(set) {
         return None;
     }
     let order = match fields.get("order") {
@@ -465,7 +487,8 @@ fn scissor_text(sessions: &[ScissorSession]) -> String {
         "// akler scissor test ratings, one entry per session.\n\
          // Levels: 1 Very easy, 2 Comfortable, 3 Manageable, 4 Slight issue,\n\
          // 5 Uncomfortable, 6 Terrible. Keys are QWERTY positions.\n\
-         // set: h half scissors, f full, a half + full, k single keys.\n\
+         // set: h half scissors, f full, a half + full, k single keys;\n\
+         // c, d, e: single keys first, then h, f or a.\n\
          {\n  \"sessions\": [\n",
     );
     for (n, s) in sessions.iter().enumerate() {
@@ -614,7 +637,7 @@ fn scissor_form_frame(c: &mut Canvas, form: &ScissorForm) {
     let room = c.w.saturating_sub(counter.chars().count() + 6);
     c.text(2, 0, &short(&title, room), CYAN);
     c.right(0, 0, c.w.saturating_sub(2), &counter, MUTED);
-    let note = if s.set == 'k' {
+    let note = if form.items[form.cur].jump == 0 {
         "Fingers on home row. Press the key a few times from home, then rate it."
     } else {
         "Fingers on home row. Type the pair back and forth a few times, then rate it."
@@ -675,33 +698,43 @@ fn scissor_form_frame(c: &mut Canvas, form: &ScissorForm) {
         }
     }
 
-    let kb = top + 2 * card_h + 1;
-    let lit: Vec<char> = form.shown(form.cur).to_lowercase().chars().collect();
-    let below = scissor_mini_keyboard(c, kb, &lit);
-
-    // Page buttons and keys.
-    let y = (below + usize::from(tall)).max(c.h.saturating_sub(2));
-    let mut x = 2;
-    for (label, key) in [("◀ Prev", 'p'), ("Next ▶", 'n'), ("Finish", 'f')] {
-        let text = format!("[{label}]");
+    // Page buttons right under the cards, centred on them:
+    // < PREV | NEXT > | FINISH
+    let bar = top + 2 * card_h;
+    let buttons = [(" < PREV ", 'p'), (" NEXT > ", 'n'), (" FINISH ", 'f')];
+    let bar_w: usize = buttons.iter().map(|(label, _)| label.chars().count()).sum::<usize>() + 6;
+    let mut x = left + (card_w * 2 + 1).saturating_sub(bar_w) / 2;
+    for (n, (label, key)) in buttons.iter().enumerate() {
+        if n > 0 {
+            c.text(x + 1, bar, "|", MUTED);
+            x += 3;
+        }
+        let w = label.chars().count();
         let enabled = match key {
             'p' => form.page() > 0,
             'n' => form.page() + 1 < form.pages(),
             _ => true,
         };
-        c.text(x, y, &text, if enabled { FG } else { MUTED });
+        let color = match (enabled, key) {
+            (false, _) => MUTED,
+            (true, 'f') => GREEN,
+            _ => FG,
+        };
+        c.text(x, bar, label, color);
         if enabled {
-            c.hit(Rect { x, y, w: text.chars().count(), h: 1 }, Action::Command(key));
+            c.row_style(Rect { x, y: bar, w, h: 1 }, Some((50, 50, 50)), true);
+            c.hit(Rect { x, y: bar, w, h: 1 }, Action::Command(*key));
         }
-        x += text.chars().count() + 2;
+        x += w;
     }
-    let done = form.unrated().is_none();
-    c.text(
-        x + 1,
-        y,
-        if done { "All rated: Finish (Esc) shows your code." } else { "" },
-        GREEN,
-    );
+
+    let lit: Vec<char> = form.shown(form.cur).to_lowercase().chars().collect();
+    let below = scissor_mini_keyboard(c, bar + 2, &lit);
+
+    let y = (below + 1).max(c.h.saturating_sub(2));
+    if form.unrated().is_none() {
+        c.text(2, y, "All rated: FINISH (or Esc) shows your code.", GREEN);
+    }
     c.text(
         2,
         y + 1,
@@ -818,7 +851,7 @@ fn scissor_view(term: &mut Terminal, title: &str, session: &ScissorSession, note
             let level = session.ratings.get(&item.id).copied();
             c.text(x, y, &item.id, FG);
             let mut info = item.fingers.join("–");
-            if item.jump == 2 && session.set == 'a' {
+            if item.jump == 2 && matches!(session.set, 'a' | 'e') {
                 info.push_str(" F");
             }
             c.text(x + 4, y, &short(&info, 15), MUTED);
@@ -831,7 +864,7 @@ fn scissor_view(term: &mut Terminal, title: &str, session: &ScissorSession, note
             };
             c.text(x + 20, y, &short(&text, col_w - 21), color);
         }
-        let legend = if session.set == 'a' { "F = full scissor   " } else { "" };
+        let legend = if matches!(session.set, 'a' | 'e') { "F = full scissor   " } else { "" };
         c.text(2, table + rows + 1, &format!("{legend}c copy code again   PgUp/PgDn scroll   Esc back"), MUTED);
         term.present(&c, scroll)?;
         let e = term.event()?;
@@ -849,23 +882,24 @@ fn scissor_view(term: &mut Terminal, title: &str, session: &ScissorSession, note
     }
 }
 
-fn scissor_new_session(term: &mut Terminal, path: &Path, keys_only: bool) -> AppResult<()> {
+#[derive(Clone, Copy, PartialEq)]
+enum ScissorTest {
+    /// Single keys first, then scissor pairs.
+    Both,
+    Pairs,
+    Keys,
+}
+
+/// Ask hand, scissor kind, name and keyboard, then run a new session.
+fn scissor_new_session(term: &mut Terminal, path: &Path, test: ScissorTest) -> AppResult<()> {
     let sessions = scissor_load(path)?;
     let last = sessions.iter().rev().find(|s| s.source == "local");
-    let tester_default = last.map_or("", |s| s.tester.as_str()).to_string();
-    let Some(tester) = input_box(term, "Your name (letters and digits; it goes into the code)", "", &tester_default)? else {
-        return Ok(());
-    };
-    let board_default = last.map_or("rowstag", |s| s.board.as_str()).to_string();
-    let Some(board) = input_box(term, "Keyboard you rate on (e.g. rowstag, ortho, corne)", "", &board_default)? else {
-        return Ok(());
-    };
     let hand_items = ["Left hand", "Right hand", "Both hands"].map(String::from);
     let Some(hand) = menu(term, "Which hand?", &hand_items)? else {
         return Ok(());
     };
     let hands = ['L', 'R', 'B'][hand];
-    let set = if keys_only {
+    let set = if test == ScissorTest::Keys {
         'k'
     } else {
         let kinds = [
@@ -877,7 +911,24 @@ fn scissor_new_session(term: &mut Terminal, path: &Path, keys_only: bool) -> App
         let Some(kind) = menu(term, "Which scissors?", &kinds)? else {
             return Ok(());
         };
-        ['h', 'f', 'a'][kind]
+        if test == ScissorTest::Both {
+            ['c', 'd', 'e'][kind]
+        } else {
+            ['h', 'f', 'a'][kind]
+        }
+    };
+    let tester_default = last.map_or("", |s| s.tester.as_str()).to_string();
+    let Some(tester) = input_box(term, "Your name (letters and digits; it goes into the code)", "", &tester_default)? else {
+        return Ok(());
+    };
+    let board_default = last.map_or("rowstag", |s| s.board.as_str()).to_string();
+    let Some(board) = input_box(
+        term,
+        "Keyboard you rate on (e.g. rowstag, colstag, ortho, corne)",
+        "",
+        &board_default,
+    )? else {
+        return Ok(());
     };
 
     let seconds = SystemTime::now()
@@ -885,9 +936,15 @@ fn scissor_new_session(term: &mut Terminal, path: &Path, keys_only: bool) -> App
         .map_or(0, |time| time.as_secs());
     let stamp = scissor_stamp(seconds);
     let mut rng = Rng::new(timestamp() as u64 ^ 0x9e37_79b9_7f4a_7c15);
+    // Shuffle the single keys and the pairs each within their own block,
+    // so a combined test still rates every key before any pair.
     let mut items = scissor_items(hands, set);
-    for i in (1..items.len()).rev() {
-        items.swap(i, rng.index(i + 1));
+    let keys = items.iter().filter(|item| item.jump == 0).count();
+    for block in [0..keys, keys..items.len()] {
+        for i in (block.start + 1..block.end).rev() {
+            let j = block.start + rng.index(i - block.start + 1);
+            items.swap(i, j);
+        }
     }
     let mut shown = BTreeMap::new();
     for item in &items {
@@ -979,6 +1036,7 @@ fn scissor_browse(term: &mut Terminal, path: &Path) -> AppResult<()> {
 fn scissor_test(term: &mut Terminal) -> AppResult<()> {
     let path = Path::new(SCISSOR_FILE);
     let items = [
+        "Rate scissors and single keys",
         "Rate scissor pairs",
         "Rate single keys",
         "Enter a code someone sent you",
@@ -990,9 +1048,10 @@ fn scissor_test(term: &mut Terminal) -> AppResult<()> {
             return Ok(());
         };
         match choice {
-            0 => scissor_new_session(term, path, false)?,
-            1 => scissor_new_session(term, path, true)?,
-            2 => scissor_enter_code(term, path)?,
+            0 => scissor_new_session(term, path, ScissorTest::Both)?,
+            1 => scissor_new_session(term, path, ScissorTest::Pairs)?,
+            2 => scissor_new_session(term, path, ScissorTest::Keys)?,
+            3 => scissor_enter_code(term, path)?,
             _ => scissor_browse(term, path)?,
         }
         if term.quitting {
@@ -1027,6 +1086,11 @@ mod scissor_tests {
         assert_eq!(scissor_items('L', 'f').len(), 18);
         assert_eq!(scissor_items('B', 'a').len(), 108);
         assert_eq!(scissor_items('R', 'k').len(), 15);
+        assert_eq!(scissor_items('L', 'c').len(), 51);
+        assert_eq!(scissor_items('B', 'e').len(), 138);
+        let both = scissor_items('B', 'd');
+        assert!(both[..30].iter().all(|item| item.jump == 0));
+        assert!(both[30..].iter().all(|item| item.jump == 2));
         let half: Vec<_> = scissor_items('L', 'h').into_iter().map(|i| i.id).collect();
         for id in ["DR", "AB", "SZ", "CG", "AE"] {
             assert!(half.contains(&id.to_string()), "{id}");
@@ -1037,7 +1101,7 @@ mod scissor_tests {
 
     #[test]
     fn codes_round_trip_partial_and_full() {
-        for (hands, set) in [('L', 'h'), ('B', 'a'), ('R', 'k'), ('L', 'f')] {
+        for (hands, set) in [('L', 'h'), ('B', 'a'), ('R', 'k'), ('L', 'f'), ('B', 'e'), ('R', 'c')] {
             let mut s = session(hands, set);
             for (n, item) in s.items().iter().enumerate() {
                 if n % 5 != 3 {

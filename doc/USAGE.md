@@ -20,8 +20,10 @@ The home menu has four tabs: **Workbench** (editor, ranker, optimizer),
 Press `?` on any screen for its controls.
 
 The scissor test rates same-hand key pairs of different fingers (half
-scissors one row apart, full scissors two rows apart) or single keys, from
-1 (very easy) to 6 (terrible). Keys are named by QWERTY position whatever
+scissors one row apart, full scissors two rows apart), single keys, or both
+in one session (keys first, then pairs), from 1 (very easy) to 6
+(terrible). It asks for the hand, the scissors, your name and the keyboard
+(e.g. rowstag, colstag, ortho, corne). Keys are named by QWERTY position whatever
 layout you type on. Items are shuffled, each pair's typing order is random,
 and four show per page (`1`-`6` rate and move on, arrows move, PgUp/PgDn
 page, `x` clears, Esc finishes). Every change is saved to
