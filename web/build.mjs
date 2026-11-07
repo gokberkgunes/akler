@@ -47,8 +47,8 @@ cpSync(join(modules, "@xterm/xterm/css/xterm.css"), join(dist, "vendor/xterm/xte
 cpSync(join(modules, "@xterm/addon-fit/lib/addon-fit.mjs"), join(dist, "vendor/xterm/addon-fit.mjs"));
 cpSync(join(modules, "@xterm/addon-webgl/lib/addon-webgl.mjs"), join(dist, "vendor/xterm/addon-webgl.mjs"));
 
-// Data: layouts without backups or reports, the served corpora, the scissor
-// test's word list, and akler.conf using one worker per core.
+// Data: layouts without backups or reports, the served corpora, and
+// akler.conf using one worker per core.
 const skip = (name) =>
   name.startsWith(".") || name.endsWith(".bak") || name.endsWith(".run.txt") || name.endsWith(".csv");
 // Only layouts git tracks: local files and optimizer output stay private.
@@ -65,8 +65,6 @@ mkdirSync(join(data, "corpus/processed"), { recursive: true });
 for (const name of CORPORA) {
   cpSync(join(root, "corpus/processed", name), join(data, "corpus/processed", name));
 }
-const words = execFileSync(join(root, "target/release/akler"), ["scissor-words"], { cwd: root });
-writeFileSync(join(data, "corpus/scissor-words.txt"), words);
 const config = readFileSync(join(root, "akler.conf"), "utf8").replace(/^workers = \d+$/m, "workers = 0");
 writeFileSync(join(data, "akler.conf"), config);
 // Pre-parsed corpora for the page's settings and this build, so the browser

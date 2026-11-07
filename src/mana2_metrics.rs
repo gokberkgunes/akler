@@ -1857,17 +1857,6 @@ fn stretch_rating(a: &PhysicalKey, b: &PhysicalKey) -> f64 {
     80.0 * (((((dx - 0.25).max(0.0)) / df).powi(2)) - 1.0).max(0.0)
 }
 
-/// Mana2's scissor rating for pressing `b` after `a`.
-pub(crate) fn scissor(a: Key, b: Key) -> f64 {
-    scissor_rating(&PhysicalKey::from_key(a), &PhysicalKey::from_key(b))
-}
-
-/// Where Mana2 measures `key`, in key units; a larger y is lower.
-pub(crate) fn position(key: Key) -> (f64, f64) {
-    let key = PhysicalKey::from_key(key);
-    (key.x(), key.y())
-}
-
 fn scissor_rating(a: &PhysicalKey, b: &PhysicalKey) -> f64 {
     if a.is_thumb()
         || b.is_thumb()

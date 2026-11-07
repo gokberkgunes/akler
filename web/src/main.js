@@ -162,6 +162,16 @@ const terminal = new Terminal({
   allowProposedApi: true,
   theme: THEMES[themeName].terminal,
 });
+// OSC 52 from akler (the scissor test's result code) goes to the clipboard.
+terminal.parser.registerOscHandler(52, (data) => {
+  const encoded = data.slice(data.indexOf(";") + 1);
+  try {
+    navigator.clipboard?.writeText(atob(encoded)).catch(() => {});
+  } catch {
+    // Not base64, or no clipboard: the code is still on screen.
+  }
+  return true;
+});
 // Exposed for scripted checks of what the terminal shows.
 globalThis.aklerTerminal = terminal;
 const fit = new FitAddon();

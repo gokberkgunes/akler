@@ -21,7 +21,7 @@ or `$WASMER`), and lists any output that differs; timings are ignored.
 
 `npm run build` compiles `akler.wasm`, copies the page and its runtime into
 `web/dist`, and bundles the data: layouts, the monkeyracer corpus (`CORPORA` in
-`build.mjs`), the scissor test's word list (`akler scissor-words`) and
+`build.mjs`) and
 `akler.conf` with `workers = 0`, so the optimizer uses one worker per core.
 
 ## Hosting

@@ -1,904 +1,1093 @@
-// Scissor test: the user types real words on their own keyboard and rates
-// how much they dislike each same-hand, cross-row finger pair. Ratings go to
-// scissors/<layout>.csv, with each pair's geometry and Mana2 rating, for
-// fitting a scissor formula. Mana2's rating is never shown during the test.
+// Scissor test: rate how comfortable same-hand key pairs (or single keys)
+// are, four to a page, on a 6-level scale. Keys are named by their QWERTY
+// *position*, whatever layout the tester types on, so results from different
+// people compare directly. Items are shuffled and each pair's typing order is
+// random. Every session lands in scissors/ratings.jsonc, and leaving prints a
+// short code another person can send back; "Enter a code" decodes it.
 
-const SCISSOR_DIR: &str = "scissors";
+const SCISSOR_FILE: &str = "scissors/ratings.jsonc";
 
-const SCISSOR_LEVELS: [&str; 5] = [
-    "fine",
-    "slightly awkward",
-    "awkward",
-    "uncomfortable",
-    "awful",
+const SCISSOR_LEVELS: [&str; 6] = [
+    "Very easy",
+    "Comfortable",
+    "Manageable",
+    "Slight issue",
+    "Uncomfortable",
+    "Terrible",
 ];
 
-/// Words typed per pair, and how many of the corpus text's most frequent
-/// words are searched for each pair.
-const SCISSOR_WORDS: usize = 3;
-const SCISSOR_VOCABULARY: usize = 60_000;
-const SCISSOR_WORDS_PER_PAIR: usize = 30;
+/// One hand's 3×5 block, outer column first.
+const SCISSOR_LEFT: [&str; 3] = ["qwert", "asdfg", "zxcvb"];
+const SCISSOR_RIGHT: [&str; 3] = ["poiuy", ";lkjh", "/.,mn"];
+const SCISSOR_FINGERS: [&str; 5] = ["pinky", "ring", "middle", "index", "index"];
 
-const SCISSOR_HEADER: &str = "layout,pass,first_label,second_label,first_slot,second_slot,hand,first_finger,second_finger,first_row,first_col,second_row,second_col,first_inner,second_inner,first_x,first_y,second_x,second_y,dx,dy,direction,lower_finger,mana2,words,pair_ms,typical_ms,attempts,errors,rating,level,time";
+/// Crockford base32: no I, L, O or U, so a code survives being retyped.
+const SCISSOR_ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-struct ScissorPair {
-    first: usize,
-    second: usize,
-    /// Words whose typing presses `first` then `second`, most frequent first.
-    words: Vec<String>,
-    /// Where the next prompt starts in `words`.
-    next: usize,
+const SCISSOR_PER_PAGE: usize = 4;
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScissorItem {
+    /// The keys, sorted, upper case: "CS".
+    id: String,
+    keys: Vec<char>,
+    hand: char,
+    /// Rows apart: 1 half, 2 full; 0 for a single key.
+    jump: usize,
+    fingers: Vec<&'static str>,
 }
 
-struct ScissorPrompt {
-    text: Vec<u8>,
-    /// Per occurrence of the pair: the text index of the last byte `first`
-    /// types and of the first byte `second` types.
-    targets: Vec<(usize, usize)>,
-    /// The same for every other press pair within a word, for the user's
-    /// typical speed.
-    others: Vec<(usize, usize)>,
-}
-
-#[derive(Default)]
-struct ScissorTyping {
-    typed: Vec<u8>,
-    /// When each text position was last typed, and whether that was the
-    /// first try with nothing erased.
-    times: Vec<Option<Instant>>,
-    first_try: Vec<bool>,
-    errors: usize,
-}
-
-impl ScissorTyping {
-    fn new(len: usize) -> Self {
-        Self {
-            typed: Vec::new(),
-            times: vec![None; len],
-            first_try: vec![true; len],
-            errors: 0,
+impl ScissorItem {
+    fn info(&self) -> String {
+        let mut text = self.fingers.join("–");
+        if self.jump == 2 {
+            text.push_str("  full");
         }
-    }
-
-    fn done(&self, text: &[u8]) -> bool {
-        self.typed == text
-    }
-
-    fn push(&mut self, text: &[u8], byte: u8) {
-        let at = self.typed.len();
-        if at >= text.len() {
-            return;
-        }
-        if byte != text[at] {
-            self.errors += 1;
-            self.first_try[at] = false;
-        }
-        self.typed.push(byte);
-        self.times[at] = Some(Instant::now());
-    }
-
-    fn erase(&mut self) {
-        if self.typed.pop().is_some() {
-            self.first_try[self.typed.len()] = false;
-        }
-    }
-
-    /// Median milliseconds between the presses of `pairs` typed on the first
-    /// try.
-    fn median_ms(&self, pairs: &[(usize, usize)]) -> Option<f64> {
-        let mut gaps: Vec<f64> = pairs
-            .iter()
-            .filter(|&&(a, b)| self.first_try[a] && self.first_try[b])
-            .filter_map(|&(a, b)| Some(self.times[b]?.duration_since(self.times[a]?)))
-            .map(|gap| gap.as_secs_f64() * 1000.0)
-            .collect();
-        if gaps.is_empty() {
-            return None;
-        }
-        gaps.sort_by(f64::total_cmp);
-        let middle = gaps.len() / 2;
-        Some(if gaps.len() % 2 == 1 {
-            gaps[middle]
-        } else {
-            (gaps[middle - 1] + gaps[middle]) / 2.0
-        })
+        text
     }
 }
 
-/// The saved ratings for one layout: each line with the pair it rates.
-struct ScissorLog {
-    path: PathBuf,
-    lines: Vec<((usize, usize), String)>,
-}
-
-impl ScissorLog {
-    fn load(path: PathBuf) -> AppResult<Self> {
-        let mut lines = Vec::new();
-        if path.is_file() {
-            for line in fs::read_to_string(&path)?.lines().skip(1) {
-                let fields = scissor_csv_fields(line);
-                let slot = |index: usize| fields.get(index).and_then(|field| field.parse().ok());
-                if let (Some(first), Some(second)) = (slot(4), slot(5)) {
-                    lines.push(((first, second), line.to_owned()));
-                }
-            }
-        }
-        Ok(Self { path, lines })
-    }
-
-    fn save(&self) -> AppResult<()> {
-        if let Some(directory) = self.path.parent() {
-            fs::create_dir_all(directory)?;
-        }
-        let mut text = format!("{SCISSOR_HEADER}\n");
-        for (_, line) in &self.lines {
-            text.push_str(line);
-            text.push('\n');
-        }
-        fs::write(&self.path, text)?;
-        Ok(())
-    }
-
-    fn count(&self, pair: (usize, usize)) -> usize {
-        self.lines.iter().filter(|(rated, _)| *rated == pair).count()
-    }
-}
-
-fn scissor_csv(field: &str) -> String {
-    if field.contains([',', '"', '\n']) {
-        format!("\"{}\"", field.replace('"', "\"\""))
+fn scissor_block(hand: char) -> [&'static str; 3] {
+    if hand == 'L' {
+        SCISSOR_LEFT
     } else {
-        field.to_owned()
+        SCISSOR_RIGHT
     }
 }
 
-fn scissor_csv_fields(line: &str) -> Vec<String> {
-    let mut fields = vec![String::new()];
-    let mut quoted = false;
-    let mut chars = line.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '"' if quoted && chars.peek() == Some(&'"') => {
-                chars.next();
-                fields.last_mut().unwrap().push('"');
+/// Row and column of a key in its hand's block.
+fn scissor_place(hand: char, key: char) -> Option<(usize, usize)> {
+    scissor_block(hand)
+        .iter()
+        .enumerate()
+        .find_map(|(row, keys)| keys.find(key).map(|col| (row, col)))
+}
+
+fn scissor_hands(hands: char) -> &'static [char] {
+    match hands {
+        'L' => &['L'],
+        'R' => &['R'],
+        _ => &['L', 'R'],
+    }
+}
+
+/// The items of a test, in the fixed order its code uses. `set`: 'h' half
+/// scissors, 'f' full, 'a' both, 'k' single keys.
+fn scissor_items(hands: char, set: char) -> Vec<ScissorItem> {
+    let mut items = Vec::new();
+    for &hand in scissor_hands(hands) {
+        let keys: Vec<char> = scissor_block(hand).concat().chars().collect();
+        if set == 'k' {
+            for &key in &keys {
+                let (_, col) = scissor_place(hand, key).unwrap();
+                items.push(ScissorItem {
+                    id: key.to_ascii_uppercase().to_string(),
+                    keys: vec![key],
+                    hand,
+                    jump: 0,
+                    fingers: vec![SCISSOR_FINGERS[col]],
+                });
             }
-            '"' => quoted = !quoted,
-            ',' if !quoted => fields.push(String::new()),
-            _ => fields.last_mut().unwrap().push(ch),
-        }
-    }
-    fields
-}
-
-fn scissor_thumb(layout: &action_keys::Layout, slot: usize) -> bool {
-    layout.slots[slot].finger >= 8
-}
-
-fn scissor_left(layout: &action_keys::Layout, slot: usize) -> bool {
-    layout.slots[slot].finger < 4
-}
-
-/// An index key with another index key of its row between it and the
-/// middle finger.
-fn scissor_inner(layout: &action_keys::Layout, slot: usize) -> bool {
-    let key = &layout.slots[slot];
-    if !matches!(key.finger, 3 | 4) {
-        return false;
-    }
-    layout.slots.iter().any(|other| {
-        other.finger == key.finger
-            && other.row == key.row
-            && if key.finger == 3 {
-                other.col < key.col
-            } else {
-                other.col > key.col
-            }
-    })
-}
-
-/// Same-hand pairs of different non-thumb fingers at different heights, in
-/// both orders.
-fn scissor_pairs(layout: &action_keys::Layout) -> Vec<(usize, usize)> {
-    let keys = crate::action_ui::physical_keys(layout);
-    let mut pairs = Vec::new();
-    for first in 0..keys.len() {
-        for second in 0..keys.len() {
-            if first == second
-                || scissor_thumb(layout, first)
-                || scissor_thumb(layout, second)
-                || scissor_left(layout, first) != scissor_left(layout, second)
-                || layout.slots[first].finger == layout.slots[second].finger
-                || mana2_metrics::position(keys[first]).1 == mana2_metrics::position(keys[second]).1
-            {
-                continue;
-            }
-            pairs.push((first, second));
-        }
-    }
-    pairs
-}
-
-/// A ready word list, most frequent first, one per line, used instead of raw
-/// text when present. Web builds ship it (`akler scissor-words`).
-const SCISSOR_WORD_LIST: &str = "corpus/scissor-words.txt";
-
-/// The word list or raw text words come from, and its words.
-fn scissor_source() -> AppResult<(PathBuf, Vec<Vec<u8>>)> {
-    let list = Path::new(SCISSOR_WORD_LIST);
-    if list.is_file() {
-        let text = fs::read(list).map_err(|error| format!("{}: {error}", list.display()))?;
-        let words = text
-            .split(|&byte| byte == b'\n')
-            .filter(|word| !word.is_empty())
-            .map(<[u8]>::to_vec)
-            .collect();
-        return Ok((list.to_owned(), words));
-    }
-    let path = scissor_text_path()?;
-    let words = scissor_vocabulary(&path)?;
-    Ok((path, words))
-}
-
-/// `akler scissor-words`: print the raw text's word list for `SCISSOR_WORD_LIST`.
-fn scissor_words_command() -> AppResult<()> {
-    let words = scissor_vocabulary(&scissor_text_path()?)?;
-    let mut out = BufWriter::new(io::stdout().lock());
-    for word in words {
-        out.write_all(&word)?;
-        out.write_all(b"\n")?;
-    }
-    out.flush()?;
-    Ok(())
-}
-
-/// The default corpus's raw text, or any raw text.
-fn scissor_text_path() -> AppResult<PathBuf> {
-    let preferred = Path::new(RAW_CORPUS_DIR).join("reddit.txt");
-    if preferred.is_file() {
-        return Ok(preferred);
-    }
-    let mut paths: Vec<_> = fs::read_dir(RAW_CORPUS_DIR)
-        .map_err(|error| format!("{RAW_CORPUS_DIR}: {error}"))?
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .filter(|path| path.is_file())
-        .collect();
-    paths.sort();
-    paths
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("the scissor test needs words: add a text file to {RAW_CORPUS_DIR}").into())
-}
-
-/// Lowercase words of the text, most frequent first.
-fn scissor_vocabulary(path: &Path) -> AppResult<Vec<Vec<u8>>> {
-    let text = fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut counts: HashMap<&[u8], u32> = HashMap::new();
-    // Words keep one trailing punctuation mark, so punctuation keys are
-    // typed in context too.
-    for token in text.split(|byte| byte.is_ascii_whitespace()) {
-        let token = token
-            .strip_prefix(b"\"")
-            .or_else(|| token.strip_prefix(b"("))
-            .unwrap_or(token);
-        let token = token
-            .strip_suffix(b"\"")
-            .or_else(|| token.strip_suffix(b")"))
-            .unwrap_or(token);
-        let word = token
-            .strip_suffix(b",")
-            .or_else(|| token.strip_suffix(b"."))
-            .or_else(|| token.strip_suffix(b";"))
-            .unwrap_or(token);
-        if (2..=12).contains(&word.len())
-            && word.iter().all(|byte| byte.is_ascii_lowercase() || *byte == b'\'')
-            && word[0] != b'\''
-            && word[word.len() - 1] != b'\''
-        {
-            *counts.entry(token).or_default() += 1;
-        }
-    }
-    let mut words: Vec<_> = counts.into_iter().filter(|&(_, count)| count >= 3).collect();
-    words.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    Ok(words
-        .into_iter()
-        .take(SCISSOR_VOCABULARY)
-        .map(|(word, _)| word.to_vec())
-        .collect())
-}
-
-/// How `layout` types `text`, as akler's decoder presses it.
-fn scissor_steps(
-    layout: &action_keys::Layout,
-    effort: &crate::action_ui::LocalEffort,
-    text: &[u8],
-) -> Option<Vec<action_keys::Step>> {
-    let stop = AtomicBool::new(false);
-    action_keys::decode(
-        layout,
-        text,
-        action_keys::DEFAULT_STATE_LIMIT,
-        &stop,
-        |a, b, key| effort.get(a, b, key),
-    )
-    .ok()
-}
-
-/// For each of `pairs`, the most frequent words that press it.
-fn scissor_words(
-    layout: &action_keys::Layout,
-    effort: &crate::action_ui::LocalEffort,
-    vocabulary: &[Vec<u8>],
-    pairs: &[(usize, usize)],
-) -> Vec<Vec<String>> {
-    let threads = available_threads();
-    let chunk = vocabulary.len().div_ceil(threads).max(1);
-    // Each word's consecutive presses, in vocabulary order.
-    let presses: Vec<Vec<(usize, usize)>> = thread::scope(|scope| {
-        let workers: Vec<_> = vocabulary
-            .chunks(chunk)
-            .map(|words| {
-                scope.spawn(move || {
-                    words
-                        .iter()
-                        .map(|word| {
-                            scissor_steps(layout, effort, word)
-                                .map(|steps| {
-                                    steps.windows(2).map(|step| (step[0].key, step[1].key)).collect()
-                                })
-                                .unwrap_or_default()
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        workers
-            .into_iter()
-            .flat_map(|worker| worker.join().unwrap())
-            .collect()
-    });
-    let index: HashMap<(usize, usize), usize> =
-        pairs.iter().enumerate().map(|(index, &pair)| (pair, index)).collect();
-    let mut words = vec![Vec::new(); pairs.len()];
-    for (word, pressed) in vocabulary.iter().zip(&presses) {
-        let mut seen = Vec::new();
-        for pair in pressed {
-            if let Some(&index) = index.get(pair) {
-                if !seen.contains(&index) && words[index].len() < SCISSOR_WORDS_PER_PAIR {
-                    seen.push(index);
-                    words[index].push(String::from_utf8_lossy(word).into_owned());
-                }
-            }
-        }
-    }
-    words
-}
-
-/// `text` with its pair occurrences located, or None when typing it never
-/// presses the pair.
-fn scissor_prompt(
-    layout: &action_keys::Layout,
-    effort: &crate::action_ui::LocalEffort,
-    pair: (usize, usize),
-    text: Vec<u8>,
-) -> Option<ScissorPrompt> {
-    let steps = scissor_steps(layout, effort, &text)?;
-    let mut targets = Vec::new();
-    let mut others = Vec::new();
-    for step in steps.windows(2) {
-        let (a, b) = (&step[0], &step[1]);
-        if a.output.is_empty() || b.output.is_empty() || a.end != b.start {
             continue;
         }
-        let gap = (a.end - 1, b.start);
-        if (a.key, b.key) == pair {
-            targets.push(gap);
-        } else if !a.output.contains(&b' ') && !b.output.contains(&b' ') {
-            others.push(gap);
+        for (i, &a) in keys.iter().enumerate() {
+            for &b in &keys[i + 1..] {
+                let (ra, ca) = scissor_place(hand, a).unwrap();
+                let (rb, cb) = scissor_place(hand, b).unwrap();
+                let jump = ra.abs_diff(rb);
+                let wanted = match jump {
+                    1 => set != 'f',
+                    2 => set != 'h',
+                    _ => false,
+                };
+                if !wanted || SCISSOR_FINGERS[ca] == SCISSOR_FINGERS[cb] {
+                    continue;
+                }
+                let mut id: Vec<char> = [a, b].iter().map(|c| c.to_ascii_uppercase()).collect();
+                id.sort_unstable();
+                // Outer finger first: "pinky–middle".
+                let fingers = vec![SCISSOR_FINGERS[ca.min(cb)], SCISSOR_FINGERS[ca.max(cb)]];
+                items.push(ScissorItem {
+                    id: id.into_iter().collect(),
+                    keys: vec![a, b],
+                    hand,
+                    jump,
+                    fingers,
+                });
+            }
         }
     }
-    (!targets.is_empty()).then_some(ScissorPrompt {
-        text,
-        targets,
-        others,
+    items
+}
+
+fn scissor_set_name(hands: char, set: char) -> String {
+    let hand = match hands {
+        'L' => "left hand",
+        'R' => "right hand",
+        _ => "both hands",
+    };
+    let what = match set {
+        'h' => "half scissors",
+        'f' => "full scissors",
+        'a' => "half + full scissors",
+        _ => "single keys",
+    };
+    format!("{what}, {hand}")
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ScissorSession {
+    /// "20261107-153012" (UTC), unique per local session.
+    session: String,
+    /// "20261107": the day the test started.
+    date: String,
+    tester: String,
+    board: String,
+    /// 'L', 'R' or 'B'.
+    hands: char,
+    /// 'h', 'f', 'a' or 'k' (see `scissor_items`).
+    set: char,
+    /// "local", "code" or "akler_rate.py".
+    source: String,
+    blind: bool,
+    /// Item ids in the order shown; empty for decoded codes.
+    order: Vec<String>,
+    /// The typing order shown per item: "SC" for item "CS".
+    shown: BTreeMap<String, String>,
+    /// Item id → level 1..=6.
+    ratings: BTreeMap<String, u8>,
+}
+
+impl ScissorSession {
+    fn items(&self) -> Vec<ScissorItem> {
+        scissor_items(self.hands, self.set)
+    }
+
+    fn rated(&self) -> usize {
+        self.items()
+            .iter()
+            .filter(|item| self.ratings.contains_key(&item.id))
+            .count()
+    }
+
+    fn summary(&self) -> String {
+        format!(
+            "{}  {}  {}  {}  {}/{} rated{}",
+            self.date,
+            self.tester,
+            self.board,
+            scissor_set_name(self.hands, self.set),
+            self.rated(),
+            self.items().len(),
+            match self.source.as_str() {
+                "local" => String::new(),
+                source => format!("  ({source})"),
+            }
+        )
+    }
+}
+
+// ------------------------------------------------------------------ code ----
+
+/// Lower case letters, digits and '_': what a code's name fields may hold.
+fn scissor_name(text: &str, fallback: &str) -> String {
+    let name: String = text
+        .trim()
+        .chars()
+        .map(|c| if c.is_whitespace() || c == '-' { '_' } else { c.to_ascii_lowercase() })
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .take(20)
+        .collect();
+    if name.is_empty() {
+        fallback.into()
+    } else {
+        name
+    }
+}
+
+/// `digits` in base `from`, most significant first, rewritten in base `to`
+/// with at least `width` digits.
+fn scissor_rebase(digits: &[u32], from: u32, to: u32, width: usize) -> Vec<u32> {
+    let mut number = digits.to_vec();
+    let mut out = Vec::new();
+    while number.iter().any(|&d| d != 0) {
+        let mut rest = 0;
+        for digit in number.iter_mut() {
+            let value = rest * from + *digit;
+            *digit = value / to;
+            rest = value % to;
+        }
+        out.push(rest);
+    }
+    out.resize(out.len().max(width), 0);
+    out.reverse();
+    out
+}
+
+/// Base-32 digits a test with `count` items needs: enough for 7^count − 1.
+fn scissor_payload_width(count: usize) -> usize {
+    scissor_rebase(&vec![6; count], 7, 32, 0).len()
+}
+
+/// Two base-32 check characters over the rest of the code.
+fn scissor_check(body: &str) -> String {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in body.to_ascii_lowercase().bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let hash = (hash ^ (hash >> 16)) & 0x3ff;
+    [hash >> 5, hash & 31]
+        .iter()
+        .map(|&d| SCISSOR_ALPHABET[d as usize] as char)
+        .collect()
+}
+
+/// `DATE-BOARD-TESTER-SET-PAYLOAD`, e.g. `20261107-rowstag-gg-Lh-3M0…`.
+/// The payload holds every item's level (0 unrated) in base 7, in the fixed
+/// order of `scissor_items`, written in base 32 with two check characters.
+fn scissor_code(session: &ScissorSession) -> String {
+    let items = session.items();
+    let digits: Vec<u32> = items
+        .iter()
+        .map(|item| session.ratings.get(&item.id).map_or(0, |&level| u32::from(level)))
+        .collect();
+    let width = scissor_payload_width(items.len());
+    let payload: String = scissor_rebase(&digits, 7, 32, width)
+        .iter()
+        .map(|&d| SCISSOR_ALPHABET[d as usize] as char)
+        .collect();
+    let body = format!(
+        "{}-{}-{}-{}{}-{payload}",
+        session.date,
+        scissor_name(&session.board, "board"),
+        scissor_name(&session.tester, "anon"),
+        session.hands,
+        session.set,
+    );
+    let check = scissor_check(&body);
+    format!("{body}{check}")
+}
+
+fn scissor_decode(code: &str) -> Result<ScissorSession, String> {
+    let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    let parts: Vec<&str> = code.split('-').collect();
+    let [date, board, tester, set, payload] = parts[..] else {
+        return Err("A code has five parts: date-board-tester-set-ratings.".into());
+    };
+    if date.len() != 8 || !date.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("'{date}' is not a date (YYYYMMDD)."));
+    }
+    let mut set_chars = set.chars();
+    let (Some(hands), Some(kind), None) = (
+        set_chars.next().map(|c| c.to_ascii_uppercase()),
+        set_chars.next().map(|c| c.to_ascii_lowercase()),
+        set_chars.next(),
+    ) else {
+        return Err(format!("'{set}' is not a test kind such as Lh."));
+    };
+    if !"LRB".contains(hands) || !"hfak".contains(kind) {
+        return Err(format!("'{set}' is not a test kind such as Lh."));
+    }
+    let items = scissor_items(hands, kind);
+    let width = scissor_payload_width(items.len());
+    let normal: String = payload
+        .chars()
+        .map(|c| match c.to_ascii_uppercase() {
+            'O' => '0',
+            'I' | 'L' => '1',
+            c => c,
+        })
+        .collect();
+    if normal.len() != width + 2 {
+        return Err(format!(
+            "The ratings part should have {} characters for {}; it has {}.",
+            width + 2,
+            scissor_set_name(hands, kind),
+            normal.len()
+        ));
+    }
+    let (digits, check) = normal.split_at(width);
+    let body = format!("{date}-{board}-{tester}-{hands}{kind}-{digits}");
+    if scissor_check(&body) != check {
+        return Err("The code's check characters do not match: it was probably mistyped.".into());
+    }
+    let values: Vec<u32> = digits
+        .bytes()
+        .map(|b| SCISSOR_ALPHABET.iter().position(|&a| a == b).map(|d| d as u32))
+        .collect::<Option<_>>()
+        .ok_or("The ratings part has a character no code uses.")?;
+    let levels = scissor_rebase(&values, 32, 7, items.len());
+    if levels.len() != items.len() {
+        return Err("The ratings part is too large for this test.".into());
+    }
+    let ratings = items
+        .iter()
+        .zip(levels)
+        .filter(|(_, level)| *level > 0)
+        .map(|(item, level)| (item.id.clone(), level as u8))
+        .collect();
+    Ok(ScissorSession {
+        session: format!("code-{date}-{board}-{tester}-{hands}{kind}"),
+        date: date.into(),
+        tester: tester.to_ascii_lowercase(),
+        board: board.to_ascii_lowercase(),
+        hands,
+        set: kind,
+        source: "code".into(),
+        blind: true,
+        order: Vec::new(),
+        shown: BTreeMap::new(),
+        ratings,
     })
 }
 
-/// The next words for `pair`, filled up to `SCISSOR_WORDS` with a drill of
-/// its two keys' characters (all drill when no word presses it).
-fn scissor_next_prompt(
-    layout: &action_keys::Layout,
-    effort: &crate::action_ui::LocalEffort,
-    pair: &mut ScissorPair,
-) -> Option<ScissorPrompt> {
-    let keys = (pair.first, pair.second);
-    // A key's own character, or its label's for an action key such as an
-    // adaptive one; decoding the prompt checks it presses the pair.
-    let typed = |slot: usize| match &layout.slots[slot].binding {
-        action_keys::Binding::Text(text) if text.len() == 1 => Some(text[0]),
-        _ => {
-            let label = layout.slots[slot].label.as_bytes();
-            (label.len() == 1).then(|| label[0])
-        }
-    };
-    let drill = typed(pair.first).zip(typed(pair.second)).map(|(a, b)| vec![a, b]);
-    let count = pair.words.len().min(SCISSOR_WORDS);
-    let mut tokens: Vec<Vec<u8>> = (0..count)
-        .map(|offset| pair.words[(pair.next + offset) % pair.words.len()].clone().into_bytes())
-        .collect();
-    if count > 0 {
-        pair.next = (pair.next + count) % pair.words.len();
-    }
-    if let Some(drill) = &drill {
-        tokens.resize(SCISSOR_WORDS, drill.clone());
-    }
-    scissor_prompt(layout, effort, keys, tokens.join(&b' '))
-        .or_else(|| scissor_prompt(layout, effort, keys, vec![drill?; SCISSOR_WORDS].join(&b' ')))
-}
+// --------------------------------------------------------------- storage ----
 
-fn scissor_row_name(row: i8) -> String {
-    match row {
-        0 => "top".into(),
-        1 => "home".into(),
-        2 => "bottom".into(),
-        row => format!("row {}", row + 1),
-    }
-}
-
-/// "left index (inner) top" for the user, and the finger's name.
-fn scissor_key_name(layout: &action_keys::Layout, slot: usize) -> String {
-    let key = &layout.slots[slot];
-    let finger = ["pinky", "ring", "middle", "index", "index", "middle", "ring", "pinky"]
-        .get(key.finger)
-        .copied()
-        .unwrap_or("thumb");
+/// UTC "YYYYMMDD-HHMMSS" for `seconds` since 1970.
+fn scissor_stamp(seconds: u64) -> String {
+    let days = (seconds / 86_400) as i64;
+    let rest = seconds % 86_400;
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
     format!(
-        "{} {finger}{} {}",
-        if scissor_left(layout, slot) { "left" } else { "right" },
-        if scissor_inner(layout, slot) { " (inner)" } else { "" },
-        scissor_row_name(key.row)
+        "{year:04}{month:02}{day:02}-{:02}{:02}{:02}",
+        rest / 3600,
+        rest / 60 % 60,
+        rest % 60
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn scissor_record(
-    layout_name: &str,
-    layout: &action_keys::Layout,
-    pass: usize,
-    pair: &ScissorPair,
-    prompt: &ScissorPrompt,
-    typing: &ScissorTyping,
-    attempts: usize,
-    rating: usize,
-) -> String {
-    let keys = crate::action_ui::physical_keys(layout);
-    let (a, b) = (&layout.slots[pair.first], &layout.slots[pair.second]);
-    let (ax, ay) = mana2_metrics::position(keys[pair.first]);
-    let (bx, by) = mana2_metrics::position(keys[pair.second]);
-    let lower = if by > ay { b } else { a };
-    let ms = |value: Option<f64>| value.map(|value| format!("{value:.1}")).unwrap_or_default();
-    let time = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |time| time.as_secs());
-    [
-        layout_name.to_owned(),
-        pass.to_string(),
-        a.label.clone(),
-        b.label.clone(),
-        pair.first.to_string(),
-        pair.second.to_string(),
-        if scissor_left(layout, pair.first) { "left" } else { "right" }.into(),
-        FINGER_NAMES[a.finger].into(),
-        FINGER_NAMES[b.finger].into(),
-        a.row.to_string(),
-        a.col.to_string(),
-        b.row.to_string(),
-        b.col.to_string(),
-        scissor_inner(layout, pair.first).to_string(),
-        scissor_inner(layout, pair.second).to_string(),
-        ax.to_string(),
-        ay.to_string(),
-        bx.to_string(),
-        by.to_string(),
-        (bx - ax).to_string(),
-        (by - ay).to_string(),
-        if by > ay { "down" } else { "up" }.into(),
-        FINGER_NAMES[lower.finger].into(),
-        format!("{:.4}", mana2_metrics::scissor(keys[pair.first], keys[pair.second])),
-        String::from_utf8_lossy(&prompt.text).into_owned(),
-        ms(typing.median_ms(&prompt.targets)),
-        ms(typing.median_ms(&prompt.others)),
-        attempts.to_string(),
-        typing.errors.to_string(),
-        rating.to_string(),
-        SCISSOR_LEVELS[rating].into(),
-        time.to_string(),
-    ]
-    .iter()
-    .map(|field| scissor_csv(field))
-    .collect::<Vec<_>>()
-    .join(",")
+fn scissor_json_session(value: &Json) -> Option<ScissorSession> {
+    let Json::Object(fields) = value else {
+        return None;
+    };
+    let text = |name: &str| match fields.get(name) {
+        Some(Json::String(text)) => Some(text.clone()),
+        _ => None,
+    };
+    let letter = |name: &str| text(name).and_then(|t| t.chars().next());
+    let hands = letter("hands")?;
+    let set = letter("set")?;
+    if !"LRB".contains(hands) || !"hfak".contains(set) {
+        return None;
+    }
+    let order = match fields.get("order") {
+        Some(Json::Array(ids)) => ids
+            .iter()
+            .filter_map(|id| match id {
+                Json::String(id) => Some(id.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let strings = |name: &str| -> BTreeMap<String, String> {
+        match fields.get(name) {
+            Some(Json::Object(map)) => map
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Json::String(v) => Some((k.clone(), v.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => BTreeMap::new(),
+        }
+    };
+    let ratings = match fields.get("ratings") {
+        Some(Json::Object(map)) => map
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Json::Number(n) if (1.0..=6.0).contains(n) && n.fract() == 0.0 => {
+                    Some((k.clone(), *n as u8))
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    Some(ScissorSession {
+        session: text("session")?,
+        date: text("date").unwrap_or_default(),
+        tester: text("tester").unwrap_or_default(),
+        board: text("board").unwrap_or_default(),
+        hands,
+        set,
+        source: text("source").unwrap_or_else(|| "local".into()),
+        blind: !matches!(fields.get("blind"), Some(Json::Bool(false))),
+        order,
+        shown: strings("shown"),
+        ratings,
+    })
 }
 
-/// The usual keyboard, the pair's first key on yellow and its second on
-/// blue, ending at the canvas's last row (or below `top` when it is short).
-fn scissor_keyboard(
-    canvas: &mut Canvas,
-    top: usize,
-    layout: &action_keys::Layout,
-    pair: (usize, usize),
-) -> usize {
-    let mut probe = Canvas::new(canvas.w, 1);
-    let height = crate::action_ui::action_keyboard(&mut probe, 0, layout, layout, None, None);
-    let y = canvas.h.saturating_sub(height).max(top);
-    let bottom = crate::action_ui::action_keyboard(canvas, y, layout, layout, None, None);
-    for (slot, marker, color, background) in [
-        (pair.0, '1', YELLOW, (110, 85, 0)),
-        (pair.1, '2', BLUE, (0, 70, 120)),
-    ] {
-        let key = canvas
-            .hits
-            .iter()
-            .find(|(_, action)| matches!(action, Action::Key(key) if *key == slot))
-            .map(|(rect, _)| *rect);
-        if let Some(rect) = key {
-            canvas.boxed(rect, color);
-            canvas.row_style(
-                Rect {
-                    x: rect.x + 1,
-                    y: rect.y + 1,
-                    w: rect.w.saturating_sub(2),
-                    h: 1,
-                },
-                Some(background),
-                true,
-            );
-            canvas.put(rect.x + 1, rect.y, marker, color);
+fn scissor_load(path: &Path) -> AppResult<Vec<ScissorSession>> {
+    if !path.is_file() {
+        return Ok(Vec::new());
+    }
+    let json = crate::layout_io::parse_jsonc(&fs::read_to_string(path)?)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let Json::Object(top) = json else {
+        return Err(format!("{}: expected an object", path.display()).into());
+    };
+    Ok(match top.get("sessions") {
+        Some(Json::Array(list)) => list.iter().filter_map(scissor_json_session).collect(),
+        _ => Vec::new(),
+    })
+}
+
+/// `entries` as JSON lines of at most ~90 characters, each indented.
+fn scissor_json_rows(entries: &[String], indent: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    for entry in entries {
+        match lines.last_mut() {
+            Some(line) if line.len() + entry.len() < 90 => {
+                line.push_str(", ");
+                line.push_str(entry);
+            }
+            _ => lines.push(format!("{indent}{entry}")),
         }
     }
-    bottom
+    lines.join(",\n")
 }
 
-enum ScissorStep {
-    Rated,
-    Skip,
-    Undo,
-    Leave,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scissor_trial(
-    term: &mut Terminal,
-    layout_name: &str,
-    layout: &action_keys::Layout,
-    effort: &crate::action_ui::LocalEffort,
-    pair: &mut ScissorPair,
-    progress: (usize, usize, usize),
-    log: &mut ScissorLog,
-    undoable: bool,
-) -> AppResult<ScissorStep> {
-    let (done, total, pass) = progress;
-    let Some(mut prompt) = scissor_next_prompt(layout, effort, pair) else {
-        return Ok(ScissorStep::Skip);
-    };
-    let mut typing = ScissorTyping::new(prompt.text.len());
-    let mut attempts = 1;
-    let first = &layout.slots[pair.first].label;
-    let second = &layout.slots[pair.second].label;
-    loop {
-        let rating = typing.done(&prompt.text);
-        let mut canvas = Canvas::new(term.width(), term.size.1.max(12));
-        canvas.text(2, 0, &format!("Scissor test · {layout_name}"), CYAN);
-        canvas.right(
-            0,
-            0,
-            canvas.w.saturating_sub(2),
-            &format!("pair {} of {total} · pass {pass}", done + 1),
-            MUTED,
-        );
-        let mut x = 2;
-        for (text, color) in [
-            (first.as_str(), YELLOW),
-            (" → ", FG),
-            (second.as_str(), BLUE),
-            ("   ", FG),
+fn scissor_text(sessions: &[ScissorSession]) -> String {
+    use crate::layout_export::json_quote as q;
+    let mut out = String::from(
+        "// akler scissor test ratings, one entry per session.\n\
+         // Levels: 1 Very easy, 2 Comfortable, 3 Manageable, 4 Slight issue,\n\
+         // 5 Uncomfortable, 6 Terrible. Keys are QWERTY positions.\n\
+         // set: h half scissors, f full, a half + full, k single keys.\n\
+         {\n  \"sessions\": [\n",
+    );
+    for (n, s) in sessions.iter().enumerate() {
+        out.push_str("    {\n");
+        for (name, value) in [
+            ("session", q(&s.session)),
+            ("date", q(&s.date)),
+            ("tester", q(&s.tester)),
+            ("board", q(&s.board)),
+            ("hands", q(&s.hands.to_string())),
+            ("set", q(&s.set.to_string())),
+            ("source", q(&s.source)),
+            ("blind", s.blind.to_string()),
+            ("code", q(&scissor_code(s))),
         ] {
-            canvas.text(x, 2, text, color);
-            x += text.chars().count();
+            out.push_str(&format!("      {}: {value},\n", q(name)));
         }
-        canvas.text(
-            x,
-            2,
-            &format!(
-                "{} → {}",
-                scissor_key_name(layout, pair.first),
-                scissor_key_name(layout, pair.second)
-            ),
-            MUTED,
-        );
-        // The typing bar: typed text green (red where wrong), the pair's
-        // characters in its keys' colours until typed, on a grey band.
-        let bar = Rect {
-            x: 2,
-            y: 4,
-            w: canvas.w.saturating_sub(4),
-            h: 3,
+        let order: Vec<String> = s.order.iter().map(|id| q(id)).collect();
+        let shown: Vec<String> = s.shown.iter().map(|(k, v)| format!("{}: {}", q(k), q(v))).collect();
+        let ratings: Vec<String> = s.ratings.iter().map(|(k, v)| format!("{}: {v}", q(k))).collect();
+        for (name, open, close, rows, last) in [
+            ("order", '[', ']', order, false),
+            ("shown", '{', '}', shown, false),
+            ("ratings", '{', '}', ratings, true),
+        ] {
+            let comma = if last { "" } else { "," };
+            if rows.is_empty() {
+                out.push_str(&format!("      {}: {open}{close}{comma}\n", q(name)));
+            } else {
+                out.push_str(&format!(
+                    "      {}: {open}\n{}\n      {close}{comma}\n",
+                    q(name),
+                    scissor_json_rows(&rows, "        ")
+                ));
+            }
+        }
+        out.push_str(if n + 1 < sessions.len() { "    },\n" } else { "    }\n" });
+    }
+    out.push_str("  ]\n}\n");
+    out
+}
+
+fn scissor_save(path: &Path, sessions: &[ScissorSession]) -> AppResult<()> {
+    if let Some(directory) = path.parent() {
+        fs::create_dir_all(directory)?;
+    }
+    atomic_write(path, &scissor_text(sessions))
+}
+
+/// Replace the stored session with the same id, or add it.
+fn scissor_store(path: &Path, session: &ScissorSession) -> AppResult<()> {
+    let mut sessions = scissor_load(path)?;
+    match sessions.iter_mut().find(|s| s.session == session.session) {
+        Some(stored) => *stored = session.clone(),
+        None => sessions.push(session.clone()),
+    }
+    scissor_save(path, &sessions)
+}
+
+// -------------------------------------------------------------------- UI ----
+
+/// Both hands' blocks, row-staggered, with the focused item's keys lit:
+/// the first shown key yellow, the second blue. Returns the next free row.
+fn scissor_mini_keyboard(c: &mut Canvas, y: usize, lit: &[char]) -> usize {
+    let rows = ["qwertyuiop", "asdfghjkl;", "zxcvbnm,./"];
+    let width = 10 * 4 + 2 + 2;
+    let left = c.w.saturating_sub(width) / 2;
+    for (r, keys) in rows.iter().enumerate() {
+        let mut x = left + [0, 1, 2][r];
+        for (i, key) in keys.chars().enumerate() {
+            if i == 5 {
+                x += 2;
+            }
+            let at = lit.iter().position(|&k| k == key);
+            let (color, background) = match at {
+                Some(0) => (YELLOW, Some((110, 85, 0))),
+                Some(_) => (BLUE, Some((0, 70, 120))),
+                None => (MUTED, None),
+            };
+            c.text(x, y + r, &format!("[{}]", key.to_ascii_uppercase()), color);
+            if at.is_some() {
+                c.row_style(Rect { x, y: y + r, w: 3, h: 1 }, background, true);
+            }
+            x += 4;
+        }
+    }
+    y + rows.len()
+}
+
+struct ScissorForm {
+    session: ScissorSession,
+    /// Items in the order shown.
+    items: Vec<ScissorItem>,
+    /// Focused item, and the option highlighted in it.
+    cur: usize,
+    opt: usize,
+}
+
+impl ScissorForm {
+    fn pages(&self) -> usize {
+        (self.items.len() + SCISSOR_PER_PAGE - 1) / SCISSOR_PER_PAGE
+    }
+
+    fn page(&self) -> usize {
+        self.cur / SCISSOR_PER_PAGE
+    }
+
+    fn rating(&self, i: usize) -> Option<u8> {
+        self.session.ratings.get(&self.items[i].id).copied()
+    }
+
+    fn focus(&mut self, i: usize) {
+        self.cur = i.min(self.items.len() - 1);
+        self.opt = self.rating(self.cur).map_or(0, |level| usize::from(level) - 1);
+    }
+
+    fn shown(&self, i: usize) -> String {
+        let item = &self.items[i];
+        self.session
+            .shown
+            .get(&item.id)
+            .cloned()
+            .unwrap_or_else(|| item.id.clone())
+    }
+
+    fn unrated(&self) -> Option<usize> {
+        (0..self.items.len()).find(|&i| self.rating(i).is_none())
+    }
+}
+
+/// Draw one page: four cards in a 2×2 grid, the keyboard and the footer.
+fn scissor_form_frame(c: &mut Canvas, form: &ScissorForm) {
+    let s = &form.session;
+    let title = format!(
+        "Scissor test · {} · {}",
+        s.board,
+        scissor_set_name(s.hands, s.set)
+    );
+    let counter = format!(
+        "page {}/{} · {}/{} rated",
+        form.page() + 1,
+        form.pages(),
+        s.rated(),
+        form.items.len()
+    );
+    let room = c.w.saturating_sub(counter.chars().count() + 6);
+    c.text(2, 0, &short(&title, room), CYAN);
+    c.right(0, 0, c.w.saturating_sub(2), &counter, MUTED);
+    let note = if s.set == 'k' {
+        "Fingers on home row. Press the key a few times from home, then rate it."
+    } else {
+        "Fingers on home row. Type the pair back and forth a few times, then rate it."
+    };
+    c.text(2, 1, &short(note, c.w.saturating_sub(4)), MUTED);
+
+    // Tall cards list the six levels down; short screens get two columns,
+    // 1-3 on the left and 4-6 on the right.
+    let tall = c.h >= 26;
+    let card_h = if tall { 8 } else { 5 };
+    let card_w = ((c.w.saturating_sub(5)) / 2).min(44);
+    let left = c.w.saturating_sub(card_w * 2 + 1) / 2;
+    let top = 3;
+    let first = form.page() * SCISSOR_PER_PAGE;
+    for slot in 0..SCISSOR_PER_PAGE {
+        let i = first + slot;
+        if i >= form.items.len() {
+            break;
+        }
+        let item = &form.items[i];
+        let focused = i == form.cur;
+        let rect = Rect {
+            x: left + (slot % 2) * (card_w + 1),
+            y: top + (slot / 2) * card_h,
+            w: card_w,
+            h: card_h,
         };
-        canvas.row_style(bar, Some((44, 44, 44)), false);
-        for (index, &byte) in prompt.text.iter().enumerate() {
-            let x = bar.x + 3 + index;
-            let typed = typing.typed.get(index);
-            let shown = match (byte, typed) {
-                (b' ', Some(&typed)) if typed != b' ' => typed as char,
-                (b' ', _) => '·',
-                _ => byte as char,
-            };
-            let color = match typed {
-                Some(&typed) if typed == byte => GREEN,
-                Some(_) => RED,
-                None if byte == b' ' => MUTED,
-                None if prompt.targets.iter().any(|&(a, _)| a == index) => YELLOW,
-                None if prompt.targets.iter().any(|&(_, b)| b == index) => BLUE,
-                None => FG,
-            };
-            canvas.put(x, bar.y + 1, shown, color);
+        c.boxed(rect, if focused { CYAN } else { BORDER });
+        let head = format!(" {} ", form.shown(i));
+        c.text(rect.x + 2, rect.y, &head, if focused { YELLOW } else { FG });
+        if focused {
+            c.row_style(Rect { x: rect.x + 2, y: rect.y, w: head.len(), h: 1 }, None, true);
         }
-        if !rating {
-            let cursor = Rect {
-                x: bar.x + 3 + typing.typed.len(),
-                y: bar.y + 1,
-                w: 1,
-                h: 1,
-            };
-            canvas.row_style(cursor, Some((110, 110, 110)), false);
-        }
-        if rating {
-            canvas.text(2, 8, &format!("How much do you dislike {first} → {second}?"), FG);
-            let mut x = 2;
-            for (level, name) in SCISSOR_LEVELS.iter().enumerate() {
-                canvas.text(x, 10, &level.to_string(), CYAN);
-                canvas.text(x + 2, 10, name, FG);
-                x += name.chars().count() + 5;
-            }
-            canvas.text(
-                2,
-                12,
-                &format!(
-                    "r type again   w other words   Tab skip{}   Esc save and leave",
-                    if undoable { "   u undo last rating" } else { "" }
-                ),
-                MUTED,
-            );
-        } else {
-            canvas.text(
-                2,
-                8,
-                "Type the text on your keyboard. Backspace fixes mistakes.",
-                MUTED,
-            );
-            canvas.text(2, 9, "Tab skip pair   Esc save and leave", MUTED);
-        }
-        scissor_keyboard(&mut canvas, 14, layout, (pair.first, pair.second));
-        term.present(&canvas, 0)?;
-        match term.event()? {
-            Event::Quit | Event::Escape => return Ok(ScissorStep::Leave),
-            Event::Tab => return Ok(ScissorStep::Skip),
-            Event::Char(ch @ '0'..='4') if rating => {
-                let rating = ch as usize - '0' as usize;
-                let line = scissor_record(
-                    layout_name, layout, pass, pair, &prompt, &typing, attempts, rating,
-                );
-                log.lines.push(((pair.first, pair.second), line));
-                log.save()?;
-                return Ok(ScissorStep::Rated);
-            }
-            Event::Char('r') if rating => {
-                typing = ScissorTyping::new(prompt.text.len());
-                attempts += 1;
-            }
-            Event::Char('w') if rating => {
-                if let Some(next) = scissor_next_prompt(layout, effort, pair) {
-                    prompt = next;
+        let info = format!(" {} ", item.info());
+        c.text(rect.x + 2 + head.len(), rect.y, &info, MUTED);
+        c.hit(Rect { x: rect.x, y: rect.y, w: rect.w, h: 1 }, Action::Key(i));
+        let chosen = form.rating(i);
+        let inner = card_w.saturating_sub(4);
+        for (k, name) in SCISSOR_LEVELS.iter().enumerate() {
+            let (x, y, w) = if tall {
+                (rect.x + 2, rect.y + 1 + k, inner)
+            } else {
+                let half = 16.min(inner / 2);
+                if k < 3 {
+                    (rect.x + 2, rect.y + 1 + k, half)
+                } else {
+                    (rect.x + 2 + half, rect.y + k - 2, inner - half)
                 }
-                typing = ScissorTyping::new(prompt.text.len());
-                attempts = 1;
+            };
+            let picked = chosen == Some(k as u8 + 1);
+            let mark = if picked { '◉' } else { '○' };
+            let color = if picked { GREEN } else if focused { FG } else { MUTED };
+            c.text(x, y, &short(&format!("{mark} {} {name}", k + 1), w), color);
+            if focused && k == form.opt {
+                c.row_style(Rect { x, y, w: w.saturating_sub(1), h: 1 }, Some((60, 60, 60)), true);
             }
-            Event::Char('u') if rating && undoable => return Ok(ScissorStep::Undo),
-            Event::Backspace if !rating => typing.erase(),
-            Event::Char(ch) if !rating && ch.is_ascii() => typing.push(&prompt.text, ch as u8),
+            c.hit(Rect { x, y, w, h: 1 }, Action::Item(i * SCISSOR_LEVELS.len() + k));
+        }
+    }
+
+    let kb = top + 2 * card_h + 1;
+    let lit: Vec<char> = form.shown(form.cur).to_lowercase().chars().collect();
+    let below = scissor_mini_keyboard(c, kb, &lit);
+
+    // Page buttons and keys.
+    let y = (below + usize::from(tall)).max(c.h.saturating_sub(2));
+    let mut x = 2;
+    for (label, key) in [("◀ Prev", 'p'), ("Next ▶", 'n'), ("Finish", 'f')] {
+        let text = format!("[{label}]");
+        let enabled = match key {
+            'p' => form.page() > 0,
+            'n' => form.page() + 1 < form.pages(),
+            _ => true,
+        };
+        c.text(x, y, &text, if enabled { FG } else { MUTED });
+        if enabled {
+            c.hit(Rect { x, y, w: text.chars().count(), h: 1 }, Action::Command(key));
+        }
+        x += text.chars().count() + 2;
+    }
+    let done = form.unrated().is_none();
+    c.text(
+        x + 1,
+        y,
+        if done { "All rated: Finish (Esc) shows your code." } else { "" },
+        GREEN,
+    );
+    c.text(
+        2,
+        y + 1,
+        &short(
+            "1-6 rate  ↑↓ level  ←→ card  PgUp/PgDn page  u unrated  x clear  Esc finish",
+            c.w.saturating_sub(4),
+        ),
+        MUTED,
+    );
+}
+
+/// Run the form until the tester finishes; ratings are saved as they change.
+fn scissor_form(term: &mut Terminal, path: &Path, form: &mut ScissorForm) -> AppResult<()> {
+    let per = SCISSOR_LEVELS.len();
+    loop {
+        let mut c = Canvas::new(term.width(), term.size.1.max(20));
+        scissor_form_frame(&mut c, form);
+        term.present(&c, 0)?;
+        let e = term.event()?;
+        let mut pick: Option<(usize, usize, bool)> = None;
+        if let Some(action) = action_press(term, &c, &e, 0) {
+            match action {
+                Action::Item(n) => pick = Some((n / per, n % per, false)),
+                Action::Key(i) => form.focus(i),
+                Action::Command('p') => form.focus((form.page() - 1) * SCISSOR_PER_PAGE),
+                Action::Command('n') => form.focus((form.page() + 1) * SCISSOR_PER_PAGE),
+                Action::Command('f') => return Ok(()),
+                _ => {}
+            }
+        }
+        let last = form.items.len() - 1;
+        match e {
+            Event::Escape | Event::Quit | Event::Char('q') => return Ok(()),
+            Event::Up | Event::Char('k') => form.opt = form.opt.saturating_sub(1),
+            Event::Down | Event::Char('j') => form.opt = (form.opt + 1).min(per - 1),
+            Event::Left | Event::Char('h') => form.focus(form.cur.saturating_sub(1)),
+            Event::Right | Event::Char('l') | Event::Tab => form.focus(form.cur + 1),
+            Event::PageDown | Event::Char('n') => {
+                if form.page() + 1 < form.pages() {
+                    form.focus((form.page() + 1) * SCISSOR_PER_PAGE);
+                }
+            }
+            Event::PageUp | Event::Char('p') => {
+                if form.page() > 0 {
+                    form.focus((form.page() - 1) * SCISSOR_PER_PAGE);
+                }
+            }
+            Event::Wheel(n) if n > 0 && form.page() + 1 < form.pages() => {
+                form.focus((form.page() + 1) * SCISSOR_PER_PAGE);
+            }
+            Event::Wheel(n) if n < 0 && form.page() > 0 => {
+                form.focus((form.page() - 1) * SCISSOR_PER_PAGE);
+            }
+            Event::Home => form.focus(0),
+            Event::End => form.focus(last),
+            Event::Char('u') => {
+                if let Some(i) = form.unrated() {
+                    form.focus(i);
+                }
+            }
+            Event::Char('f') => return Ok(()),
+            Event::Enter | Event::Char(' ') => pick = Some((form.cur, form.opt, true)),
+            Event::Char(ch @ '1'..='6') => pick = Some((form.cur, ch as usize - '1' as usize, true)),
+            Event::Char('x') | Event::Backspace => {
+                let id = form.items[form.cur].id.clone();
+                if form.session.ratings.remove(&id).is_some() {
+                    scissor_store(path, &form.session)?;
+                }
+            }
+            _ => {}
+        }
+        if let Some((i, k, advance)) = pick {
+            let id = form.items[i].id.clone();
+            form.session.ratings.insert(id, k as u8 + 1);
+            scissor_store(path, &form.session)?;
+            if advance && i < last {
+                form.focus(i + 1);
+            } else {
+                form.cur = i;
+                form.opt = k;
+            }
+        }
+        if term.quitting {
+            return Ok(());
+        }
+    }
+}
+
+/// A session's ratings in a table, with its code above; `c` copies the code.
+fn scissor_view(term: &mut Terminal, title: &str, session: &ScissorSession, note: &str) -> AppResult<()> {
+    let code = scissor_code(session);
+    let _ = term.copy_to_clipboard(&code);
+    let mut status = "Copied to the clipboard.".to_string();
+    let items = session.items();
+    let mut scroll = 0;
+    loop {
+        let col_w = 38;
+        let cols = (term.width().min(PANEL_WIDTH).saturating_sub(4) / col_w).max(1);
+        let rows = (items.len() + cols - 1) / cols;
+        let mut c = Canvas::new(term.width(), rows + 12);
+        c.text(2, 0, title, CYAN);
+        c.text(2, 1, &short(&session.summary(), c.w.saturating_sub(4)), MUTED);
+        let line = 3;
+        c.text(2, line, "Code to send back:", FG);
+        let box_w = (code.chars().count() + 4).min(c.w.saturating_sub(4));
+        c.boxed(Rect { x: 2, y: line + 1, w: box_w, h: 3 }, CYAN);
+        c.text(4, line + 2, &short(&code, box_w.saturating_sub(4)), YELLOW);
+        c.row_style(Rect { x: 4, y: line + 2, w: code.len(), h: 1 }, None, true);
+        c.text(2, line + 4, &short(&format!("{status}  {note}"), c.w.saturating_sub(4)), MUTED);
+        let table = line + 6;
+        for (n, item) in items.iter().enumerate() {
+            let x = 2 + (n / rows) * col_w;
+            let y = table + n % rows;
+            let level = session.ratings.get(&item.id).copied();
+            c.text(x, y, &item.id, FG);
+            let mut info = item.fingers.join("–");
+            if item.jump == 2 && session.set == 'a' {
+                info.push_str(" F");
+            }
+            c.text(x + 4, y, &short(&info, 15), MUTED);
+            let (text, color) = match level {
+                Some(level) => (
+                    format!("{level} {}", SCISSOR_LEVELS[usize::from(level) - 1]),
+                    [GREEN, GREEN, FG, YELLOW, RED, RED][usize::from(level) - 1],
+                ),
+                None => ("–".into(), MUTED),
+            };
+            c.text(x + 20, y, &short(&text, col_w - 21), color);
+        }
+        let legend = if session.set == 'a' { "F = full scissor   " } else { "" };
+        c.text(2, table + rows + 1, &format!("{legend}c copy code again   PgUp/PgDn scroll   Esc back"), MUTED);
+        term.present(&c, scroll)?;
+        let e = term.event()?;
+        if scroll_event(&e, &mut scroll, c.h, term.size.1) {
+            continue;
+        }
+        match e {
+            Event::Escape | Event::Quit | Event::Char('q') | Event::Enter => return Ok(()),
+            Event::Char('c') => {
+                term.copy_to_clipboard(&code)?;
+                status = "Copied again.".into();
+            }
             _ => {}
         }
     }
 }
 
-fn scissor_test(term: &mut Terminal) -> AppResult<()> {
-    let paths = discover_layouts(Path::new(LAYOUT_DIR))?;
-    let names: Vec<_> = paths.iter().map(|path| layout_file_label(path)).collect();
-    let Some(index) = search_menu(term, "Scissor test: layout you type on", &names)? else {
+fn scissor_new_session(term: &mut Terminal, path: &Path, keys_only: bool) -> AppResult<()> {
+    let sessions = scissor_load(path)?;
+    let last = sessions.iter().rev().find(|s| s.source == "local");
+    let tester_default = last.map_or("", |s| s.tester.as_str()).to_string();
+    let Some(tester) = input_box(term, "Your name (letters and digits; it goes into the code)", "", &tester_default)? else {
         return Ok(());
     };
-    let path = &paths[index];
-    let layout = action_keys::Layout::parse(&fs::read_to_string(path)?, path)?;
-    let layout_name = path
-        .file_stem()
-        .map_or_else(|| "layout".into(), |stem| stem.to_string_lossy().into_owned());
+    let board_default = last.map_or("rowstag", |s| s.board.as_str()).to_string();
+    let Some(board) = input_box(term, "Keyboard you rate on (e.g. rowstag, ortho, corne)", "", &board_default)? else {
+        return Ok(());
+    };
+    let hand_items = ["Left hand", "Right hand", "Both hands"].map(String::from);
+    let Some(hand) = menu(term, "Which hand?", &hand_items)? else {
+        return Ok(());
+    };
+    let hands = ['L', 'R', 'B'][hand];
+    let set = if keys_only {
+        'k'
+    } else {
+        let kinds = [
+            "Half scissors (one row apart)",
+            "Full scissors (two rows apart)",
+            "Half and full scissors",
+        ]
+        .map(String::from);
+        let Some(kind) = menu(term, "Which scissors?", &kinds)? else {
+            return Ok(());
+        };
+        ['h', 'f', 'a'][kind]
+    };
 
-    let mut canvas = Canvas::new(term.width(), term.size.1.max(12));
-    canvas.text(2, 1, "Finding words for each key pair …", MUTED);
-    term.present(&canvas, 0)?;
-    let (_, vocabulary) = scissor_source()?;
-    let weights = load_weights(Path::new(WEIGHTS_FILE))?;
-    let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
-    let keys = scissor_pairs(&layout);
-    let words = scissor_words(&layout, &effort, &vocabulary, &keys);
-    let mut pairs: Vec<ScissorPair> = keys
-        .iter()
-        .zip(words)
-        .map(|(&(first, second), words)| ScissorPair {
-            first,
-            second,
-            words,
-            next: 0,
-        })
-        .collect();
-    // Pairs no word or drill presses cannot be tested.
-    let found = pairs.len();
-    pairs.retain_mut(|pair| {
-        let reachable = scissor_next_prompt(&layout, &effort, pair).is_some();
-        pair.next = 0;
-        reachable
-    });
-    let unreachable = found - pairs.len();
-    if pairs.is_empty() {
-        return info_page(term, "Scissor test", &["This layout has no scissor pairs to type.".into()]);
-    }
-
-    let file = Path::new(SCISSOR_DIR).join(format!("{layout_name}.csv"));
-    let mut log = ScissorLog::load(file)?;
-    // A pass rates every pair once; pairs rated least often come first.
-    let least = pairs
-        .iter()
-        .map(|pair| log.count((pair.first, pair.second)))
-        .min()
-        .unwrap_or(0);
-    let pass = least + 1;
-    let mut queue: Vec<usize> = (0..pairs.len())
-        .filter(|&index| log.count((pairs[index].first, pairs[index].second)) == least)
-        .collect();
-    let seed = SystemTime::now()
+    let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(1, |time| time.as_nanos() as u64);
-    let mut rng = Rng::new(seed);
-    for index in (1..queue.len()).rev() {
-        queue.swap(index, rng.index(index + 1));
+        .map_or(0, |time| time.as_secs());
+    let stamp = scissor_stamp(seconds);
+    let mut rng = Rng::new(timestamp() as u64 ^ 0x9e37_79b9_7f4a_7c15);
+    let mut items = scissor_items(hands, set);
+    for i in (1..items.len()).rev() {
+        items.swap(i, rng.index(i + 1));
     }
-    let mut rated: Vec<usize> = Vec::new();
-    let mut skipped = 0;
-    let total = pairs.len();
-    let done_before = total - queue.len();
-    while let Some(&index) = queue.first() {
-        let step = scissor_trial(
-            term,
-            &layout_name,
-            &layout,
-            &effort,
-            &mut pairs[index],
-            (done_before + rated.len(), total, pass),
-            &mut log,
-            !rated.is_empty(),
-        )?;
-        match step {
-            ScissorStep::Rated => {
-                rated.push(queue.remove(0));
-            }
-            ScissorStep::Skip => {
-                queue.remove(0);
-                skipped += 1;
-            }
-            ScissorStep::Undo => {
-                let last = rated.pop().expect("undo follows a rating");
-                log.lines.pop();
-                log.save()?;
-                queue.insert(0, last);
-            }
-            ScissorStep::Leave => break,
+    let mut shown = BTreeMap::new();
+    for item in &items {
+        let mut keys = item.keys.clone();
+        if keys.len() == 2 && rng.index(2) == 1 {
+            keys.swap(0, 1);
         }
-        if term.quitting {
-            break;
-        }
+        let text: String = keys.iter().map(|k| k.to_ascii_uppercase()).collect();
+        shown.insert(item.id.clone(), text);
     }
+    let session = ScissorSession {
+        session: stamp.clone(),
+        date: stamp[..8].into(),
+        tester: scissor_name(&tester, "anon"),
+        board: scissor_name(&board, "board"),
+        hands,
+        set,
+        source: "local".into(),
+        blind: true,
+        order: items.iter().map(|item| item.id.clone()).collect(),
+        shown,
+        ratings: BTreeMap::new(),
+    };
+    scissor_store(path, &session)?;
+    let mut form = ScissorForm { session, items, cur: 0, opt: 0 };
+    scissor_form(term, path, &mut form)?;
     if term.quitting {
         return Ok(());
     }
-    let mut lines = vec![
-        format!("Rated {} pairs this session; {skipped} skipped.", rated.len()),
-        format!("Ratings are saved in {}.", log.path.display()),
-    ];
-    if unreachable > 0 {
-        lines.push(format!("{unreachable} pairs could not be typed with words or a drill."));
-    }
-    if queue.is_empty() && skipped == 0 {
-        lines.push(format!("Pass {pass} is complete; the next test starts pass {}.", pass + 1));
+    let left = form.items.len() - form.session.rated();
+    let note = if left == 0 {
+        "Thank you! Send this code back.".to_string()
     } else {
-        lines.push("The next test continues this pass with the pairs not yet rated.".into());
+        format!("{left} items unrated; they show as blank in the code.")
+    };
+    scissor_view(term, "Scissor test: done", &form.session, &note)
+}
+
+fn scissor_enter_code(term: &mut Terminal, path: &Path) -> AppResult<()> {
+    let Some(code) = input_box(term, "Paste or type a scissor test code", "", "")? else {
+        return Ok(());
+    };
+    if code.is_empty() {
+        return Ok(());
     }
-    info_page(term, "Scissor test", &lines)
+    let session = match scissor_decode(&code) {
+        Ok(session) => session,
+        Err(error) => return info_page(term, "Scissor test: code not read", &[error]),
+    };
+    let sessions = scissor_load(path)?;
+    let known = sessions
+        .iter()
+        .any(|s| s.source == "code" && scissor_code(s) == scissor_code(&session));
+    let note = if known {
+        "This code was imported before; nothing changed."
+    } else {
+        let mut session = session.clone();
+        // Two different codes from one tester and day keep separate entries.
+        let base = session.session.clone();
+        let mut n = 2;
+        while sessions.iter().any(|s| s.session == session.session) {
+            session.session = format!("{base}-{n}");
+            n += 1;
+        }
+        scissor_store(path, &session)?;
+        "Saved to scissors/ratings.jsonc."
+    };
+    scissor_view(term, "Scissor test: decoded code", &session, note)
+}
+
+fn scissor_browse(term: &mut Terminal, path: &Path) -> AppResult<()> {
+    loop {
+        let sessions = scissor_load(path)?;
+        if sessions.is_empty() {
+            return info_page(term, "Scissor test", &["No sessions saved yet.".into()]);
+        }
+        let names: Vec<String> = sessions.iter().rev().map(ScissorSession::summary).collect();
+        let Some(index) = search_menu(term, "Scissor test: saved sessions (newest first)", &names)? else {
+            return Ok(());
+        };
+        let session = &sessions[sessions.len() - 1 - index];
+        scissor_view(term, "Scissor test: session", session, "")?;
+        if term.quitting {
+            return Ok(());
+        }
+    }
+}
+
+fn scissor_test(term: &mut Terminal) -> AppResult<()> {
+    let path = Path::new(SCISSOR_FILE);
+    let items = [
+        "Rate scissor pairs",
+        "Rate single keys",
+        "Enter a code someone sent you",
+        "Saved sessions",
+    ]
+    .map(String::from);
+    loop {
+        let Some(choice) = menu(term, "Scissor test", &items)? else {
+            return Ok(());
+        };
+        match choice {
+            0 => scissor_new_session(term, path, false)?,
+            1 => scissor_new_session(term, path, true)?,
+            2 => scissor_enter_code(term, path)?,
+            _ => scissor_browse(term, path)?,
+        }
+        if term.quitting {
+            return Ok(());
+        }
+    }
 }
 
 #[cfg(test)]
 mod scissor_tests {
     use super::*;
 
-    fn qwerty() -> action_keys::Layout {
-        action_keys::Layout::parse(
-            crate::action_keys::test_layouts::QWERTY_JSONC,
-            Path::new("scissor-test.jsonc"),
-        )
-        .unwrap()
-    }
-
-    fn slot(layout: &action_keys::Layout, label: &str) -> usize {
-        layout.slots.iter().position(|slot| slot.label == label).unwrap()
-    }
-
-    #[test]
-    fn pairs_are_same_hand_cross_row_and_include_the_inner_index_column() {
-        let layout = qwerty();
-        let pairs = scissor_pairs(&layout);
-        // Per hand: 15 keys, less same-finger and same-row pairs, both orders.
-        assert_eq!(pairs.len(), 216);
-        let has = |a: &str, b: &str| pairs.contains(&(slot(&layout, a), slot(&layout, b)));
-        assert!(has("e", "x") && has("x", "e") && has("t", "x") && has("o", "m"));
-        assert!(!has("e", "r"), "same row");
-        assert!(!has("r", "b"), "same finger");
-        assert!(!has("e", "m"), "other hand");
-        assert!(scissor_inner(&layout, slot(&layout, "t")));
-        assert!(scissor_inner(&layout, slot(&layout, "h")));
-        assert!(!scissor_inner(&layout, slot(&layout, "f")));
-        assert!(!scissor_inner(&layout, slot(&layout, "j")));
-        assert_eq!(scissor_key_name(&layout, slot(&layout, "b")), "left index (inner) bottom");
+    fn session(hands: char, set: char) -> ScissorSession {
+        ScissorSession {
+            session: "20261107-120000".into(),
+            date: "20261107".into(),
+            tester: "gg".into(),
+            board: "rowstag".into(),
+            hands,
+            set,
+            source: "local".into(),
+            blind: true,
+            order: Vec::new(),
+            shown: BTreeMap::new(),
+            ratings: BTreeMap::new(),
+        }
     }
 
     #[test]
-    fn records_match_the_header_and_survive_a_save() {
-        let layout = qwerty();
-        let weights = Weights::default();
-        let effort = crate::action_ui::LocalEffort::new(&layout, &weights);
-        let (first, second) = (slot(&layout, "o"), slot(&layout, ","));
-        let mut pair = ScissorPair {
-            first,
-            second,
-            words: Vec::new(),
-            next: 0,
-        };
-        let prompt = scissor_next_prompt(&layout, &effort, &mut pair).unwrap();
-        let typing = ScissorTyping::new(prompt.text.len());
-        let line = scissor_record("q,\"w\"", &layout, 2, &pair, &prompt, &typing, 1, 3);
-        let fields = scissor_csv_fields(&line);
-        let header: Vec<_> = SCISSOR_HEADER.split(',').collect();
-        assert_eq!(fields.len(), header.len());
-        let field = |name: &str| &fields[header.iter().position(|&known| known == name).unwrap()];
-        assert_eq!(field("layout"), "q,\"w\"");
-        assert_eq!(field("second_label"), ",");
-        assert_eq!(field("words"), "o, o, o,");
-        assert_eq!(field("direction"), "down");
-        assert_eq!(field("dy"), "2");
-        assert_eq!(field("lower_finger"), "RM");
-        assert_eq!(field("rating"), "3");
-        assert_eq!(field("level"), "uncomfortable");
-        let keys = crate::action_ui::physical_keys(&layout);
-        assert_eq!(
-            field("mana2"),
-            &format!("{:.4}", mana2_metrics::scissor(keys[first], keys[second]))
-        );
+    fn item_sets_match_the_rating_script() {
+        assert_eq!(scissor_items('L', 'h').len(), 36);
+        assert_eq!(scissor_items('L', 'f').len(), 18);
+        assert_eq!(scissor_items('B', 'a').len(), 108);
+        assert_eq!(scissor_items('R', 'k').len(), 15);
+        let half: Vec<_> = scissor_items('L', 'h').into_iter().map(|i| i.id).collect();
+        for id in ["DR", "AB", "SZ", "CG", "AE"] {
+            assert!(half.contains(&id.to_string()), "{id}");
+        }
+        // Same finger (the two index columns) is never a scissor.
+        assert!(!half.contains(&"FT".to_string()) && !half.contains(&"GR".to_string()));
+    }
 
-        let directory = std::env::temp_dir().join(format!("akler-scissors-{}", crate::process_tag()));
-        let mut log = ScissorLog::load(directory.join("qwerty.csv")).unwrap();
-        log.lines.push(((first, second), line.clone()));
-        log.lines.push(((first, second), line));
-        log.save().unwrap();
-        let loaded = ScissorLog::load(directory.join("qwerty.csv")).unwrap();
-        assert_eq!(loaded.count((first, second)), 2);
-        assert_eq!(loaded.count((second, first)), 0);
-        fs::remove_dir_all(directory).unwrap();
+    #[test]
+    fn codes_round_trip_partial_and_full() {
+        for (hands, set) in [('L', 'h'), ('B', 'a'), ('R', 'k'), ('L', 'f')] {
+            let mut s = session(hands, set);
+            for (n, item) in s.items().iter().enumerate() {
+                if n % 5 != 3 {
+                    s.ratings.insert(item.id.clone(), (n % 6) as u8 + 1);
+                }
+            }
+            let code = scissor_code(&s);
+            assert!(code.starts_with("20261107-rowstag-gg-"), "{code}");
+            let back = scissor_decode(&code.to_lowercase()).unwrap();
+            assert_eq!(back.ratings, s.ratings, "{code}");
+            assert_eq!((back.hands, back.set), (hands, set));
+        }
+        let blank = session('L', 'h');
+        assert!(scissor_decode(&scissor_code(&blank)).unwrap().ratings.is_empty());
+    }
+
+    #[test]
+    fn mistyped_codes_are_caught() {
+        let mut s = session('L', 'h');
+        s.ratings.insert("DR".into(), 2);
+        let code = scissor_code(&s);
+        let mut chars: Vec<char> = code.chars().collect();
+        let n = chars.len() - 5;
+        chars[n] = if chars[n] == '7' { '8' } else { '7' };
+        let typo: String = chars.into_iter().collect();
+        assert!(scissor_decode(&typo).is_err());
+        assert!(scissor_decode("20261107-rowstag-gg-Lh").is_err());
+    }
+
+    #[test]
+    fn sessions_survive_a_save() {
+        let path = std::env::temp_dir().join(format!("akler-scissor-{}.jsonc", timestamp()));
+        let mut a = session('L', 'h');
+        a.order = a.items().iter().map(|i| i.id.clone()).collect();
+        a.shown.insert("CS".into(), "SC".into());
+        a.ratings.insert("CS".into(), 5);
+        let mut b = session('R', 'k');
+        b.session = "code-x".into();
+        b.source = "code".into();
+        b.blind = false;
+        scissor_save(&path, &[a.clone(), b.clone()]).unwrap();
+        let loaded = scissor_load(&path).unwrap();
+        let _ = fs::remove_file(&path);
+        assert_eq!(loaded, vec![a, b]);
+    }
+
+    #[test]
+    fn stamps_are_utc_dates() {
+        assert_eq!(scissor_stamp(0), "19700101-000000");
+        assert_eq!(scissor_stamp(1_793_620_800), "20261102-120000");
+        assert_eq!(scissor_stamp(951_782_400), "20000229-000000");
     }
 }

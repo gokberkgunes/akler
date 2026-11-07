@@ -750,6 +750,26 @@ impl Terminal {
         }
     }
 
+    /// Put `text` on the system clipboard with OSC 52, which most terminals
+    /// and the web page's xterm.js handler accept.
+    fn copy_to_clipboard(&mut self, text: &str) -> AppResult<()> {
+        const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::new();
+        for chunk in text.as_bytes().chunks(3) {
+            let n = chunk.iter().enumerate().fold(0u32, |n, (i, &b)| n | u32::from(b) << (16 - 8 * i));
+            for i in 0..4 {
+                encoded.push(if i <= chunk.len() {
+                    DIGITS[(n >> (18 - 6 * i) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        self.tty.write_all(format!("\x1b]52;c;{encoded}\x07").as_bytes())?;
+        self.tty.flush()?;
+        Ok(())
+    }
+
     fn present(&mut self, c: &Canvas, scroll: usize) -> AppResult<()> {
         self.refresh_size()?;
         let (w, h) = if self.show_back { self.size } else { self.screen };

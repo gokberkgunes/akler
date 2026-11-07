@@ -19,11 +19,19 @@ The home menu has three tabs: **Workbench** (editor, ranker, optimizer),
 (corpora). Every other screen has a Back button at the top left. Press `?`
 on any screen for its controls.
 
-The scissor test asks for the layout you type on, shows words that press
-each same-hand, cross-row pair of fingers (or a drill like `ab ab ab`), and
-asks you to rate your dislike from 0 (fine) to 4 (awful). Ratings, timings,
-key geometry and Mana2's rating go to `scissors/LAYOUT.csv`; a later run
-continues the pass, then starts the next.
+The scissor test rates same-hand key pairs of different fingers (half
+scissors one row apart, full scissors two rows apart) or single keys, from
+1 (very easy) to 6 (terrible). Keys are named by QWERTY position whatever
+layout you type on. Items are shuffled, each pair's typing order is random,
+and four show per page (`1`-`6` rate and move on, arrows move, PgUp/PgDn
+page, `x` clears, Esc finishes). Every change is saved to
+`scissors/ratings.jsonc`.
+
+Finishing shows a short code such as `20261107-rowstag-gg-Lh-…` (date,
+keyboard, tester, test kind, ratings; unrated items stay blank) and copies it
+to the clipboard. A tester sends it back; **Enter a code** decodes it, shows
+the ratings and saves them as a session. **Saved sessions** lists every
+session with its code.
 
 ## akler.conf
 

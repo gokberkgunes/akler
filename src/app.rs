@@ -504,7 +504,7 @@ const HOME_ITEMS: [&[(usize, &str, &str)]; 2] = [
     &[
         (5, "Weakness report", "Find the layout's largest problems"),
         (6, "Magic designer", "Optimizer Magic tab: design magic keys"),
-        (8, "Scissor test", "Type words and rate scissor pairs"),
+        (8, "Scissor test", "Rate scissor pairs; share results as a code"),
     ],
 ];
 
@@ -926,7 +926,6 @@ fn run() -> AppResult<()> {
                 return Ok(());
             }
             "corpus" => return corpus_command(&args[1..]),
-            "scissor-words" => return scissor_words_command(),
             "bench" => return crate::bench::command(&args[1..]),
             "import" => {
                 let mut rest = vec!["add".to_string()];
