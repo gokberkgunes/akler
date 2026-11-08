@@ -1108,13 +1108,28 @@ fn contributor_name(keys: &ContributorKeys, skip: bool) -> String {
         .join(if skip { " _ " } else { " " })
 }
 
+#[cfg(test)]
 fn action_contributor_rows(
+    m: usize,
+    l: &ak::Layout,
+    before: &Evaluated,
+    after: &Evaluated,
+) -> Vec<(String, f64, f64)> {
+    action_contributor_rows_with_frequency(m, l, before, after)
+        .into_iter()
+        .map(|(name, before, after, _)| (name, before, after))
+        .collect()
+}
+
+/// Contributor rows plus each sequence's frequency on the After layout, as a
+/// percentage of the metric's denominator (bigrams, skipgrams or letters).
+fn action_contributor_rows_with_frequency(
     m: usize,
     _l: &ak::Layout,
     before: &Evaluated,
     after: &Evaluated,
-) -> Vec<(String, f64, f64)> {
-    let mut contributions = BTreeMap::<(ContributorKeys, Vec<usize>), (f64, f64)>::new();
+) -> Vec<(String, f64, f64, f64)> {
+    let mut contributions = BTreeMap::<(ContributorKeys, Vec<usize>), (f64, f64, f64)>::new();
     let keys = contributor_keys(before, after);
     let unigram = matches!(METRIC_NAMES[m], "TRAVEL" | "VTRAVEL" | "LTRAVEL");
     let count_kind = if unigram {
@@ -1199,12 +1214,13 @@ fn action_contributor_rows(
                 values.0 += value;
             } else {
                 values.1 += value;
+                values.2 += pct(frequency, denominator);
             }
         }
     }
     let mut rows: Vec<_> = contributions
         .into_iter()
-        .map(|((keys, fingers), (before, after))| {
+        .map(|((keys, fingers), (before, after, frequency))| {
             let mut label = contributor_name(&keys, is_skip(m));
             if !fingers.is_empty() {
                 label.push_str(" (");
@@ -1217,7 +1233,7 @@ fn action_contributor_rows(
                 );
                 label.push(')');
             }
-            (label, before, after)
+            (label, before, after, frequency)
         })
         .collect();
     rows.sort_by(|a, b| b.2.total_cmp(&a.2).then_with(|| a.0.cmp(&b.0)));
@@ -1477,7 +1493,7 @@ fn action_detail_frame(
     layout: &ak::Layout,
     baseline: &ak::Layout,
     corpus: &str,
-    rows: &[(String, f64, f64)],
+    rows: &[(String, f64, f64, f64)],
     totals: (f64, f64),
     denominators: (f64, f64),
     sort_change: bool,
@@ -1507,7 +1523,7 @@ fn action_detail_frame_named(
     layout: &ak::Layout,
     baseline: &ak::Layout,
     corpus: &str,
-    rows: &[(String, f64, f64)],
+    rows: &[(String, f64, f64, f64)],
     totals: (f64, f64),
     denominators: (f64, f64),
     sort_change: bool,
@@ -1554,12 +1570,20 @@ fn action_detail_frame_named(
     c.right(9, y, 9, "Before", MUTED);
     c.right(20, y, 9, "After", MUTED);
     c.right(31, y, 9, "Change", MUTED);
+    // Weighted metrics: After = Freq x Cost, so a costly pair and a merely
+    // common one can be told apart. Count metrics' After already is the freq.
+    let costs = numeric_raw(m) && c.w >= 80;
+    let plot_x = if costs { 61 } else { 43 };
+    if costs {
+        c.right(42, y, 8, "Freq", MUTED);
+        c.right(51, y, 7, "Cost", MUTED);
+    }
     let maximum = rows.iter().map(|r| r.1.max(r.2)).fold(1e-12, f64::max);
-    let plot_width = c.w.saturating_sub(44);
+    let plot_width = c.w.saturating_sub(plot_x + 1);
     if plot_width > 0 {
-        c.text(43, y, "0", MUTED);
+        c.text(plot_x, y, "0", MUTED);
         c.right(
-            45,
+            plot_x + 2,
             y,
             plot_width.saturating_sub(2),
             &format!("{} {}", number(maximum, DETAIL_DECIMALS), metric_unit(m)),
@@ -1568,7 +1592,7 @@ fn action_detail_frame_named(
     }
     y += 1;
     let count = if all { rows.len() } else { rows.len().min(16) };
-    for (i, (name, before, after)) in rows.iter().take(count).enumerate() {
+    for (i, (name, before, after, frequency)) in rows.iter().take(count).enumerate() {
         let row = y + i;
         let (compare_before, compare_after) =
             contributor_comparison(*before, *after, denominators.0, denominators.1);
@@ -1583,7 +1607,14 @@ fn action_detail_frame_named(
             &delta_text(compare_before, compare_after, DETAIL_DECIMALS),
             delta_color(m, compare_before, compare_after),
         );
-        contribution_bar(&mut c, 43, row, plot_width, *before, *after, maximum, color);
+        if costs && *frequency > 0.0 {
+            c.right(42, row, 8, &number(*frequency, DETAIL_DECIMALS), MUTED);
+            c.right(51, row, 7, &format!("{:.3}", after / frequency), FG);
+        } else if costs {
+            c.right(42, row, 8, "—", MUTED);
+            c.right(51, row, 7, "—", MUTED);
+        }
+        contribution_bar(&mut c, plot_x, row, plot_width, *before, *after, maximum, color);
     }
     y += count;
     if rows.is_empty() {
@@ -1620,7 +1651,7 @@ fn action_contributors(
     before: &Evaluated,
     after: &Evaluated,
 ) -> AppResult<()> {
-    let source = action_contributor_rows(m, layout, before, after);
+    let source = action_contributor_rows_with_frequency(m, layout, before, after);
     let totals = (before.metrics.v[m], after.metrics.v[m]);
     let denominators = (
         denominator(m, &before.raw, &before.corpus),
@@ -1633,8 +1664,8 @@ fn action_contributors(
     loop {
         let mut rows = source.clone();
         if merge {
-            let mut pairs: BTreeMap<String, (f64, f64)> = BTreeMap::new();
-            for (name, before, after) in rows {
+            let mut pairs: BTreeMap<String, (f64, f64, f64)> = BTreeMap::new();
+            for (name, before, after, frequency) in rows {
                 let mut keys: Vec<_> = name.split_whitespace().collect();
                 let reverse: Vec<_> = keys.iter().rev().copied().collect();
                 if reverse < keys {
@@ -1643,10 +1674,11 @@ fn action_contributors(
                 let entry = pairs.entry(keys.join(" ")).or_default();
                 entry.0 += before;
                 entry.1 += after;
+                entry.2 += frequency;
             }
             rows = pairs
                 .into_iter()
-                .map(|(name, (b, a))| (name, b, a))
+                .map(|(name, (b, a, f))| (name, b, a, f))
                 .collect();
         }
         rows.sort_by(|a, b| {
@@ -1697,6 +1729,9 @@ fn action_contributors(
                     "d: Sort by contribution or absolute change.".into(),
                     "a: Show the top 16 contributions or all contributions.".into(),
                 ];
+                if numeric_raw(m) {
+                    help.push("Freq: the sequence's share of the After layout's n-grams. Cost: its cost per occurrence, so After = Freq × Cost; merged pairs show their average.".into());
+                }
                 if !is_rhythm(m) {
                     help.push("b: Combine each physical sequence with its reverse.".into());
                 }
@@ -5069,6 +5104,38 @@ mod ngram_integration_tests {
                 &evaluate(&layout, &corpus, &w, &stop).unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn weighted_detail_pages_show_frequency_and_cost() {
+        let text = ak::test_layouts::jsonc(
+            ["f d l w v q p o u ,", "s t h y g z n a e i", "x k m c j ! b ' ; ."],
+            ["r", "space"],
+            "",
+        );
+        let l = ak::Layout::parse(&text, Path::new("plain.jsonc")).unwrap();
+        let c = history_corpus(b"bob pub obey bop the dog wax");
+        let mut weights = [0.0; N_WEIGHTS];
+        weights[0] = 1.0;
+        let w = Weights::new(weights);
+        let stop = AtomicBool::new(false);
+        let e = evaluate(&l, &c, &w, &stop).unwrap();
+        let rows = action_contributor_rows_with_frequency(FJB, &l, &e, &e);
+        assert!(!rows.is_empty());
+        for (_, _, after, frequency) in &rows {
+            assert!(*frequency > 0.0 && after / frequency > 0.0);
+        }
+        let totals = (e.metrics.v[FJB], e.metrics.v[FJB]);
+        let d = denominator(FJB, &e.raw, &e.corpus);
+        let page = |m, rows: &[(String, f64, f64, f64)]| {
+            canvas_text(&action_detail_frame(
+                120, m, &l, &l, "test", rows, totals, (d, d), false, false, false,
+            ))
+        };
+        let fjb = page(FJB, &rows);
+        assert!(fjb.contains("Freq") && fjb.contains("Cost"));
+        let sfb = page(SFB, &action_contributor_rows_with_frequency(SFB, &l, &e, &e));
+        assert!(!sfb.contains("Freq") && !sfb.contains("Cost"));
     }
 }
 
