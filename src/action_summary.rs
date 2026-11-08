@@ -7,7 +7,7 @@ use crate::*;
 
 /// Weighted adjacent-pair penalties measured by `pair_movement_costs`.
 const PAIR_MOVEMENT_METRICS: [usize; 12] = [
-    SFB, SKB, LSB, DAFJB, CAFJB, DNFJB, CNFJB, DAHJB, CAHJB, DNHJB, CNHJB, SFTRAVEL,
+    SFB, SKB, LSB, DAFSB, CAFSB, DNFSB, CNFSB, DAHSB, CAHSB, DNHSB, CNHSB, SFTRAVEL,
 ];
 
 /// Per-pair values before objective weighting: weighted AKLER penalties in

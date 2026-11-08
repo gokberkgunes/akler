@@ -8,7 +8,7 @@ const WEIGHTS_FILE: &str = "optimizer-weights.conf";
 
 const SEARCH_FILE: &str = "optimizer-search.conf";
 
-const MODEL_VERSION: &str = "ortholinear-custom-14-jump-label-case";
+const MODEL_VERSION: &str = "ortholinear-custom-15-jump-models";
 
 const DEFAULT_CORPUS: &str = "corpus-monkeyracer.json";
 
@@ -16,7 +16,7 @@ const DEFAULT_CORPUS: &str = "corpus-monkeyracer.json";
 // This is a modeling assumption, not a universal anatomical measurement.
 const LENGTH_RANK: [i8; 4] = [0, 1, 3, 2];
 
-const N_METRICS: usize = 44;
+const N_METRICS: usize = 56;
 
 const N_WEIGHTS: usize = N_METRICS + 13;
 
@@ -49,9 +49,9 @@ const LSB: usize = 8;
 
 const LSS: usize = 9;
 
-const DNFJB: usize = 10;
+const DNFSB: usize = 10;
 
-const DNFJS: usize = 11;
+const DNFSS: usize = 11;
 
 const REDIR: usize = 12;
 
@@ -63,19 +63,19 @@ const SRAF: usize = 15;
 
 const ROLL: usize = 16;
 
-const DAFJB: usize = 17;
+const DAFSB: usize = 17;
 
-const CAFJB: usize = 18;
+const CAFSB: usize = 18;
 
-const DAFJS: usize = 19;
+const DAFSS: usize = 19;
 
-const CAFJS: usize = 20;
+const CAFSS: usize = 20;
 
 const ALT: usize = 21;
 
-const CNFJB: usize = 22;
+const CNFSB: usize = 22;
 
-const CNFJS: usize = 23;
+const CNFSS: usize = 23;
 
 const TRAVEL: usize = 24;
 
@@ -102,21 +102,43 @@ const INSRAF: usize = 34;
 
 const OUTSRAF: usize = 35;
 
-const DAHJB: usize = 36;
+const DAHSB: usize = 36;
 
-const CAHJB: usize = 37;
+const CAHSB: usize = 37;
 
-const DAHJS: usize = 38;
+const DAHSS: usize = 38;
 
-const CAHJS: usize = 39;
+const CAHSS: usize = 39;
 
-const DNHJB: usize = 40;
+const DNHSB: usize = 40;
 
-const CNHJB: usize = 41;
+const CNHSB: usize = 41;
 
-const DNHJS: usize = 42;
+const DNHSS: usize = 42;
 
-const CNHJS: usize = 43;
+const CNHSS: usize = 43;
+
+// Jump comfort models, in comfort levels per 100 bigrams or skipgrams (see
+// `jump_costs`): v13 (FJB), v12 (FJB2) and Model B (FJB3). Full = 2+ rows.
+const FJB: usize = 44;
+const HJB: usize = 45;
+const FJS: usize = 46;
+const HJS: usize = 47;
+const FJB2: usize = 48;
+const HJB2: usize = 49;
+const FJS2: usize = 50;
+const HJS2: usize = 51;
+const FJB3: usize = 52;
+const HJB3: usize = 53;
+const FJS3: usize = 54;
+const HJS3: usize = 55;
+
+/// Per model: full bigram, half bigram, full skipgram, half skipgram.
+const JUMP_METRICS: [[usize; 4]; 3] = [
+    [FJB, HJB, FJS, HJS],
+    [FJB2, HJB2, FJS2, HJS2],
+    [FJB3, HJB3, FJS3, HJS3],
+];
 
 const USAGE: usize = N_METRICS;
 
@@ -136,10 +158,11 @@ const CORNER_RAW: usize = ROLL_DEN + 1;
 const N_RAW: usize = CORNER_RAW + 1;
 
 const METRIC_NAMES: [&str; N_METRICS] = [
-    "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS", "dnFJB", "dnFJS", "RED",
-    "WRED", "WISH", "SRAF", "ROLL", "daFJB", "caFJB", "daFJS", "caFJS", "ALT", "cnFJB", "cnFJS",
+    "SFB", "SFS", "SKB", "SKS", "FSB", "HSB", "FSS", "HSS", "LSB", "LSS", "dnFSB", "dnFSS", "RED",
+    "WRED", "WISH", "SRAF", "ROLL", "daFSB", "caFSB", "daFSS", "caFSS", "ALT", "cnFSB", "cnFSS",
     "TRAVEL", "VTRAVEL", "LTRAVEL", "SFTRAVEL", "IN2", "OUT2", "IN3", "OUT3", "INROLL", "OUTROLL",
-    "INSRAF", "OUTSRAF", "daHJB", "caHJB", "daHJS", "caHJS", "dnHJB", "cnHJB", "dnHJS", "cnHJS",
+    "INSRAF", "OUTSRAF", "daHSB", "caHSB", "daHSS", "caHSS", "dnHSB", "cnHSB", "dnHSS", "cnHSS", "FJB", "HJB", "FJS",
+    "HJS", "FJB2", "HJB2", "FJS2", "HJS2", "FJB3", "HJB3", "FJS3", "HJS3",
 ];
 
 // Adjacent discordant jump subsets and combined rhythm totals are display-only.
@@ -154,20 +177,20 @@ const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "hss",
     "lsb",
     "lss",
-    "dnfjb",
-    "dnfjs",
+    "dnfsb",
+    "dnfss",
     "red",
     "wred",
     "wish",
     "sraf_reward",
     "roll_reward",
-    "dafjb",
-    "cafjb",
-    "dafjs",
-    "cafjs",
+    "dafsb",
+    "cafsb",
+    "dafss",
+    "cafss",
     "alt_reward",
-    "cnfjb",
-    "cnfjs",
+    "cnfsb",
+    "cnfss",
     "travel",
     "vtravel",
     "ltravel",
@@ -180,14 +203,26 @@ const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
     "outroll",
     "insraf_reward",
     "outsraf_reward",
-    "dahjb",
-    "cahjb",
-    "dahjs",
-    "cahjs",
-    "dnhjb",
-    "cnhjb",
-    "dnhjs",
-    "cnhjs",
+    "dahsb",
+    "cahsb",
+    "dahss",
+    "cahss",
+    "dnhsb",
+    "cnhsb",
+    "dnhss",
+    "cnhss",
+    "fjb",
+    "hjb",
+    "fjs",
+    "hjs",
+    "fjb2",
+    "hjb2",
+    "fjs2",
+    "hjs2",
+    "fjb3",
+    "hjb3",
+    "fjs3",
+    "hjs3",
     "off_pinky",
     "off_ring",
     "off_middle",
@@ -206,22 +241,23 @@ const WEIGHT_NAMES: [&str; N_WEIGHTS] = [
 fn weight_display_name(i: usize) -> &'static str {
     if matches!(
         i,
-        DAFJB
-            | CAFJB
-            | DAFJS
-            | CAFJS
-            | DNFJB
-            | CNFJB
-            | DNFJS
-            | CNFJS
-            | DAHJB
-            | CAHJB
-            | DAHJS
-            | CAHJS
-            | DNHJB
-            | CNHJB
-            | DNHJS
-            | CNHJS
+        DAFSB
+            | CAFSB
+            | DAFSS
+            | CAFSS
+            | DNFSB
+            | CNFSB
+            | DNFSS
+            | CNFSS
+            | DAHSB
+            | CAHSB
+            | DAHSS
+            | CAHSS
+            | DNHSB
+            | CNHSB
+            | DNHSS
+            | CNHSS
+            | FJB..=HJS3
     ) {
         METRIC_NAMES[i]
     } else {
@@ -236,14 +272,14 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Different keys on the same finger with one intervening press.",
     "Same physical key twice in a row.",
     "Same physical key at both skipgram endpoints.",
-    "Adjacent-finger discordant two-row jump. Display-only alias of daFJB; not an extra penalty.",
-    "Adjacent-finger discordant one-row jump. Display-only alias of daHJB; not an extra penalty.",
-    "Adjacent-finger discordant two-row skipgram. Display-only alias of daFJS; not an extra penalty.",
-    "Adjacent-finger discordant one-row skipgram. Display-only alias of daHJS; not an extra penalty.",
+    "Full scissor: same hand, different fingers, two or more rows apart. Display total of daFSB + caFSB + dnFSB + cnFSB.",
+    "Half scissor: same hand, different fingers, one row apart. Display total of daHSB + caHSB + dnHSB + cnHSB.",
+    "Full scissor skipgram. Display total of daFSS + caFSS + dnFSS + cnFSS.",
+    "Half scissor skipgram. Display total of daHSS + caHSS + dnHSS + cnHSS.",
     "Same hand, different fingers; horizontal span exceeds finger separation.",
     "Lateral-stretch rule applied to skipgram endpoints.",
-    "Discordant two-row change between non-adjacent fingers, disjoint from daFJB.",
-    "Discordant two-row skipgram between non-adjacent fingers, disjoint from daFJS.",
+    "Discordant two-row change between non-adjacent fingers, disjoint from daFSB.",
+    "Discordant two-row skipgram between non-adjacent fingers, disjoint from daFSS.",
     "Same-hand, no-thumb trigram whose finger direction reverses.",
     "Redirect with no index finger. Subset of RED, with an extra penalty.",
     "Redirect with an index and a ring/pinky. Subset of RED.",
@@ -254,8 +290,8 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Discordant full jump skipgram between adjacent fingers.",
     "Concordant full jump skipgram between adjacent fingers.",
     "Hand alternation: LRL or RLR. Repeated keys/fingers, jumps and stretches still count. No thumbs; percentage of all no-thumb trigrams.",
-    "Concordant two-row change between non-adjacent fingers, disjoint from caFJB.",
-    "Concordant two-row skipgram between non-adjacent fingers, disjoint from caFJS.",
+    "Concordant two-row change between non-adjacent fingers, disjoint from caFSB.",
+    "Concordant two-row skipgram between non-adjacent fingers, disjoint from caFSS.",
     "Main-finger distance from home, key units per 100 supported presses. Not a physical trajectory.",
     "Vertical distance from home, key units per 100 supported presses.",
     "Lateral distance from home, key units per 100 supported presses.",
@@ -276,14 +312,38 @@ const METRIC_HELP: [&str; N_METRICS] = [
     "Concordant one-row jump bigram between nonadjacent fingers.",
     "Discordant one-row jump skipgram between nonadjacent fingers.",
     "Concordant one-row jump skipgram between nonadjacent fingers.",
+    "Full jump comfort cost, v13: scissor table at half scale + misalignment + curl offset. Comfort levels above very easy per 100 bigrams.",
+    "Half jump comfort cost, v13. Comfort levels above very easy per 100 bigrams.",
+    "Full jump comfort cost, v13, at skipgram endpoints. Comfort levels per 100 skipgrams.",
+    "Half jump comfort cost, v13, at skipgram endpoints. Comfort levels per 100 skipgrams.",
+    "Full jump comfort cost, v12: table + finger-weighted spread + crowding + curl offset. Comfort levels per 100 bigrams.",
+    "Half jump comfort cost, v12. Comfort levels per 100 bigrams.",
+    "Full jump comfort cost, v12, at skipgram endpoints. Comfort levels per 100 skipgrams.",
+    "Half jump comfort cost, v12, at skipgram endpoints. Comfort levels per 100 skipgrams.",
+    "Full jump comfort cost, Model B (0.5 table + 0.7 geometry). Comfort levels per 100 bigrams.",
+    "Half jump comfort cost, Model B. Comfort levels per 100 bigrams.",
+    "Full jump comfort cost, Model B, at skipgram endpoints. Comfort levels per 100 skipgrams.",
+    "Half jump comfort cost, Model B, at skipgram endpoints. Comfort levels per 100 skipgrams.",
 ];
 
 fn physical_metric(m: usize) -> bool {
     matches!(m, TRAVEL | VTRAVEL | LTRAVEL | SFTRAVEL)
 }
 
+/// The jump comfort models: real-valued pair costs, not counts.
+fn jump_model_metric(m: usize) -> bool {
+    (FJB..=HJS3).contains(&m)
+}
+
+/// Raw counters that accumulate real values rather than whole counts.
+fn numeric_raw(m: usize) -> bool {
+    physical_metric(m) || jump_model_metric(m)
+}
+
 fn metric_unit(m: usize) -> &'static str {
-    if physical_metric(m) {
+    if jump_model_metric(m) {
+        "lv/100"
+    } else if physical_metric(m) {
         "u/100"
     } else {
         "%"
@@ -297,7 +357,24 @@ fn bit(m: usize) -> u128 {
 fn is_skip(m: usize) -> bool {
     matches!(
         m,
-        SFS | SKS | FSS | HSS | LSS | DNFJS | DAFJS | CAFJS | CNFJS | DAHJS | CAHJS | DNHJS | CNHJS
+        SFS | SKS
+            | FSS
+            | HSS
+            | LSS
+            | DNFSS
+            | DAFSS
+            | CAFSS
+            | CNFSS
+            | DAHSS
+            | CAHSS
+            | DNHSS
+            | CNHSS
+            | FJS
+            | HJS
+            | FJS2
+            | HJS2
+            | FJS3
+            | HJS3
     )
 }
 
@@ -474,14 +551,29 @@ fn row_motion(a: Key, b: Key) -> RowMotion {
     }
 }
 
+/// Adjacent-finger discordant jump: 2 for two or more rows, 1 for one row.
+/// `[rolls] include_scissors = false` keeps rolls with these out.
 fn scissor_kind(a: Key, b: Key) -> u8 {
     if !same_hand(a, b) || (a.rank - b.rank).abs() != 1 {
         return 0;
     }
     match (a.row - b.row).abs() {
-        2 if row_motion(a, b) == RowMotion::Discordant => 2,
+        2.. if row_motion(a, b) == RowMotion::Discordant => 2,
         1 if row_motion(a, b) == RowMotion::Discordant => 1,
         _ => 0,
+    }
+}
+
+/// Any jump (FSB/HSB): same hand, different fingers, rows apart. 2 for two or
+/// more rows, 1 for one row.
+fn jump_rows(a: Key, b: Key) -> u8 {
+    if row_motion(a, b) == RowMotion::None {
+        return 0;
+    }
+    if (a.row - b.row).abs() >= 2 {
+        2
+    } else {
+        1
     }
 }
 
@@ -491,13 +583,13 @@ fn is_lateral_stretch(a: Key, b: Key) -> bool {
 }
 
 fn is_diagonal_stretch(a: Key, b: Key) -> bool {
-    (a.row - b.row).abs() == 2
+    (a.row - b.row).abs() >= 2
         && (a.rank - b.rank).abs() != 1
         && row_motion(a, b) == RowMotion::Discordant
 }
 
 fn is_concordant_jump(a: Key, b: Key) -> bool {
-    (a.row - b.row).abs() == 2
+    (a.row - b.row).abs() >= 2
         && (a.rank - b.rank).abs() != 1
         && row_motion(a, b) == RowMotion::Concordant
 }
@@ -600,16 +692,16 @@ struct PairFlags {
 const BAD_BI: u128 = (1 << SFB)
     | (1 << SKB)
     | (1 << FSB)
-    | (1 << DAFJB)
-    | (1 << CAFJB)
+    | (1 << DAFSB)
+    | (1 << CAFSB)
     | (1 << HSB)
-    | (1 << DAHJB)
-    | (1 << CAHJB)
+    | (1 << DAHSB)
+    | (1 << CAHSB)
     | (1 << LSB)
-    | (1 << DNFJB)
-    | (1 << CNFJB)
-    | (1 << DNHJB)
-    | (1 << CNHJB);
+    | (1 << DNFSB)
+    | (1 << CNFSB)
+    | (1 << DNHSB)
+    | (1 << CNHSB);
 
 fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
     let mut f = PairFlags {
@@ -623,7 +715,7 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         f.bi |= bit(SFB);
         f.sk |= bit(SFS);
     }
-    match scissor_kind(a, b) {
+    match jump_rows(a, b) {
         1 => {
             f.bi |= bit(HSB);
             f.sk |= bit(HSS);
@@ -635,29 +727,29 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         _ => {}
     }
     match ((a.row - b.row).abs(), row_motion(a, b)) {
-        (2, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi |= bit(DAFJB);
-            f.sk |= bit(DAFJS);
+        (2.., RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi |= bit(DAFSB);
+            f.sk |= bit(DAFSS);
         }
-        (2, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi |= bit(CAFJB);
-            f.sk |= bit(CAFJS);
+        (2.., RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
+            f.bi |= bit(CAFSB);
+            f.sk |= bit(CAFSS);
         }
         (1, RowMotion::Discordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi |= bit(DAHJB);
-            f.sk |= bit(DAHJS);
+            f.bi |= bit(DAHSB);
+            f.sk |= bit(DAHSS);
         }
         (1, RowMotion::Concordant) if (a.rank - b.rank).abs() == 1 => {
-            f.bi |= bit(CAHJB);
-            f.sk |= bit(CAHJS);
+            f.bi |= bit(CAHSB);
+            f.sk |= bit(CAHSS);
         }
         (1, RowMotion::Discordant) => {
-            f.bi |= bit(DNHJB);
-            f.sk |= bit(DNHJS);
+            f.bi |= bit(DNHSB);
+            f.sk |= bit(DNHSS);
         }
         (1, RowMotion::Concordant) => {
-            f.bi |= bit(CNHJB);
-            f.sk |= bit(CNHJS);
+            f.bi |= bit(CNHSB);
+            f.sk |= bit(CNHSS);
         }
         _ => {}
     }
@@ -666,12 +758,12 @@ fn pair_flags(a: Key, b: Key, same_key: bool) -> PairFlags {
         f.sk |= bit(LSS);
     }
     if is_diagonal_stretch(a, b) {
-        f.bi |= bit(DNFJB);
-        f.sk |= bit(DNFJS);
+        f.bi |= bit(DNFSB);
+        f.sk |= bit(DNFSS);
     }
     if is_concordant_jump(a, b) {
-        f.bi |= bit(CNFJB);
-        f.sk |= bit(CNFJS);
+        f.bi |= bit(CNFSB);
+        f.sk |= bit(CNFSS);
     }
     if sraf_shape(a, b) {
         f.bi |= bit(RAW_SRAF);
@@ -785,10 +877,11 @@ fn tri_flags_with_settings(a: Key, b: Key, c: Key, settings: RollSettings) -> Tr
     let bc = pair_flags(b, c, b.row == c.row && b.col == c.col);
 
     if let Some(kind) = roll_kind_with_settings(a, b, c, settings) {
-        // Filter consecutive pairs only. FSB and HSB identify adjacent
-        // discordant jumps. Skip AC is not a veto.
+        // Filter consecutive pairs only: adjacent discordant jumps and
+        // lateral stretches. Skip AC is not a veto.
         let pairs = ab.bi | bc.bi;
-        let blocked_scissors = !settings.include_scissors && pairs & (bit(FSB) | bit(HSB)) != 0;
+        let blocked_scissors =
+            !settings.include_scissors && (scissor_kind(a, b) != 0 || scissor_kind(b, c) != 0);
         let blocked_stretches = !settings.include_stretches && pairs & bit(LSB) != 0;
         if !blocked_scissors && !blocked_stretches {
             let direction = if matches!(kind, IN2 | IN3) {
@@ -896,6 +989,156 @@ impl HomeAnchors {
     }
 }
 
+/// Hand frame for the jump comfort models (FJB/HJB, FJB2/HJB2, FJB3/HJB3),
+/// in key pitches with y down. See `akler-scissor-models-top3.md`.
+#[derive(Clone, Copy, Debug)]
+struct JumpFrame {
+    /// Hand angle to the columns: 20° on row-staggered boards, else 0°.
+    cos: f64,
+    sin: f64,
+    /// Each finger's home key centre.
+    home: [[f64; 2]; 8],
+    /// Per hand, the x offset of each row (row stagger).
+    row_dx: [[f64; 8]; 2],
+}
+
+/// Physical key centre in key pitches, y down.
+fn key_point(k: Key) -> [f64; 2] {
+    [
+        f64::from(k.col) + f64::from(k.row_offset) / 1000.0,
+        f64::from(k.row) + f64::from(k.column_offset) / 1000.0,
+    ]
+}
+
+impl JumpFrame {
+    fn new(keys: &[Key], anchors: HomeAnchors) -> Self {
+        let main = || keys.iter().filter(|key| key.main);
+        let mut row_dx = [[0.0; 8]; 2];
+        let mut staggered = false;
+        for hand in 0..2 {
+            let mut first: Option<i16> = None;
+            for row in 0..8i8 {
+                if let Some(key) = main().find(|key| key.hand == hand && key.row == row) {
+                    row_dx[hand as usize][row as usize] = f64::from(key.row_offset) / 1000.0;
+                    staggered |= first.is_some_and(|offset| offset != key.row_offset);
+                    first.get_or_insert(key.row_offset);
+                }
+            }
+        }
+        let home = std::array::from_fn(|finger| {
+            let template = Key {
+                row: 1,
+                col: anchors.columns[finger],
+                row_offset: 0,
+                column_offset: 0,
+                finger,
+                rank: if finger < 4 { finger as i8 } else { 7 - finger as i8 },
+                hand: i8::from(finger >= 4),
+                main: true,
+            };
+            key_point(anchors.anchor(template, keys))
+        });
+        let angle = if staggered { 20f64.to_radians() } else { 0.0 };
+        Self {
+            cos: angle.cos(),
+            sin: angle.sin(),
+            home,
+            row_dx,
+        }
+    }
+
+    /// The index finger's own-column key centre in `row` (R, F, V on QWERTY).
+    fn index_column(&self, hand: i8, row: i8) -> [f64; 2] {
+        let home = self.home[if hand == 0 { 3 } else { 4 }];
+        let home_dx = self.row_dx[hand as usize][1];
+        let dx = self.row_dx[hand as usize][row.clamp(0, 7) as usize];
+        [home[0] - home_dx + dx, home[1] + f64::from(row - 1)]
+    }
+}
+
+/// Scissor finger-pair factors by (lower rank, higher rank): pinky 0 to index 3.
+fn jump_factor(low: i8, high: i8) -> f64 {
+    match (low, high) {
+        (0, 1) | (1, 2) => 1.0,
+        (2, 3) => 0.7,
+        (1, 3) | (0, 2) => 0.4,
+        _ => 0.25,
+    }
+}
+
+/// The jump comfort costs C of pair `a`, `b`, in comfort levels above "very
+/// easy", for v13, v12 and Model B (weighted 0.5 table + 0.7 geometry), and
+/// whether the jump is full (two or more rows). None unless the keys are on
+/// one hand, on different fingers and rows. Same-row stretches are LSB's.
+fn jump_costs(frame: &JumpFrame, a: Key, b: Key) -> Option<(bool, [f64; 3])> {
+    if !same_hand(a, b) || a.finger == b.finger || a.rank == b.rank || a.row == b.row {
+        return None;
+    }
+    let full = (a.row - b.row).abs() >= 2;
+    let discordant = row_motion(a, b) == RowMotion::Discordant;
+    let (a, b) = if a.rank < b.rank { (a, b) } else { (b, a) };
+    let sg = if a.hand == 0 { 1.0 } else { -1.0 };
+    let u = |p: [f64; 2]| sg * p[0] * frame.cos + p[1] * frame.sin;
+    let v = |p: [f64; 2]| -sg * p[0] * frame.sin + p[1] * frame.cos;
+    let home = |k: Key| frame.home[k.finger];
+    // The index follows its own column; other fingers the hand angle from home.
+    let origin = |k: Key| {
+        if k.index() {
+            frame.index_column(k.hand, k.row)
+        } else {
+            home(k)
+        }
+    };
+    let (pa, pb) = (key_point(a), key_point(b));
+    let g = f64::from(b.rank - a.rank);
+    let du = u(pb) - u(pa);
+    // Spread (+) or crossing (-) beyond the natural finger gap. The index's
+    // own-column shift is not a spread.
+    let mut s = du - g;
+    for k in [a, b] {
+        if k.index() {
+            s -= u(frame.index_column(k.hand, k.row)) - u(home(k));
+        }
+    }
+    let reach = 1.0 + 0.5 * (v(pb) - v(pa)).abs();
+    // Curl landing offset: a finger curling down lands sideways of its path.
+    let curl: f64 = [a, b]
+        .into_iter()
+        .filter(|&k| key_point(k)[1] > home(k)[1] + 1e-9)
+        .map(|k| (u(key_point(k)) - u(origin(k))).max(0.0))
+        .sum();
+    let factor = jump_factor(a.rank, b.rank);
+    // The scissor table: full 5F; half 5F/8 discordant, 5F/12 concordant.
+    let table = |f: f64| {
+        let value = 5.0 * f;
+        if full {
+            value
+        } else {
+            value / if discordant { 8.0 } else { 12.0 }
+        }
+    };
+    let halved = if b.index() { 0.5 * factor } else { factor };
+    let v13 = 0.5 * table(halved) + (s.abs() - 0.5).max(0.0) * reach + curl;
+    let v12 = 0.5 * table(halved)
+        + (1.5 * factor * (s - 0.5).max(0.0) + 0.7 * (-s - 0.5).max(0.0)) * reach
+        + 1.25 * curl;
+    let spread = (du - g - 0.5).max(0.0) * reach;
+    let crowd = 2.0 * (0.25 * g - du).max(0.0) * reach;
+    let model_b = 0.5 * table(factor) + 0.7 * (spread + crowd);
+    Some((full, [v13, v12, model_b]))
+}
+
+/// Add `jump`'s costs (`jump_costs`) to the bigram or skipgram jump metrics.
+#[inline(always)]
+fn add_jump(raw: &mut Raw, jump: Option<(bool, [f64; 3])>, skip: bool, f: f64) {
+    if let Some((full, costs)) = jump {
+        let slot = usize::from(!full) + 2 * usize::from(skip);
+        for (metrics, cost) in JUMP_METRICS.iter().zip(costs) {
+            raw.0[metrics[slot]] += cost * f;
+        }
+    }
+}
+
 fn home_slot_mask(keys: &[Key]) -> Vec<bool> {
     let anchors = HomeAnchors::new(keys);
     keys.iter()
@@ -922,6 +1165,9 @@ struct Geometry {
     is_home: Vec<bool>,
     corner: Vec<bool>,
     sf_distance: Vec<f64>,
+    /// Hand frame and per-pair costs for the jump comfort models.
+    frame: JumpFrame,
+    jump: Vec<Option<(bool, [f64; 3])>>,
     /// `[alts]` rules for these keys.
     alts: crate::alt_fingers::Resolver,
     /// Mana2 classifications for these keys, built on first use and shared
@@ -956,10 +1202,14 @@ impl Geometry {
         let mut pair = vec![PairFlags::default(); n * n];
         let mut tri = vec![0; n * n * n];
         let mut sf_distance = vec![0.0; n * n];
+        let anchors = HomeAnchors::new(&keys);
+        let frame = JumpFrame::new(&keys, anchors);
+        let mut jump = vec![None; n * n];
         for a in 0..n {
             for b in 0..n {
                 let [x, y] = alts.keys(&keys, [a, b]);
                 pair[a * n + b] = pair_flags(x, y, a == b);
+                jump[a * n + b] = jump_costs(&frame, x, y);
                 if x.main && y.main && x.finger == y.finger {
                     sf_distance[a * n + b] = x.vertical_delta(y).hypot(x.horizontal_delta(y));
                 }
@@ -971,7 +1221,6 @@ impl Geometry {
             }
         }
         let tri = TriTable::new(&tri);
-        let anchors = HomeAnchors::new(&keys);
         let home = keys
             .iter()
             .map(|&key| anchors.travel(key, &keys))
@@ -1008,6 +1257,8 @@ impl Geometry {
             is_home,
             corner,
             sf_distance,
+            frame,
+            jump,
             alts,
             mana2: Arc::new(std::sync::OnceLock::new()),
         }
@@ -1815,6 +2066,7 @@ fn add_gram(raw: &mut Raw, g: &Gram, pos: &[usize], geometry: &Geometry, sign: f
             let b = pos[g.id(1)];
             let flags = geometry.pair[a * geometry.n + b];
             add_bits(raw, if g.kind() == 1 { flags.bi } else { flags.sk }, f);
+            add_jump(raw, geometry.jump[a * geometry.n + b], g.kind() == 2, f);
             if g.kind() == 1 {
                 if flags.main {
                     raw.0[SRAF_DEN] += f;
@@ -1870,6 +2122,9 @@ fn move_gram(raw: &mut Raw, g: &Gram, old: &[usize], new: &[usize], geometry: &G
             let (from, to) = (geometry.pair[a0 * n + b0], geometry.pair[a1 * n + b1]);
             let (x, y) = if g.kind() == 1 { (from.bi, to.bi) } else { (from.sk, to.sk) };
             move_bits(raw, x, y, f);
+            let skip = g.kind() == 2;
+            add_jump(raw, geometry.jump[a0 * n + b0], skip, -f);
+            add_jump(raw, geometry.jump[a1 * n + b1], skip, f);
             if g.kind() == 1 {
                 if from.main != to.main {
                     raw.0[SRAF_DEN] += if to.main { f } else { -f };
@@ -2084,7 +2339,9 @@ impl Default for Weights {
         Self::new([
             12.0, 1.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.75, 1.0, 0.25, 0.75, 2.5, 1.25, 0.0,
             0.0, 4.0, 2.0, 1.5, 0.75, 0.05, 0.50, 0.15, 0.02, 0.0, 0.0, 0.10, 0.0, 0.0, 0.0, 0.0,
-            0.25, 0.25, 0.25, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2, 0.60, 0.20, 0.05, 0.0,
+            0.25, 0.25, 0.25, 0.25, 1.0, 0.5, 0.4, 0.2, 1.0, 0.5, 0.4, 0.2,
+            // Jump comfort models start unweighted.
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.60, 0.20, 0.05, 0.0,
             0.06, 0.02, 0.005, 0.0, 0.0, 0.0, 2.5, 0.0, 4.5,
         ])
     }
@@ -2204,29 +2461,24 @@ fn config_lines(text: &str) -> AppResult<Vec<(String, String)>> {
     Ok(result)
 }
 
-fn canonical_weight_key(key: &str) -> &str {
-    match key {
-        "dfsb" => "dafjb",
-        "cfsb" => "cafjb",
-        "dfss" => "dafjs",
-        "cfss" => "cafjs",
-        "dfjb" => "dafjb",
-        "cfjb" => "cafjb",
-        "dfjs" => "dafjs",
-        "cfjs" => "cafjs",
-        "dfab" => "dafjb",
-        "cfab" => "cafjb",
-        "dfas" => "dafjs",
-        "cfas" => "cafjs",
-        "dsb" => "dnfjb",
-        "dss" => "dnfjs",
-        "csb" => "cnfjb",
-        "css" => "cnfjs",
-        "dfnb" => "dnfjb",
-        "dfns" => "dnfjs",
-        "cfnb" => "cnfjb",
-        "cfns" => "cnfjs",
-        _ => key,
+/// Weight names from before the scissor rename (2026-11-07), and what to use
+/// instead. They are rejected rather than read: FJB/HJB now name the jump
+/// comfort models.
+fn renamed_weight_key(key: &str) -> Option<String> {
+    let bytes = key.as_bytes();
+    let renamed = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    match bytes {
+        [d @ (b'd' | b'c'), n @ (b'a' | b'n'), fh @ (b'f' | b'h'), b'j', bs @ (b'b' | b's')] => {
+            Some(renamed(&[*d, *n, *fh, b's', *bs]))
+        }
+        _ => match key {
+            "dfsb" | "cfsb" | "dfss" | "cfss" | "dfjb" | "cfjb" | "dfjs" | "cfjs" | "dfab"
+            | "cfab" | "dfas" | "cfas" | "dsb" | "dss" | "csb" | "css" | "dfnb" | "dfns"
+            | "cfnb" | "cfns" | "dhjb" | "chjb" | "dhjs" | "chjs" => {
+                Some("the daFSB ... cnHSS jump weights".into())
+            }
+            _ => None,
+        },
     }
 }
 
@@ -2234,72 +2486,22 @@ fn weights_from_text(text: &str) -> AppResult<Weights> {
     let entries: BTreeMap<String, String> = config_lines(text)?.into_iter().collect();
     let mut w = Weights::default();
     for (k, v) in &entries {
-        if matches!(k.as_str(), "dhjb" | "chjb" | "dhjs" | "chjs") {
-            finite_nonnegative(v)?;
-            continue;
+        if let Some(name) = renamed_weight_key(k) {
+            return Err(format!("weight {k} was renamed; use {name}").into());
         }
-        let name = canonical_weight_key(k);
         let i = WEIGHT_NAMES
             .iter()
-            .position(|s| *s == name)
+            .position(|s| s == k)
             .ok_or_else(|| format!("unknown weight {k}"))?;
         let value = finite_nonnegative(v)?;
-        if !aggregate(i) && (k == name || !entries.contains_key(name)) {
+        if matches!(i, FSB | HSB | FSS | HSS) {
+            return Err(format!(
+                "{k} is a display total; set its daFSB ... cnHSS parts instead"
+            )
+            .into());
+        }
+        if !aggregate(i) {
             w.0[i] = value;
-        }
-    }
-    // Legacy aggregate keys seed directional jump weights. Explicit direction
-    // keys win regardless of line order; display subsets are never weighted.
-    for (legacy, d, c) in [("fsb", DAFJB, CAFJB), ("fss", DAFJS, CAFJS)] {
-        if let Some(v) = entries.get(legacy) {
-            let value = finite_nonnegative(v)?;
-            if !entries
-                .keys()
-                .any(|key| canonical_weight_key(key) == WEIGHT_NAMES[d])
-            {
-                w.0[d] = value;
-            }
-            if !entries
-                .keys()
-                .any(|key| canonical_weight_key(key) == WEIGHT_NAMES[c])
-            {
-                w.0[c] = value * 0.5;
-            }
-        }
-    }
-    // A saved broad half-jump weight applies to both finger distances.
-    for (legacy, adjacent, nonadjacent) in [
-        ("dhjb", DAHJB, DNHJB),
-        ("chjb", CAHJB, CNHJB),
-        ("dhjs", DAHJS, DNHJS),
-        ("chjs", CAHJS, CNHJS),
-    ] {
-        if let Some(v) = entries.get(legacy) {
-            let value = finite_nonnegative(v)?;
-            for metric in [adjacent, nonadjacent] {
-                if !entries.contains_key(WEIGHT_NAMES[metric]) {
-                    w.0[metric] = value;
-                }
-            }
-        }
-    }
-    // The old HSB/HSS settings seeded broad directional half-jump weights.
-    for (legacy, d_adj, d_nonadj, c_adj, c_nonadj, old_d, old_c) in [
-        ("hsb", DAHJB, DNHJB, CAHJB, CNHJB, "dhjb", "chjb"),
-        ("hss", DAHJS, DNHJS, CAHJS, CNHJS, "dhjs", "chjs"),
-    ] {
-        if let Some(v) = entries.get(legacy) {
-            let value = finite_nonnegative(v)?;
-            for metric in [d_adj, d_nonadj] {
-                if !entries.contains_key(WEIGHT_NAMES[metric]) && !entries.contains_key(old_d) {
-                    w.0[metric] = value;
-                }
-            }
-            for metric in [c_adj, c_nonadj] {
-                if !entries.contains_key(WEIGHT_NAMES[metric]) && !entries.contains_key(old_c) {
-                    w.0[metric] = value * 0.5;
-                }
-            }
         }
     }
     // Combined legacy rewards seed both directions. An explicit directional
@@ -2332,7 +2534,7 @@ fn load_weights(path: &Path) -> AppResult<Weights> {
 }
 
 fn weights_text(w: &Weights) -> String {
-    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS and HSB/HSS duplicate adjacent discordant jumps. A and N jump weights score disjoint finger distances.\n");
+    let mut s = String::from("# Percentages x weights; preferences are subtracted.\n# FSB/FSS and HSB/HSS total the jump kinds. A and N jump weights score disjoint finger distances.\n# FJB/HJB (v13), FJB2/HJB2 (v12) and FJB3/HJB3 (Model B) are jump comfort costs.\n");
     for i in 0..N_WEIGHTS {
         if !aggregate(i) {
             s.push_str(&format!("{} = {}\n", weight_display_name(i), w.0[i]));
@@ -2381,8 +2583,8 @@ fn blocker_names(bits: u128) -> String {
     let mut names = Vec::new();
     // Show directional jumps instead of repeating their adjacent display subsets.
     for m in [
-        SFB, SFS, SKB, SKS, DAFJB, CAFJB, DAFJS, CAFJS, DAHJB, CAHJB, DAHJS, CAHJS, LSB, LSS,
-        DNFJB, DNFJS, CNFJB, CNFJS, DNHJB, CNHJB, DNHJS, CNHJS, REDIR, WRED, WISH,
+        SFB, SFS, SKB, SKS, DAFSB, CAFSB, DAFSS, CAFSS, DAHSB, CAHSB, DAHSS, CAHSS, LSB, LSS,
+        DNFSB, DNFSS, CNFSB, CNFSS, DNHSB, CNHSB, DNHSS, CNHSS, REDIR, WRED, WISH,
     ] {
         if bits & bit(m) != 0 {
             names.push(METRIC_NAMES[m]);
@@ -2491,7 +2693,7 @@ fn contributor_data_mode(
 }
 
 fn metric_value_text(m: usize, v: f64, decimals: usize) -> String {
-    if physical_metric(m) {
+    if numeric_raw(m) {
         number(v, decimals)
     } else {
         format!("{}%", number(v, decimals))
@@ -2505,6 +2707,175 @@ mod numeric_geometry_tests {
     /// QWERTY with these JSONC fields.
     fn parse(fields: &str) -> Board {
         board_from_text(&crate::action_keys::test_layouts::qwerty(fields), Path::new("inline")).unwrap()
+    }
+
+    /// The jump comfort models reproduce the predicted levels in
+    /// `akler-scissor-models-top3.md` (min(6, offset + C), one decimal):
+    /// laptop row stagger at 20°, Kinesis as a flat grid at 0°.
+    #[test]
+    fn jump_models_match_the_rated_predictions() {
+        const OFFSET: [f64; 3] = [1.3, 1.5, 1.6];
+        let laptop: &[(&str, [f64; 3])] = &[
+            ("ae", [1.7, 1.8, 1.7]),
+            ("ar", [1.3, 1.5, 1.7]),
+            ("av", [1.3, 1.5, 1.8]),
+            ("aw", [1.7, 1.9, 1.8]),
+            ("dq", [1.4, 1.6, 1.7]),
+            ("dr", [1.4, 1.6, 1.8]),
+            ("dt", [2.1, 2.3, 1.8]),
+            ("dv", [1.4, 1.6, 2.0]),
+            ("dw", [1.6, 1.8, 1.9]),
+            ("ef", [1.4, 1.6, 1.8]),
+            ("es", [1.7, 1.9, 1.8]),
+            ("ev", [2.2, 2.4, 4.3]),
+            ("fq", [1.3, 1.5, 1.7]),
+            ("fw", [1.4, 1.6, 1.7]),
+            ("gq", [2.4, 1.9, 2.4]),
+            ("qs", [1.6, 1.8, 1.9]),
+            ("qv", [1.6, 1.8, 2.9]),
+            ("rs", [1.3, 1.5, 1.7]),
+            ("st", [2.0, 1.9, 1.7]),
+            ("sv", [1.4, 1.6, 1.9]),
+            ("vw", [1.8, 2.0, 3.4]),
+            ("ab", [2.6, 2.8, 2.7]),
+            ("ac", [2.4, 2.8, 1.9]),
+            ("at", [1.9, 1.7, 1.7]),
+            ("dx", [2.9, 3.1, 2.1]),
+            ("dz", [2.9, 3.1, 1.7]),
+            ("eg", [2.4, 2.7, 2.5]),
+            ("fz", [3.1, 3.2, 1.7]),
+            ("gx", [2.2, 2.6, 1.7]),
+            ("gz", [2.1, 2.5, 1.7]),
+            ("tx", [2.6, 3.0, 2.6]),
+            ("ax", [2.7, 3.3, 2.1]),
+            ("bd", [2.7, 3.2, 2.6]),
+            ("bq", [3.5, 3.3, 3.5]),
+            ("cg", [2.2, 2.6, 1.8]),
+            ("cs", [2.7, 3.3, 2.1]),
+            ("fx", [2.9, 3.1, 1.7]),
+            ("gw", [2.3, 2.1, 2.4]),
+            ("sz", [2.9, 3.1, 2.1]),
+            ("tz", [2.4, 2.8, 2.2]),
+            ("bs", [2.7, 3.0, 2.6]),
+            ("cf", [2.8, 3.0, 2.1]),
+            ("ct", [3.0, 3.4, 3.4]),
+            ("rx", [3.5, 3.7, 2.6]),
+            ("bw", [3.9, 3.9, 4.2]),
+            ("cq", [4.2, 4.2, 3.4]),
+            ("cr", [3.7, 3.9, 5.3]),
+            ("cw", [6.0, 6.0, 5.1]),
+            ("rz", [3.6, 3.6, 2.2]),
+            ("wz", [6.0, 6.0, 6.0]),
+            ("be", [4.5, 5.0, 5.2]),
+            ("ex", [6.0, 6.0, 6.0]),
+            ("ez", [5.3, 5.0, 2.6]),
+            ("qx", [6.0, 6.0, 5.1]),
+        ];
+        let kinesis: &[(&str, [f64; 3])] = &[
+            ("ac", [1.4, 1.6, 1.7]),
+            ("ae", [1.4, 1.6, 1.7]),
+            ("ar", [1.3, 1.5, 1.7]),
+            ("av", [1.3, 1.5, 1.7]),
+            ("cf", [1.4, 1.6, 1.8]),
+            ("dv", [1.4, 1.6, 1.7]),
+            ("dz", [1.4, 1.6, 1.7]),
+            ("ef", [1.4, 1.6, 1.7]),
+            ("ev", [2.2, 2.4, 3.4]),
+            ("fw", [1.4, 1.6, 1.7]),
+            ("fz", [1.3, 1.5, 1.7]),
+            ("rs", [1.3, 1.5, 1.7]),
+            ("rz", [1.6, 1.8, 2.2]),
+            ("sv", [1.4, 1.6, 1.7]),
+            ("at", [2.1, 1.8, 2.2]),
+            ("aw", [1.5, 1.7, 1.8]),
+            ("cr", [2.2, 2.4, 3.4]),
+            ("cs", [1.6, 1.8, 1.9]),
+            ("dr", [1.4, 1.6, 1.8]),
+            ("dx", [1.5, 1.7, 1.8]),
+            ("es", [1.5, 1.7, 1.8]),
+            ("ez", [2.3, 2.5, 2.6]),
+            ("fq", [1.3, 1.5, 1.7]),
+            ("fx", [1.3, 1.5, 1.7]),
+            ("gq", [2.1, 1.8, 2.2]),
+            ("gz", [2.1, 1.8, 2.2]),
+            ("rx", [1.8, 2.0, 2.6]),
+            ("st", [2.1, 2.0, 2.2]),
+            ("vw", [1.8, 2.0, 2.6]),
+            ("eg", [2.1, 2.4, 2.3]),
+            ("ab", [3.1, 3.1, 2.2]),
+            ("ax", [1.6, 1.8, 1.9]),
+            ("bq", [3.6, 3.4, 2.9]),
+            ("bs", [3.1, 3.3, 2.2]),
+            ("cg", [2.2, 2.4, 2.3]),
+            ("cq", [2.3, 2.5, 2.6]),
+            ("ct", [3.2, 3.4, 4.1]),
+            ("dq", [1.4, 1.6, 1.7]),
+            ("dt", [2.2, 2.4, 2.3]),
+            ("dw", [1.6, 1.8, 1.9]),
+            ("gw", [2.1, 2.0, 2.2]),
+            ("gx", [2.1, 2.0, 2.2]),
+            ("qs", [1.6, 1.8, 1.9]),
+            ("sz", [1.5, 1.7, 1.8]),
+            ("tz", [2.6, 2.2, 2.9]),
+            ("bd", [3.1, 3.6, 2.3]),
+            ("bw", [3.8, 3.9, 3.3]),
+            ("cw", [3.8, 4.0, 4.1]),
+            ("qx", [3.8, 4.0, 4.1]),
+            ("tx", [2.8, 2.6, 3.3]),
+            ("be", [4.2, 4.7, 4.1]),
+            ("ex", [3.8, 4.0, 4.1]),
+            ("wz", [3.8, 4.0, 4.1]),
+        ];
+        for (stagger, pairs) in [
+            (r#""board": {"isRowStaggered": true, "rowOrColumnStagger": [0, 0.25, 0.75]}"#, laptop),
+            (r#""board": {"isColumnStaggered": true, "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}"#, kinesis),
+        ] {
+            let board = parse(stagger);
+            let geometry = Geometry::new(board.keys.clone());
+            let key = |c: u8| {
+                let slot = board.symbols.iter().position(|&s| s == c).unwrap();
+                board.keys[slot]
+            };
+            for &(pair, expected) in pairs {
+                let p = pair.as_bytes();
+                let (_, costs) = jump_costs(&geometry.frame, key(p[0]), key(p[1])).unwrap();
+                let reverse = jump_costs(&geometry.frame, key(p[1]), key(p[0])).unwrap().1;
+                for model in 0..3 {
+                    let level = (OFFSET[model] + costs[model]).min(6.0);
+                    assert!(
+                        (level - expected[model]).abs() <= 0.051,
+                        "{pair} model {model}: {level} != {expected:?}"
+                    );
+                    assert_eq!(costs[model].to_bits(), reverse[model].to_bits());
+                }
+            }
+        }
+    }
+
+    /// On a flat grid the right hand mirrors the left; rows on one row and
+    /// same-finger pairs have no jump cost.
+    #[test]
+    fn jump_models_mirror_hands_and_skip_same_row() {
+        let board = parse(r#""board": {"isColumnStaggered": true, "rowOrColumnStagger": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]}"#);
+        let geometry = Geometry::new(board.keys.clone());
+        let key = |c: u8| board.keys[board.symbols.iter().position(|&s| s == c).unwrap()];
+        let mirror = |c: u8| {
+            let (left, right) = (b"qwertasdfgzxcvb", b"poiuy;lkjh/.,mn");
+            right[left.iter().position(|&l| l == c).unwrap()]
+        };
+        let left = b"qwertasdfgzxcvb";
+        for &a in left {
+            for &b in left {
+                let costs = jump_costs(&geometry.frame, key(a), key(b));
+                let mirrored = jump_costs(&geometry.frame, key(mirror(a)), key(mirror(b)));
+                assert_eq!(costs.map(|c| c.1.map(f64::to_bits)), mirrored.map(|c| c.1.map(f64::to_bits)));
+                if key(a).row == key(b).row || key(a).finger == key(b).finger {
+                    assert!(costs.is_none());
+                }
+            }
+        }
+        assert!(jump_costs(&geometry.frame, key(b'e'), key(b'x')).unwrap().0);
+        assert!(!jump_costs(&geometry.frame, key(b'e'), key(b's')).unwrap().0);
     }
 
     #[test]

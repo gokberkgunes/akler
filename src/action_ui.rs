@@ -49,6 +49,7 @@ impl LocalEffort {
         let mut uni = vec![0.0; n];
         let mut bi = vec![0.0; n * n];
         let mut sk = vec![0.0; n * n];
+        let frame = JumpFrame::new(&keys, HomeAnchors::new(&keys));
         for i in 0..n {
             if keys[i].main {
                 uni[i] = 0.02 * home_travel_for(keys[i], &keys)[0];
@@ -63,6 +64,13 @@ impl LocalEffort {
                         if flags.sk & bit(m) != 0 {
                             sk[i * n + j] += w.0[m];
                         }
+                    }
+                }
+                if let Some((full, costs)) = jump_costs(&frame, keys[i], keys[j]) {
+                    let slot = usize::from(!full);
+                    for (metrics, cost) in JUMP_METRICS.iter().zip(costs) {
+                        bi[i * n + j] += w.0[metrics[slot]] * cost;
+                        sk[i * n + j] += w.0[metrics[slot + 2]] * cost;
                     }
                 }
             }
@@ -2020,7 +2028,7 @@ fn action_editor_core(
                     "Click a statistic\tShow its contributing physical patterns".into(),
                     "Click or drag keys\tSelect two keys to swap their bindings".into(),
                     "d\tToggle isolated changes: compare with the layout before your latest edit.".into(),
-                    "m\tSwitch between Detailed jump statistics and Simple FJB/FJS/HJB/HJS total statistics.".into(),
+                    "m\tSwitch between Detailed jump statistics and Simple FSB/FSS/HSB/HSS total statistics.".into(),
                     "u\tUndo the last edit.".into(),
                     "U\tRedo the last undone edit.".into(),
                     "r\tReset the layout to its loaded bindings".into(),
@@ -3346,7 +3354,7 @@ fn action_optimizer_search(
                         "p pauses or resumes the search; q returns to setup and keeps the best current changes in memory.".into(),
                         "The score, accepted count, trial count, and current best layout remain visible while searching.".into(),
                         "Use the setup screen to change weights, corpus mixture, locks, limits, and search settings.".into(),
-                        "m switches the statistics display: Detailed jump breakdown or Simple FJB/FJS/HJB/HJS totals.".into(),
+                        "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS totals.".into(),
                         "Magic search refits rules between search sections; swap trials count binding proposals.".into(),
                     ],
                 )?,
@@ -3836,7 +3844,7 @@ fn action_optimizer_session(
                             "Space refines this candidate; b compares archived candidates; [ and ] move between them.".into(),
                             "s saves this candidate as a new file; S saves it under a name you type (starts with the layout's own file); A saves every candidate; r or q returns to setup and keeps the current layout in memory.".into(),
                             "Click a detailed metric for its physical pattern contributions. i shows corpus notes; t traces text; p traces physical key presses.".into(),
-                            "m switches the statistics display: Detailed jump breakdown or Simple FJB/FJS/HJB/HJS totals.".into(),
+                            "m switches the statistics display: Detailed jump breakdown or Simple FSB/FSS/HSB/HSS totals.".into(),
                             "v shows current magic rules when magic optimization is enabled.".into(),
                             "[↻ reset] clears that line's rules and returns to setup; Space refits Magic and Swaps.".into(),
                             ". toggles display precision.".into(),
@@ -4498,14 +4506,14 @@ mod ngram_integration_tests {
         edited.swap(k, b);
         edited.swap(b, h);
         let after = evaluate(&edited, &corpus, &w, &stop).unwrap();
-        let rows = action_contributor_rows(DNFJB, &edited, &before, &after);
+        let rows = action_contributor_rows(DNFSB, &edited, &before, &after);
         assert!(rows
             .iter()
             .any(|(name, b, a)| name == "h o" && *b > 0.0 && *a == 0.0));
         assert!(rows
             .iter()
             .any(|(name, b, a)| name == "k o" && *b == 0.0 && *a > 0.0));
-        let rows = action_contributor_rows(DNHJB, &edited, &before, &after);
+        let rows = action_contributor_rows(DNHSB, &edited, &before, &after);
         assert!(rows
             .iter()
             .any(|(name, b, a)| { name == "b o" && *b > 0.0 && b.to_bits() == a.to_bits() }));

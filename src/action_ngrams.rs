@@ -3680,6 +3680,7 @@ fn add_pattern_with_fingers(
             let same_key = slots[0] == slots[1] && keys[0].finger == keys[1].finger;
             let flags = pair_flags(keys[0], keys[1], same_key);
             add_bits(raw, if kind == 1 { flags.bi } else { flags.sk }, f);
+            add_jump(raw, jump_costs(&geometry.frame, keys[0], keys[1]), kind == 2, f);
             if kind == 1 {
                 if flags.main {
                     raw.0[SRAF_DEN] += f;
@@ -4615,12 +4616,15 @@ impl TailContributions {
             let bc = b * self.n + c;
             totals[1] += f;
             raw.0[SFTRAVEL] += g.sf_distance[bc] * f;
+            add_jump(raw, g.jump[bc], false, f);
             if a == GAP {
                 self.pair[bc]
             } else {
                 totals[2] += f;
                 totals[3] += f;
-                self.triple[a as usize * self.n * self.n + bc]
+                let a = a as usize;
+                add_jump(raw, g.jump[a * self.n + c], true, f);
+                self.triple[a * self.n * self.n + bc]
             }
         }
     }
@@ -8037,7 +8041,7 @@ mod tests {
                 // Repeated swaps round travel differently; counts stay exact.
                 for field in 0..N_RAW {
                     let (a, b) = (cache.raw.0[field], fresh.raw.0[field]);
-                    if [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL].contains(&field) {
+                    if numeric_raw(field) {
                         assert!(
                             (a - b).abs() <= 1e-12 * a.abs().max(1.0),
                             "raw field {field}"

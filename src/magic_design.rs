@@ -524,7 +524,7 @@ fn recoverable_adjacent_penalty(
     weights: &Weights,
 ) -> f64 {
     [
-        SFB, LSB, DAFJB, CAFJB, DNFJB, CNFJB, DAHJB, CAHJB, DNHJB, CNHJB, SFTRAVEL,
+        SFB, LSB, DAFSB, CAFSB, DNFSB, CNFSB, DAHSB, CAHSB, DNHSB, CNHSB, SFTRAVEL,
     ]
     .into_iter()
     .map(|metric| {
@@ -559,7 +559,7 @@ fn capacity_recoverable_adjacent_penalty(
         return Ok(0.0);
     };
     let metrics = [
-        SFB, LSB, DAFJB, CAFJB, DNFJB, CNFJB, DAHJB, CAHJB, DNHJB, CNHJB, SFTRAVEL,
+        SFB, LSB, DAFSB, CAFSB, DNFSB, CNFSB, DAHSB, CAHSB, DNHSB, CNHSB, SFTRAVEL,
     ];
     // Literal positions provide only a cheap proposal priority. The normal
     // physical mapper below resolves alternate fingers, actions, and combos.
@@ -802,7 +802,7 @@ fn targeted_repair_swaps(
             progress,
         )?;
         let gain: f64 = [
-            SFB, LSB, DAFJB, CAFJB, DNFJB, CNFJB, DAHJB, CAHJB, DNHJB, CNHJB, SFTRAVEL,
+            SFB, LSB, DAFSB, CAFSB, DNFSB, CNFSB, DAHSB, CAHSB, DNHSB, CNHSB, SFTRAVEL,
         ]
         .into_iter()
         .map(|metric| before[metric] - after[metric])

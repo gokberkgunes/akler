@@ -1271,14 +1271,16 @@ static OPT_GROUP_STRETCH: [usize; 2] = [LSB, LSS];
 static OPT_GROUP_TRAVEL: [usize; 4] = [TRAVEL, VTRAVEL, LTRAVEL, SFTRAVEL];
 
 // Display families are independent of the optimizer's weight controls.
-// The FSB/FSS and HSB/HSS slots, which repeat the adjacent discordant jumps,
-// show the full and half jump totals instead (`JUMP_TOTALS`).
-static TABLE_FULL_JUMPS: [usize; 10] = [
-    DAFJB, DAFJS, CAFJB, CAFJS, DNFJB, DNFJS, CNFJB, CNFJS, FSB, FSS,
+// FSB/FSS and HSB/HSS total the jump kinds; FJB/HJB etc. are the jump comfort
+// models (v13, then v12 and Model B as FJB2 and FJB3).
+static TABLE_FULL_JUMPS: [usize; 16] = [
+    DAFSB, DAFSS, CAFSB, CAFSS, DNFSB, DNFSS, CNFSB, CNFSS, FSB, FSS, FJB, FJS, FJB2, FJS2, FJB3,
+    FJS3,
 ];
 
-static TABLE_HALF_JUMPS: [usize; 10] = [
-    DAHJB, DAHJS, CAHJB, CAHJS, DNHJB, DNHJS, CNHJB, CNHJS, HSB, HSS,
+static TABLE_HALF_JUMPS: [usize; 16] = [
+    DAHSB, DAHSS, CAHSB, CAHSS, DNHSB, DNHSS, CNHSB, CNHSS, HSB, HSS, HJB, HJS, HJB2, HJS2, HJB3,
+    HJS3,
 ];
 
 static EDITOR_HAND_PATTERNS: [usize; 6] = [REDIR, WRED, WISH, ALT, SRAF, ROLL];
@@ -1307,10 +1309,10 @@ static EDITOR_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-// Display only: the FJB/FJS and HJB/HJS totals. The detailed score still
-// weighs each jump category separately.
-static SIMPLE_FULL_JUMPS: [usize; 2] = [FSB, FSS];
-static SIMPLE_HALF_JUMPS: [usize; 2] = [HSB, HSS];
+// The FSB/FSS and HSB/HSS totals and the v13 comfort costs. The detailed
+// score still weighs each jump category separately.
+static SIMPLE_FULL_JUMPS: [usize; 4] = [FSB, FSS, FJB, FJS];
+static SIMPLE_HALF_JUMPS: [usize; 4] = [HSB, HSS, HJB, HJS];
 static SIMPLE_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Same finger", &OPT_GROUP_SAME),
     ("Full jumps", &SIMPLE_FULL_JUMPS),
@@ -1320,21 +1322,9 @@ static SIMPLE_TABLE_GROUPS: [(&str, &[usize]); 6] = [
     ("Travel u/100", &OPT_GROUP_TRAVEL),
 ];
 
-/// The stats tables' FSB/FSS/HSB/HSS slots and the jump categories they total.
-const JUMP_TOTALS: [(usize, &str, [usize; 4]); 4] = [
-    (FSB, "FJB", [DAFJB, CAFJB, DNFJB, CNFJB]),
-    (FSS, "FJS", [DAFJS, CAFJS, DNFJS, CNFJS]),
-    (HSB, "HJB", [DAHJB, CAHJB, DNHJB, CNHJB]),
-    (HSS, "HJS", [DAHJS, CAHJS, DNHJS, CNHJS]),
-];
-
-fn jump_total(m: usize) -> Option<&'static (usize, &'static str, [usize; 4])> {
-    JUMP_TOTALS.iter().find(|(slot, _, _)| *slot == m)
-}
-
 /// `m`'s value as the stats tables show it.
 fn shown_metric(metrics: &Metrics, m: usize) -> f64 {
-    jump_total(m).map_or(metrics.v[m], |(_, _, parts)| parts.iter().map(|&p| metrics.v[p]).sum())
+    metrics.v[m]
 }
 
 struct MetricGrid {
@@ -1641,10 +1631,8 @@ fn grouped_value_table_grid(
                 &deltas[m],
                 delta_colors[m],
             );
-            // A jump total has no contributor list or single weight of its own.
-            if clickable
-                && jump_total(m).is_none()
-                && (!weights || optimizer_metric_weight(m).is_some())
+            // A jump total has no single weight of its own.
+            if clickable && (!weights || optimizer_metric_weight(m).is_some())
             {
                 c.hit(
                     Rect {
@@ -1802,7 +1790,7 @@ fn optimizer_metric_cards(
 
 fn optimizer_metric_weight(m: usize) -> Option<usize> {
     match m {
-        _ if jump_total(m).is_some() || aggregate(m) => None,
+        _ if aggregate(m) => None,
         _ => Some(m),
     }
 }
@@ -3467,7 +3455,7 @@ fn objective_view(
             format!("= Score           {:.4} → {:.4}", b.net, a.net),
             String::new(),
             "These are model score units, not measured comfort or typing speed.".into(),
-            "FJB/FJS and HJB/HJS show totals; each jump category keeps its own weight. Adjacent and nonadjacent jump weights score disjoint finger distances. Lateral stretch stays independent.".into(),
+            "FSB/FSS and HSB/HSS show totals; each jump category keeps its own weight. Adjacent and nonadjacent jump weights score disjoint finger distances. FJB/HJB (v13), FJB2/HJB2 (v12) and FJB3/HJB3 (Model B) are jump comfort costs in levels per 100. Lateral stretch stays independent.".into(),
             "IN/OUT SRAF and IN/OUT ROLL have separate rewards. Combined SRAF/ROLL and roll type columns are display totals.".into()
         ]);
     info_page(term, "Score audit — selected corpus", &lines)
@@ -4240,7 +4228,7 @@ fn editor_with_analysis(
                     "hjkl / arrows\tMove between keys.".into(),
                     "Space / Enter\tSelect a key, then swap with the next selected key.".into(),
                     "d\tToggle isolated changes: compare stats with the layout before your latest edit.".into(),
-                    "m\tSwitch Simple / Detailed stats. Simple shows the FJB/FJS/HJB/HJS totals; scoring stays unchanged.".into(),
+                    "m\tSwitch Simple / Detailed stats. Simple shows the FSB/FSS/HSB/HSS totals and FJB/HJB; scoring stays unchanged.".into(),
                     "u\tUndo the last edit.".into(),
                     "U\tRedo the last undone edit.".into(),
                     "r\tReset to the layout you opened.".into(),
@@ -4301,7 +4289,6 @@ fn metric_short_name(m: usize) -> &'static str {
         LTRAVEL => "LAT",
         SFTRAVEL => "SF",
         _ if m >= N_METRICS => weight_label(m),
-        _ if jump_total(m).is_some() => jump_total(m).unwrap().1,
         _ => METRIC_NAMES[m],
     }
 }

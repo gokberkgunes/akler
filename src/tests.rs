@@ -253,59 +253,53 @@ fn jump_categories_and_adjacent_discordant_subsets() {
             let motion = row_motion(a, b);
             for (metric, expected) in [
                 (
-                    DAFJB,
+                    DAFSB,
                     adjacent && row_gap == 2 && motion == RowMotion::Discordant,
                 ),
                 (
-                    CAFJB,
+                    CAFSB,
                     adjacent && row_gap == 2 && motion == RowMotion::Concordant,
                 ),
                 (
-                    DAHJB,
+                    DAHSB,
                     adjacent && row_gap == 1 && motion == RowMotion::Discordant,
                 ),
                 (
-                    CAHJB,
+                    CAHSB,
                     adjacent && row_gap == 1 && motion == RowMotion::Concordant,
                 ),
                 (
-                    DNHJB,
+                    DNHSB,
                     !adjacent && row_gap == 1 && motion == RowMotion::Discordant,
                 ),
                 (
-                    CNHJB,
+                    CNHSB,
                     !adjacent && row_gap == 1 && motion == RowMotion::Concordant,
                 ),
+                (FSB, row_gap >= 2 && motion != RowMotion::None),
+                (HSB, row_gap == 1 && motion != RowMotion::None),
                 (
-                    FSB,
-                    adjacent && row_gap == 2 && motion == RowMotion::Discordant,
-                ),
-                (
-                    HSB,
-                    adjacent && row_gap == 1 && motion == RowMotion::Discordant,
-                ),
-                (
-                    DNFJB,
+                    DNFSB,
                     !adjacent && row_gap == 2 && motion == RowMotion::Discordant,
                 ),
                 (
-                    CNFJB,
+                    CNFSB,
                     !adjacent && row_gap == 2 && motion == RowMotion::Concordant,
                 ),
             ] {
                 assert_eq!(f.bi & bit(metric) != 0, expected, "{metric}: {i} -> {j}");
             }
             for (bigram, skipgram) in [
-                (DAFJB, DAFJS),
-                (CAFJB, CAFJS),
-                (DAHJB, DAHJS),
-                (CAHJB, CAHJS),
+                (DAFSB, DAFSS),
+                (CAFSB, CAFSS),
+                (DAHSB, DAHSS),
+                (CAHSB, CAHSS),
                 (FSB, FSS),
                 (HSB, HSS),
-                (DNFJB, DNFJS),
-                (CNFJB, CNFJS),
-                (DNHJB, DNHJS),
-                (CNHJB, CNHJS),
+                (DNFSB, DNFSS),
+                (CNFSB, CNFSS),
+                (DNHSB, DNHSS),
+                (CNHSB, CNHSS),
             ] {
                 assert_eq!(f.bi & bit(bigram) != 0, f.sk & bit(skipgram) != 0);
             }
@@ -326,10 +320,10 @@ fn jump_categories_and_adjacent_discordant_subsets() {
 fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
     let mut raw = Raw::default();
     for (adjacent, nonadjacent, adjacent_count, nonadjacent_count) in [
-        (DAFJB, DNFJB, 2.0, 1.0),
-        (CAFJB, CNFJB, 2.0, 2.0),
-        (DAFJS, DNFJS, 2.0, 3.0),
-        (CAFJS, CNFJS, 2.0, 4.0),
+        (DAFSB, DNFSB, 2.0, 1.0),
+        (CAFSB, CNFSB, 2.0, 2.0),
+        (DAFSS, DNFSS, 2.0, 3.0),
+        (CAFSS, CNFSS, 2.0, 4.0),
     ] {
         raw.0[adjacent] = adjacent_count;
         raw.0[nonadjacent] = nonadjacent_count;
@@ -337,24 +331,24 @@ fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
     let metrics = metrics_totals(&raw, &[100.0, 10.0, 10.0, 0.0]);
     let mut weights = Weights::new([0.0; N_WEIGHTS]);
     for (broad, subset, broad_weight, subset_weight) in [
-        (DAFJB, DNFJB, 4.0, 2.0),
-        (CAFJB, CNFJB, 3.0, 1.0),
-        (DAFJS, DNFJS, 5.0, 2.0),
-        (CAFJS, CNFJS, 4.0, 1.0),
+        (DAFSB, DNFSB, 4.0, 2.0),
+        (CAFSB, CNFSB, 3.0, 1.0),
+        (DAFSS, DNFSS, 5.0, 2.0),
+        (CAFSS, CNFSS, 4.0, 1.0),
     ] {
         weights.0[broad] = broad_weight;
         weights.0[subset] = subset_weight;
     }
     let score = breakdown(&metrics, &weights);
     for (metric, expected) in [
-        (DAFJB, 80.0),
-        (DNFJB, 20.0),
-        (CAFJB, 60.0),
-        (CNFJB, 20.0),
-        (DAFJS, 100.0),
-        (DNFJS, 60.0),
-        (CAFJS, 80.0),
-        (CNFJS, 40.0),
+        (DAFSB, 80.0),
+        (DNFSB, 20.0),
+        (CAFSB, 60.0),
+        (CNFSB, 20.0),
+        (DAFSS, 100.0),
+        (DNFSS, 60.0),
+        (CAFSS, 80.0),
+        (CNFSS, 40.0),
     ] {
         close(score.contributions[metric], expected);
     }
@@ -363,11 +357,11 @@ fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
     let keys = action_ui::physical_keys(&layout);
     let adjacent = (0..keys.len())
         .flat_map(|a| (0..keys.len()).map(move |b| (a, b)))
-        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DAFJB) != 0)
+        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DAFSB) != 0)
         .unwrap();
     let nonadjacent = (0..keys.len())
         .flat_map(|a| (0..keys.len()).map(move |b| (a, b)))
-        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DNFJB) != 0)
+        .find(|&(a, b)| pair_flags(keys[a], keys[b], a == b).bi & bit(DNFSB) != 0)
         .unwrap();
     let effort = action_ui::LocalEffort::new(&layout, &weights);
     let neutral = action_ui::LocalEffort::new(&layout, &Weights::new([0.0; N_WEIGHTS]));
@@ -386,20 +380,20 @@ fn adjacent_and_nonadjacent_full_jump_weights_score_separately() {
 #[test]
 fn concordant_jumps_and_nonadjacent_subsets() {
     let ld = pair_flags(key(0, 2), key(2, 1), false);
-    assert_ne!(ld.bi & bit(CAFJB), 0);
-    assert_eq!(ld.bi & bit(FSB), 0);
-    assert_eq!(ld.bi & bit(CNFJB), 0);
+    assert_ne!(ld.bi & bit(CAFSB), 0);
+    assert_ne!(ld.bi & bit(FSB), 0);
+    assert_eq!(ld.bi & bit(CNFSB), 0);
     let up = pair_flags(key(0, 8), key(2, 7), false);
-    assert_ne!(up.bi & bit(DAFJB), 0);
+    assert_ne!(up.bi & bit(DAFSB), 0);
     assert_ne!(up.bi & bit(FSB), 0);
-    assert_eq!(up.bi & bit(DNFJB), 0);
+    assert_eq!(up.bi & bit(DNFSB), 0);
     assert!(is_lateral_stretch(key(1, 4), key(2, 0)));
     // inner index to pinky
     assert!(!is_lateral_stretch(key(1, 3), key(2, 0)));
     assert_eq!(scissor_kind(key(0, 2), key(1, 3)), 0);
-    // A concordant one-row jump is CAHJB but not the discordant HSB subset.
-    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CAHJB), 0);
-    assert_eq!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(HSB), 0);
+    // A concordant one-row jump is CAHSB and counts in the HSB total.
+    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(CAHSB), 0);
+    assert_ne!(pair_flags(key(0, 2), key(1, 3), false).bi & bit(HSB), 0);
 }
 
 #[test]
@@ -1865,25 +1859,29 @@ fn score_tab_rows_sum_to_the_objective_in_both_modes() {
 }
 
 #[test]
-fn simple_stats_show_jump_totals_in_the_alias_slots() {
+fn simple_stats_show_jump_totals_and_comfort_costs() {
     let model = model();
     let corpus = model.corpus(&small_source()).unwrap();
     let raw = full_raw(&model.original, &corpus, &model.geometry);
-    let mut shown = metrics(&raw, &corpus);
-    for (k, &m) in [DAFJB, CAFJB, DNFJB, CNFJB].iter().enumerate() {
-        shown.v[m] = 1.0 + k as f64;
-    }
-    for (k, &m) in [DAHJB, CAHJB, DNHJB, CNHJB].iter().enumerate() {
-        shown.v[m] = 0.5 * (1.0 + k as f64);
+    let shown = metrics(&raw, &corpus);
+    // FSB/HSB are the totals of their four jump kinds.
+    for (total, parts) in [
+        (FSB, [DAFSB, CAFSB, DNFSB, CNFSB]),
+        (HSB, [DAHSB, CAHSB, DNHSB, CNHSB]),
+        (FSS, [DAFSS, CAFSS, DNFSS, CNFSS]),
+        (HSS, [DAHSS, CAHSS, DNHSS, CNHSS]),
+    ] {
+        let sum: f64 = parts.iter().map(|&m| shown.v[m]).sum();
+        assert!((shown.v[total] - sum).abs() < 1e-9, "{}", METRIC_NAMES[total]);
     }
     let mut c = Canvas::new(120, 40);
     editor_metric_cards(&mut c, 0, &shown, &shown, &raw, &corpus, 2, true);
     let text: String = c.cells.iter().map(|cell| cell.ch).collect();
-    for label in ["FJB", "FJS", "HJB", "HJS", "10.00", "5.00"] {
+    for label in ["FSB", "FSS", "HSB", "HSS", "FJB", "FJS", "HJB", "HJS"] {
         assert!(text.contains(label), "simple stats are missing {label}");
     }
-    for label in ["FSB", "FSS", "HSB", "HSS"] {
-        assert!(!text.contains(label), "simple stats still show {label}");
+    for label in ["daFSB", "FJB2", "FJB3"] {
+        assert!(!text.contains(label), "simple stats show {label}");
     }
 }
 

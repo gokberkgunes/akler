@@ -121,8 +121,9 @@ thumbs are excluded.
   optimizer; so does a click in normal mode. In aklgg mode a click shows
   the layout's akl.gg-style stats; click a finger's numbers there to list
   its same-finger pairs by finger speed. In normal mode, Columns lets you
-  select the individual full-jump metrics (`daFJB`, `caFJB`, `dnFJB`,
-  `cnFJB` and their skipgram equivalents), as well as the combined FJB/FJS.
+  select the individual full-scissor metrics (`daFSB`, `caFSB`, `dnFSB`,
+  `cnFSB` and their skipgram equivalents), the FSB/FSS totals, and the
+  jump comfort models FJB/HJB (v13), FJB2/HJB2 (v12) and FJB3/HJB3 (Model B).
   Presets offers Normal and a 4:1 view. The latter shows SCORE and every
   combined bigram/skipgram column (`SFBS`, `SKBS`, etc.). Each value is `4 × bigram % + skipgram %`
   using AKLER metrics, including in aklgg mode. Values are `n/a` when either

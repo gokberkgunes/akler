@@ -2,16 +2,8 @@ const RANK_SCORE: usize = N_METRICS;
 
 const RANK_COVERAGE: usize = N_METRICS + 1;
 
-const RANK_FJB: usize = N_METRICS + 2;
-
-const RANK_FJS: usize = N_METRICS + 3;
-
-const RANK_HJB: usize = N_METRICS + 4;
-
-const RANK_HJS: usize = N_METRICS + 5;
-
 // Each finger's presses off its home key, in `FINGER_NAMES` order.
-const RANK_OFF_START: usize = N_METRICS + 6;
+const RANK_OFF_START: usize = N_METRICS + 2;
 
 const RANK_OFF_NAMES: [&str; 8] = ["oLP", "oLR", "oLM", "oLI", "oRI", "oRM", "oRR", "oRP"];
 
@@ -54,13 +46,13 @@ const RANK_PRESETS: &[RankPreset] = &[
     },
     RankPreset {
         name: "FJBS",
-        bigram: &[DAFJB, CAFJB, DNFJB, CNFJB],
-        skipgram: &[DAFJS, CAFJS, DNFJS, CNFJS],
+        bigram: &[FJB],
+        skipgram: &[FJS],
     },
     RankPreset {
         name: "HJBS",
-        bigram: &[DAHJB, CAHJB, DNHJB, CNHJB],
-        skipgram: &[DAHJS, CAHJS, DNHJS, CNHJS],
+        bigram: &[HJB],
+        skipgram: &[HJS],
     },
     RankPreset {
         name: "LSBS",
@@ -68,44 +60,44 @@ const RANK_PRESETS: &[RankPreset] = &[
         skipgram: &[LSS],
     },
     RankPreset {
-        name: "daFJBS",
-        bigram: &[DAFJB],
-        skipgram: &[DAFJS],
+        name: "daFSBS",
+        bigram: &[DAFSB],
+        skipgram: &[DAFSS],
     },
     RankPreset {
-        name: "caFJBS",
-        bigram: &[CAFJB],
-        skipgram: &[CAFJS],
+        name: "caFSBS",
+        bigram: &[CAFSB],
+        skipgram: &[CAFSS],
     },
     RankPreset {
-        name: "dnFJBS",
-        bigram: &[DNFJB],
-        skipgram: &[DNFJS],
+        name: "dnFSBS",
+        bigram: &[DNFSB],
+        skipgram: &[DNFSS],
     },
     RankPreset {
-        name: "cnFJBS",
-        bigram: &[CNFJB],
-        skipgram: &[CNFJS],
+        name: "cnFSBS",
+        bigram: &[CNFSB],
+        skipgram: &[CNFSS],
     },
     RankPreset {
-        name: "daHJBS",
-        bigram: &[DAHJB],
-        skipgram: &[DAHJS],
+        name: "daHSBS",
+        bigram: &[DAHSB],
+        skipgram: &[DAHSS],
     },
     RankPreset {
-        name: "caHJBS",
-        bigram: &[CAHJB],
-        skipgram: &[CAHJS],
+        name: "caHSBS",
+        bigram: &[CAHSB],
+        skipgram: &[CAHSS],
     },
     RankPreset {
-        name: "dnHJBS",
-        bigram: &[DNHJB],
-        skipgram: &[DNHJS],
+        name: "dnHSBS",
+        bigram: &[DNHSB],
+        skipgram: &[DNHSS],
     },
     RankPreset {
-        name: "cnHJBS",
-        bigram: &[CNHJB],
-        skipgram: &[CNHJS],
+        name: "cnHSBS",
+        bigram: &[CNHSB],
+        skipgram: &[CNHSS],
     },
 ];
 
@@ -124,20 +116,28 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT] = [
     SKS,
     TRAVEL,
     SFTRAVEL,
+    FJB,
+    HJB,
+    FJS,
+    HJS,
+    FJB2,
+    HJB2,
+    FJS2,
+    HJS2,
+    FJB3,
+    HJB3,
+    FJS3,
+    HJS3,
     FSB,
-    HSB,
+    DAFSB,
+    CAFSB,
+    DNFSB,
+    CNFSB,
     FSS,
-    HSS,
-    RANK_FJB,
-    DAFJB,
-    CAFJB,
-    DNFJB,
-    CNFJB,
-    RANK_FJS,
-    DAFJS,
-    CAFJS,
-    DNFJS,
-    CNFJS,
+    DAFSS,
+    CAFSS,
+    DNFSS,
+    CNFSS,
     LSB,
     LSS,
     REDIR,
@@ -153,17 +153,17 @@ const RANK_ORDER: [usize; BASE_RANK_COUNT] = [
     OUT2,
     IN3,
     OUT3,
-    RANK_HJB,
-    DAHJB,
-    CAHJB,
-    RANK_HJS,
-    DAHJS,
-    CAHJS,
+    HSB,
+    DAHSB,
+    CAHSB,
+    HSS,
+    DAHSS,
+    CAHSS,
     ALT,
-    DNHJB,
-    CNHJB,
-    DNHJS,
-    CNHJS,
+    DNHSB,
+    CNHSB,
+    DNHSS,
+    CNHSS,
     VTRAVEL,
     LTRAVEL,
     RANK_OFF_START,
@@ -219,29 +219,10 @@ fn rank_name(m: usize) -> &'static str {
         "SCORE"
     } else if m == RANK_COVERAGE {
         "COVERAGE"
-    } else if m == RANK_FJB {
-        "FJB"
-    } else if m == RANK_FJS {
-        "FJS"
-    } else if m == RANK_HJB {
-        "HJB"
-    } else if m == RANK_HJS {
-        "HJS"
     } else if rank_off(m) {
         RANK_OFF_NAMES[m - RANK_OFF_START]
     } else {
         METRIC_NAMES[m]
-    }
-}
-
-/// The jump categories a full or half jump total column adds up.
-fn rank_jump_total(m: usize) -> Option<[usize; 4]> {
-    match m {
-        RANK_FJB => Some([DAFJB, CAFJB, DNFJB, CNFJB]),
-        RANK_FJS => Some([DAFJS, CAFJS, DNFJS, CNFJS]),
-        RANK_HJB => Some([DAHJB, CAHJB, DNHJB, CNHJB]),
-        RANK_HJS => Some([DAHJS, CAHJS, DNHJS, CNHJS]),
-        _ => None,
     }
 }
 
@@ -299,7 +280,7 @@ fn mana2_higher_better(id: &str) -> bool {
 }
 
 fn rank_percent(m: usize) -> bool {
-    if m == RANK_COVERAGE || rank_jump_total(m).is_some() {
+    if m == RANK_COVERAGE {
         return true;
     }
     if !(RANK_MANA_START..RANK_PRESET_START).contains(&m) {
@@ -438,14 +419,6 @@ fn rank_figure(
         Some(mana(raw.1.as_ref()?).values[m - RANK_MANA_START])
     } else if m == RANK_SCORE {
         Some(score)
-    } else if let Some(component) = rank_jump_total(m) {
-        let denominator = denominator_totals(component[0], raw, totals);
-        (denominator > 0.0).then(|| {
-            pct(
-                component.iter().map(|&id| raw.0[id].max(0.0)).sum(),
-                denominator,
-            )
-        })
     } else if m == RANK_COVERAGE {
         None
     } else if rank_off(m) {
@@ -488,7 +461,7 @@ pub(crate) fn action_rank_value(
 /// A ranker cell's text: `number` with a percent sign where the ranker shows one.
 pub(crate) fn rank_text(m: usize, value: f64, decimals: usize) -> String {
     let mut text = number(value, decimals);
-    if rank_percent(m) || m < N_METRICS && !physical_metric(m) {
+    if rank_percent(m) || m < N_METRICS && !numeric_raw(m) {
         text.push('%');
     }
     text
@@ -1454,8 +1427,8 @@ const RANK_DEFAULT_COLUMNS: &[usize] = &[
     HSB,
     FSS,
     HSS,
-    RANK_FJB,
-    RANK_FJS,
+    FJB,
+    HJB,
     LSB,
     LSS,
     REDIR,
@@ -1503,13 +1476,11 @@ fn default_mana2_rank_columns() -> [bool; RANK_COUNT] {
 const NORMAL_RANK_PRESET: &[usize] = &[
     RANK_SCORE,
     FSB,
-    HSB,
-    RANK_FJB,
-    DAFJB,
-    CAFJB,
-    DNFJB,
-    CNFJB,
-    RANK_FJS,
+    DAFSB,
+    CAFSB,
+    DNFSB,
+    CNFSB,
+    FSS,
     LSB,
     REDIR,
     RANK_PRESET_START, // SFBS was also selected.
@@ -1580,18 +1551,6 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
     for line in text.lines() {
         let content = line.split('#').next().unwrap_or("");
         for name in content.split_whitespace() {
-            let old_half = match name.to_ascii_uppercase().as_str() {
-                "DHJB" => Some((DAHJB, DNHJB)),
-                "CHJB" => Some((CAHJB, CNHJB)),
-                "DHJS" => Some((DAHJS, DNHJS)),
-                "CHJS" => Some((CAHJS, CNHJS)),
-                _ => None,
-            };
-            if let Some((adjacent, nonadjacent)) = old_half {
-                hidden[adjacent] = false;
-                hidden[nonadjacent] = false;
-                continue;
-            }
             let canonical = match name.to_ascii_uppercase().as_str() {
                 "SFB+SFS" | "SF-BS" => "SFBS",
                 "SKB+SKS" | "SK-BS" => "SKBS",
@@ -1600,18 +1559,14 @@ fn parse_rank_columns(text: &str) -> AppResult<[bool; RANK_COUNT]> {
                 "FJB+FJS" | "FJ-BS" => "FJBS",
                 "HJB+HJS" | "HJ-BS" => "HJBS",
                 "LSB+LSS" | "LS-BS" => "LSBS",
-                "DAFJ-BS" => "daFJBS",
-                "CAFJ-BS" => "caFJBS",
-                "DNFJ-BS" => "dnFJBS",
-                "CNFJ-BS" => "cnFJBS",
-                "DAHJ-BS" => "daHJBS",
-                "CAHJ-BS" => "caHJBS",
-                "DNHJ-BS" => "dnHJBS",
-                "CNHJ-BS" => "cnHJBS",
-                "DFSB" | "CFSB" | "DFJB" | "CFJB" | "DFAB" | "CFAB" | "DSB" | "CSB" | "DFNB"
-                | "CFNB" => "FJB",
-                "DFSS" | "CFSS" | "DFJS" | "CFJS" | "DFAS" | "CFAS" | "DSS" | "CSS" | "DFNS"
-                | "CFNS" => "FJS",
+                "DAFS-BS" => "daFSBS",
+                "CAFS-BS" => "caFSBS",
+                "DNFS-BS" => "dnFSBS",
+                "CNFS-BS" => "cnFSBS",
+                "DAHS-BS" => "daHSBS",
+                "CAHS-BS" => "caHSBS",
+                "DNHS-BS" => "dnHSBS",
+                "CNHS-BS" => "cnHSBS",
                 _ => name,
             };
             let metric = rank_catalog(false)
@@ -2464,7 +2419,7 @@ fn draw_rank_table(
             let text = match value {
                 Some(v) => {
                     let mut s = number(v, rank_decimals(m, dp));
-                    if rank_percent(m) || m < N_METRICS && !physical_metric(m) {
+                    if rank_percent(m) || m < N_METRICS && !numeric_raw(m) {
                         s.push('%');
                     }
                     s
@@ -3182,7 +3137,7 @@ fn candidate_view(
     }
     let mut columns = RankColumns::new(false);
     let wanted = [
-        RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, RANK_FJB, RANK_FJS, SRAF, ROLL,
+        RANK_SCORE, SFB, SFS, TRAVEL, SFTRAVEL, LSB, FSB, FSS, SRAF, ROLL,
     ];
     for m in 0..RANK_COUNT {
         columns.hidden[m] = !wanted.contains(&m);
@@ -3337,23 +3292,31 @@ mod ranker_tests {
                 0.0,                       // SKBS
                 4.0 * 100.0 / 3.0,         // FSBS
                 4.0 * 100.0 / 3.0,         // HSBS
-                4.0 * 100.0 / 3.0,         // FJBS
-                4.0 * 100.0 / 3.0,         // HJBS
+                f64::NAN,                  // FJBS, a comfort cost: below
+                f64::NAN,                  // HJBS
                 0.0,                       // LSBS
-                4.0 * 100.0 / 3.0,         // daFJBS
-                0.0,                       // caFJBS
-                0.0,                       // dnFJBS
-                0.0,                       // cnFJBS
-                4.0 * 100.0 / 3.0,         // daHJBS
-                0.0,                       // caHJBS
-                0.0,                       // dnHJBS
-                0.0,                       // cnHJBS
+                4.0 * 100.0 / 3.0,         // daFSBS
+                0.0,                       // caFSBS
+                0.0,                       // dnFSBS
+                0.0,                       // cnFSBS
+                4.0 * 100.0 / 3.0,         // daHSBS
+                0.0,                       // caHSBS
+                0.0,                       // dnHSBS
+                0.0,                       // cnHSBS
             ]
             .into_iter()
             .enumerate()
             {
                 let id = RANK_PRESET_START + index;
                 let actual = rank_value(row, id).unwrap();
+                let expected = if expected.is_nan() {
+                    let v = &row.metrics().v;
+                    let (b, s) = if index == 4 { (FJB, FJS) } else { (HJB, HJS) };
+                    assert!(v[b] > 0.0);
+                    4.0 * v[b] + v[s]
+                } else {
+                    expected
+                };
                 assert!(
                     (actual - expected).abs() < 1e-9,
                     "{} {}: {actual} != {expected}",
@@ -3448,18 +3411,16 @@ mod ranker_tests {
 
         for row in &rows {
             for (metric, expected) in [
-                (DAFJB, 0.0),
-                (CAFJB, 100.0 / 3.0),
-                (DNFJB, 0.0),
-                (CNFJB, 0.0),
-                (RANK_FJB, 100.0 / 3.0),
-                (DAFJS, 0.0),
-                (CAFJS, 100.0),
-                (DNFJS, 0.0),
-                (CNFJS, 0.0),
-                (RANK_FJS, 100.0),
-                (FSB, 0.0),
-                (FSS, 0.0),
+                (DAFSB, 0.0),
+                (CAFSB, 100.0 / 3.0),
+                (DNFSB, 0.0),
+                (CNFSB, 0.0),
+                (FSB, 100.0 / 3.0),
+                (DAFSS, 0.0),
+                (CAFSS, 100.0),
+                (DNFSS, 0.0),
+                (CNFSS, 0.0),
+                (FSS, 100.0),
             ] {
                 let actual = rank_value(row, metric).unwrap();
                 assert!(
@@ -3470,19 +3431,19 @@ mod ranker_tests {
                     row.totals()
                 );
             }
-            // This also covers concordant half jumps in the HJB total.
+            // FSBS, then HSBS, which also covers concordant half jumps.
             assert!(
-                (rank_value(row, RANK_PRESET_START + 4).unwrap() - (4.0 * 100.0 / 3.0 + 100.0))
+                (rank_value(row, RANK_PRESET_START + 2).unwrap() - (4.0 * 100.0 / 3.0 + 100.0))
                     .abs()
                     < 1e-9
             );
             assert!(
-                (rank_value(row, RANK_PRESET_START + 5).unwrap() - 4.0 * 200.0 / 3.0).abs() < 1e-9
+                (rank_value(row, RANK_PRESET_START + 3).unwrap() - 4.0 * 200.0 / 3.0).abs() < 1e-9
             );
         }
 
         let mut columns = RankColumns::new(false);
-        columns.hidden = parse_rank_columns("SCORE FJB daFJB caFJB dnFJB cnFJB").unwrap();
+        columns.hidden = parse_rank_columns("SCORE FSB daFSB caFSB dnFSB cnFSB").unwrap();
         let grid = RankGrid::new(120, 18, 10, &mut columns);
         let mut canvas = Canvas::ranking(120, 1);
         let ranges = rank_ranges(&rows, &BTreeSet::new());
@@ -3494,7 +3455,7 @@ mod ranker_tests {
             0,
             0,
             2,
-            Some(CAFJB),
+            Some(CAFSB),
             true,
             2,
             &ranges,
@@ -3502,22 +3463,22 @@ mod ranker_tests {
             false,
         );
         let text: String = canvas.cells.iter().map(|cell| cell.ch).collect();
-        for label in ["FJB", "daFJB", "caFJB", "dnFJB", "cnFJB", "33.33%"] {
+        for label in ["FSB", "daFSB", "caFSB", "dnFSB", "cnFSB", "33.33%"] {
             assert!(text.contains(label), "rank table is missing {label}");
         }
-        let ca_fjb_column = grid.metrics.iter().position(|&id| id == CAFJB).unwrap();
+        let ca_fjb_column = grid.metrics.iter().position(|&id| id == CAFSB).unwrap();
         for row in 0..rows.len() {
             let start = (RANK_DATA + row) * canvas.w + grid.content_x(ca_fjb_column);
             let value: String = canvas.cells[start..start + grid.cell_width(ca_fjb_column)]
                 .iter()
                 .map(|cell| cell.ch)
                 .collect();
-            assert!(value.contains("33.33%"), "incorrect caFJB cell: {value}");
+            assert!(value.contains("33.33%"), "incorrect caFSB cell: {value}");
         }
         assert!(canvas
             .hits
             .iter()
-            .any(|(_, action)| matches!(action, Action::Metric(CAFJB))));
+            .any(|(_, action)| matches!(action, Action::Metric(CAFSB))));
     }
 
     #[test]
@@ -3695,10 +3656,10 @@ mod ranker_tests {
 
         for row in [&plain, &action] {
             for (column, parts) in [
-                (RANK_FJB, [DAFJB, CAFJB, DNFJB, CNFJB]),
-                (RANK_FJS, [DAFJS, CAFJS, DNFJS, CNFJS]),
-                (RANK_HJB, [DAHJB, CAHJB, DNHJB, CNHJB]),
-                (RANK_HJS, [DAHJS, CAHJS, DNHJS, CNHJS]),
+                (FSB, [DAFSB, CAFSB, DNFSB, CNFSB]),
+                (FSS, [DAFSS, CAFSS, DNFSS, CNFSS]),
+                (HSB, [DAHSB, CAHSB, DNHSB, CNHSB]),
+                (HSS, [DAHSS, CAHSS, DNHSS, CNHSS]),
             ] {
                 let expected: f64 = parts.iter().map(|&metric| row.metrics().v[metric]).sum();
                 assert!((rank_value(row, column).unwrap() - expected).abs() < 1e-9);
