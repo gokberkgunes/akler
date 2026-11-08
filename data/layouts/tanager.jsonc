@@ -1,0 +1,102 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// adaptive swaps
+//   after g, the next s and x trade places
+//   after s, the next c and r trade places
+//   after t, the next w and g trade places
+//   after l, the next w and l trade places
+//   after n, the next ' and r trade places
+//   after u, the next i and h trade places
+//   after r, the next l and b trade places
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "v l c w z q f u o /",
+      "y r s t m ' n i a h",
+      "x j g d k b p , . ;"
+    ],
+    "thumbs": [
+      "space",
+      "e"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "gs",
+        "output": "gx"
+      },
+      {
+        "inputs": "gx",
+        "output": "gs"
+      },
+      {
+        "inputs": "sc",
+        "output": "sr"
+      },
+      {
+        "inputs": "sr",
+        "output": "sc"
+      },
+      {
+        "inputs": "tw",
+        "output": "tg"
+      },
+      {
+        "inputs": "tg",
+        "output": "tw"
+      },
+      {
+        "inputs": "lw",
+        "output": "ll"
+      },
+      {
+        "inputs": "ll",
+        "output": "lw"
+      },
+      {
+        "inputs": "n'",
+        "output": "nr"
+      },
+      {
+        "inputs": "nr",
+        "output": "n'"
+      },
+      {
+        "inputs": "ui",
+        "output": "uh"
+      },
+      {
+        "inputs": "uh",
+        "output": "ui"
+      },
+      {
+        "inputs": "rl",
+        "output": "rb"
+      },
+      {
+        "inputs": "rb",
+        "output": "rl"
+      }
+    ]
+  }
+}

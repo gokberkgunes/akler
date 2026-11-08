@@ -1,0 +1,105 @@
+// Magic rules, as authored. The "magic.rules" list below is the
+// COMPILED form of exactly these -- one input/output pair per key.
+//
+// adaptive swaps
+//   after r, the next l and h trade places
+//   after l, the next l and s trade places
+//   after u, the next ' and h trade places
+//   after n, the next r and ' trade places
+//   after s, the next c and r trade places
+//   after p, the next c and h trade places
+//   after s, the next w and d trade places
+//
+// alt fingers
+//   sg s_g (LM LI) · gs g_s (LI LM) · sm s_m (LM LI) · ms m_s (LI LM)
+//
+{
+  "board": {
+    "isRowStaggered": true,
+    "mirrorLeftRowStagger": false,
+    "rowOrColumnStagger": [
+      0,
+      0,
+      0
+    ],
+    "splitAngle": 0
+  },
+  "fingermap": [
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9",
+    "0 1 2 3 3 6 6 7 8 9"
+  ],
+  "layers": null,
+  "layout": {
+    "fingers": [
+      "v l d w z q f o . ;",
+      "y r t s g b n a i u",
+      "x j k c m p h ' , /"
+    ],
+    "thumbs": [
+      "space",
+      "e"
+    ]
+  },
+  "magic": {
+    "magicKeys": [],
+    "rules": [
+      {
+        "inputs": "rl",
+        "output": "rh"
+      },
+      {
+        "inputs": "rh",
+        "output": "rl"
+      },
+      {
+        "inputs": "ll",
+        "output": "ls"
+      },
+      {
+        "inputs": "ls",
+        "output": "ll"
+      },
+      {
+        "inputs": "u'",
+        "output": "uh"
+      },
+      {
+        "inputs": "uh",
+        "output": "u'"
+      },
+      {
+        "inputs": "nr",
+        "output": "n'"
+      },
+      {
+        "inputs": "n'",
+        "output": "nr"
+      },
+      {
+        "inputs": "sc",
+        "output": "sr"
+      },
+      {
+        "inputs": "sr",
+        "output": "sc"
+      },
+      {
+        "inputs": "pc",
+        "output": "ph"
+      },
+      {
+        "inputs": "ph",
+        "output": "pc"
+      },
+      {
+        "inputs": "sw",
+        "output": "sd"
+      },
+      {
+        "inputs": "sd",
+        "output": "sw"
+      }
+    ]
+  }
+}
